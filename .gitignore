@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+*.log
+*.sqlite3
+
+# Virtual environments
+.venv
+ArXiv_craw/.venv/
+
+# Local Python version files
+.python-version
+ArXiv_craw/.python-version
+
+# Generated data
+ArXiv_craw/arxiv_papers_rag/
+local_paper_db/app/metadata_log.jsonl
+local_paper_db/app/ingest_error.log
+
+# Nested repository metadata
+ArXiv_craw/.git/
+ArXiv_craw/.git_backup_embedded_repo/

@@ -1,0 +1,8 @@
+arxiv
+psycopg2-binary
+openai
+pydantic
+python-dotenv
+requests
+tqdm
+FlagEmbedding
