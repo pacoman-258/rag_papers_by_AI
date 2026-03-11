@@ -11,11 +11,11 @@ from tqdm import tqdm  # 进度条库
 
 # --- 配置区域 ---
 DB_CONFIG = {
-    "dbname": "pacoman",
-    "user": "pacoman",
-    "password": "114514",
+    "dbname": "paper_db",
+    "user": "postgres",
+    "password": "yourpassword",
     "host": "localhost",
-    "port": "5433"
+    "port": "5432"
 }
 
 # Ollama 设置
