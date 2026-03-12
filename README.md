@@ -1,23 +1,60 @@
 ## arxiv-paper-rag
 
-An experimental local RAG workflow for arXiv papers. The repository currently combines two scripts:
-
-- `ArXiv_craw/crawer.py`: searches arXiv for papers related to Retrieval-Augmented Generation, downloads PDFs, and stores paper metadata as JSONL.
-- `local_paper_db/app/in.py` and `local_paper_db/app/search.py`: ingest the metadata into PostgreSQL with `pgvector`, then run retrieval + reranking + Ollama-based answer generation.
+An experimental local workflow for collecting arXiv papers, ingesting them into PostgreSQL + pgvector, and searching them through a RAG pipeline with both CLI and web interfaces.
 
 Chinese documentation: [README.zh-CN.md](README.zh-CN.md)
 
-## What It Does
+## What This Repository Contains
 
-This project implements a simple end-to-end paper assistant:
+- `ArXiv_craw/crawer.py`
+  Searches arXiv, downloads PDFs, and writes metadata JSONL.
+- `local_paper_db/app/in.py`
+  Embeds paper summaries with Ollama and stores them in PostgreSQL + pgvector.
+- `local_paper_db/app/search.py`
+  Thin CLI wrapper for the search pipeline.
+- `local_paper_db/app/search_service.py`
+  Reusable search service shared by CLI and FastAPI.
+- `backend/main.py`
+  FastAPI app for config management, search APIs, SSE answer streaming, and ingest management.
+- `frontend/`
+  React + Vite workbench for search and ingest operations.
 
-1. Search arXiv with a fixed keyword and category.
-2. Download matching PDFs to a local folder.
-3. Save metadata such as title, authors, abstract, local PDF path, and arXiv URL.
-4. Generate embeddings with Ollama and write them into PostgreSQL/pgvector.
-5. Retrieve relevant papers with vector search.
-6. Rerank the retrieved candidates with `BAAI/bge-reranker-v2-m3`.
-7. Ask an Ollama chat model to answer questions grounded in the retrieved paper summaries.
+## Search Pipeline
+
+The search flow is:
+
+1. The user submits a question.
+2. `QUERY_CHAT_*` rewrites it into an English retrieval plan.
+3. The user confirms the rewrite, asks for refinement, or chooses the original question.
+4. Ollama generates an embedding for the confirmed retrieval text.
+5. PostgreSQL + pgvector retrieves top `50` papers.
+6. SiliconFlow reranks them with `BAAI/bge-reranker-v2-m3` and keeps top `10`.
+7. `ANSWER_CHAT_*` answers only from those 10 papers.
+
+Fallback behavior:
+
+- If rewrite fails, the system falls back to the original question.
+- If reranking fails, the system falls back to the top 10 vector-search results.
+
+## Web Workbench
+
+The FastAPI + React workbench exposes two tabs:
+
+- `Search Workspace`
+  Configure query chat, answer chat, rerank, embedding, and retrieval settings; generate and refine rewrites; inspect top-10 papers; stream the final answer.
+- `Ingest Manager`
+  Start `in.py` as a background job, inspect database counts, and watch ingest logs over SSE.
+
+The frontend also includes an English / Chinese language switch and remembers the last selected UI language in the browser.
+
+Configuration precedence is:
+
+1. Request-level settings from the frontend
+2. `config/runtime_settings.json`
+3. Environment variables
+
+API keys are write-only in the UI. The backend only returns `has_api_key: true/false`.
+For safety, commit only [`config/runtime_settings.example.json`](config/runtime_settings.example.json); keep the real `config/runtime_settings.json` local.
 
 ## Repository Structure
 
@@ -25,47 +62,43 @@ This project implements a simple end-to-end paper assistant:
 .
 |-- ArXiv_craw/
 |   |-- crawer.py
-|   |-- pyproject.toml
-|   `-- arxiv_papers_rag/        # local PDFs + metadata output, generated data
+|   `-- arxiv_papers_rag/
+|-- backend/
+|   |-- config_store.py
+|   |-- ingest_manager.py
+|   |-- main.py
+|   `-- schemas.py
+|-- config/
+|   `-- runtime_settings.json
+|-- frontend/
+|   |-- package.json
+|   |-- src/
+|   `-- vite.config.js
 |-- local_paper_db/
 |   `-- app/
-|       |-- in.py                # ingestion script
-|       |-- search.py            # local RAG search CLI
-|       |-- metadata_log.jsonl   # example/generated metadata
-|       `-- ingest_error.log
-|-- requirements.txt
+|       |-- in.py
+|       |-- search.py
+|       `-- search_service.py
 |-- pyproject.toml
+|-- requirements.txt
 |-- README.md
 `-- README.zh-CN.md
 ```
 
-## Architecture
-
-```text
-arXiv API
-  -> crawer.py
-  -> metadata_log.jsonl + PDFs
-  -> in.py
-  -> PostgreSQL + pgvector
-  -> search.py
-  -> reranker + Ollama
-  -> final answer
-```
-
 ## Requirements
 
-- Python `3.13` according to `.python-version` and `pyproject.toml`
-- PostgreSQL with the `pgvector` extension enabled
-- A working Ollama service on `http://localhost:11434`
-- Ollama models matching the hardcoded names in the scripts:
-  - `qwen3-embedding:0.6b` in [`local_paper_db/app/in.py`](local_paper_db/app/in.py)
-  - `qwen3-embedding` and `qwen3:0.6b` in [`local_paper_db/app/search.py`](local_paper_db/app/search.py)
-- Enough disk space for downloaded PDFs
-- Optional but recommended: GPU support for reranking and Ollama inference
+- Python `3.13`
+- Node.js `20+`
+- PostgreSQL with `pgvector`
+- Ollama running at `http://localhost:11434`
+- An Ollama embedding model matching `OLLAMA_EMBED_MODEL`
+- Optional local Ollama chat model for generation
+- A SiliconFlow API key if you want API reranking
+- Optional OpenAI-compatible API credentials if you want remote chat models
 
 ## Installation
 
-Create a virtual environment and install dependencies:
+### Python
 
 ```bash
 python -m venv .venv
@@ -73,117 +106,143 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-If `FlagEmbedding` does not install a compatible `torch` build automatically in your environment, install the correct `torch` package first and then rerun `pip install -r requirements.txt`.
+### Frontend
+
+```bash
+cd frontend
+npm install
+```
 
 ## Database Preparation
 
-Create a database and enable the required extensions before running ingestion. The ingestion script creates the tables, but your database still needs `vector`, and `gen_random_uuid()` must be available.
-
-Example:
+The ingestion script creates tables automatically, but PostgreSQL still needs required extensions:
 
 ```sql
-CREATE DATABASE paper_db;
-\c paper_db
+CREATE DATABASE pacoman;
+\c pacoman
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 ```
 
-Important: the current scripts use hardcoded database settings and they do not match each other out of the box.
+Defaults:
 
-- [`local_paper_db/app/in.py`](local_paper_db/app/in.py) uses database `pacoman` on port `5433`
-- [`local_paper_db/app/search.py`](local_paper_db/app/search.py) uses database `paper_db` on port `5432`
+- database: `pacoman`
+- host: `localhost`
+- port: `5433`
 
-Before running the project, edit those constants so both scripts point to the same PostgreSQL instance.
+Override them with `PAPER_DB_*` environment variables if needed.
+
+## Environment Variables
+
+### Database and embeddings
+
+- `PAPER_DB_NAME`
+- `PAPER_DB_USER`
+- `PAPER_DB_PASSWORD`
+- `PAPER_DB_HOST`
+- `PAPER_DB_PORT`
+- `OLLAMA_API_URL`
+- `OLLAMA_EMBED_MODEL`
+
+### Query rewrite chat model
+
+- `QUERY_CHAT_PROVIDER`
+  `ollama` or `openai_compatible`
+- `QUERY_CHAT_MODEL`
+- `QUERY_CHAT_BASE_URL`
+- `QUERY_CHAT_API_KEY`
+
+### Final answer chat model
+
+- `ANSWER_CHAT_PROVIDER`
+  `ollama` or `openai_compatible`
+- `ANSWER_CHAT_MODEL`
+- `ANSWER_CHAT_BASE_URL`
+- `ANSWER_CHAT_API_KEY`
+
+### Rerank API
+
+- `RERANK_API_KEY`
+- `RERANK_BASE_URL`
+  Default: `https://api.siliconflow.cn/v1`
+- `RERANK_MODEL`
+  Default: `BAAI/bge-reranker-v2-m3`
 
 ## Usage
 
-### 1. Download arXiv papers
-
-The crawler uses fixed settings inside [`ArXiv_craw/crawer.py`](ArXiv_craw/crawer.py):
-
-- keyword: `Retrieval Augmented Generation`
-- category: `cs.CL`
-- max results: `100`
-
-Run:
+### 1. Download papers
 
 ```bash
 cd ArXiv_craw
 python crawer.py
 ```
 
-Outputs:
-
-- PDFs in `ArXiv_craw/arxiv_papers_rag/`
-- metadata in `ArXiv_craw/arxiv_papers_rag/metadata_log.jsonl`
-
-### 2. Ingest metadata into PostgreSQL
-
-The ingestion script reads `metadata_log.jsonl` from its current working directory. The repository currently also includes a copied/generated file at `local_paper_db/app/metadata_log.jsonl`.
-
-If you just crawled fresh data, copy the JSONL file or change `METADATA_FILE` in the script.
-
-Run:
+### 2. Ingest embeddings into PostgreSQL
 
 ```bash
 cd local_paper_db/app
 python in.py
 ```
 
-What it does:
+### 3. Search from CLI
 
-- checks Ollama embedding dimension dynamically
-- creates `papers_meta` and `papers_embeddings`
-- skips already ingested `arxiv_id` values
-- batches embedding writes into PostgreSQL
-
-### 3. Query the local RAG system
-
-Run:
+Interactive mode:
 
 ```bash
 cd local_paper_db/app
 python search.py
 ```
 
-Then enter a research question in the terminal. The script will:
+Single-query mode:
 
-- embed the query with Ollama
-- retrieve top `50` candidates from PostgreSQL
-- rerank the candidates and keep top `5`
-- stream the final answer from Ollama
+```bash
+cd local_paper_db/app
+python search.py "What is agentic RAG?"
+```
 
-Enter `q` to exit.
+Both modes still pause at the rewrite-confirmation step. You can:
 
-## Current Data Snapshot
+1. Use the optimized query
+2. Ask the model to improve the rewrite
+3. Use the original question
 
-At the time of writing, the local workspace contains:
+### 4. Run the FastAPI backend
 
-- `100` downloaded PDFs under `ArXiv_craw/arxiv_papers_rag/`
-- `99` metadata rows in `local_paper_db/app/metadata_log.jsonl`
+```bash
+uvicorn backend.main:app --reload
+```
 
-These files are generated artifacts and are ignored by default for Git pushes.
+### 5. Run the React frontend
 
-## Known Limitations
+```bash
+cd frontend
+npm run dev
+```
 
-- Configuration is hardcoded directly in Python files.
-- The crawler, ingestion script, and search script do not share a single config source.
-- `search.py` expects fields such as `summary_for_embedding` and `methodology`, while the crawler currently stores `summary`. Depending on your dataset, you may need to adjust the SQL query or enrich metadata before search.
-- There is no web UI, API server, or automated test suite in the current repository.
-- The repository is aimed at local experimentation, not production deployment.
+Default dev URLs:
 
-## Suggested Improvements
+- Backend: `http://127.0.0.1:8000`
+- Frontend: `http://127.0.0.1:5173`
 
-- Move database and model settings into environment variables.
-- Unify the metadata schema between crawl, ingest, and search.
-- Add a setup script for PostgreSQL/pgvector.
-- Add tests for ingestion and retrieval.
-- Add a small sample dataset for reproducible demos.
+### 6. Production frontend build
 
-## Verification
+```bash
+cd frontend
+npm run build
+```
 
-The Python files below were syntax-checked successfully in the local workspace:
+If `frontend/dist` exists, FastAPI serves the built SPA automatically.
+
+## Notes About Providers
+
+- Ollama is still used for embeddings.
+- Query planning can use Ollama or any OpenAI-compatible API.
+- Final answer generation can use Ollama or any OpenAI-compatible API.
+- Reranking uses the SiliconFlow rerank API instead of local `FlagEmbedding`.
+
+## Main Entry Points
 
 - [`ArXiv_craw/crawer.py`](ArXiv_craw/crawer.py)
 - [`local_paper_db/app/in.py`](local_paper_db/app/in.py)
 - [`local_paper_db/app/search.py`](local_paper_db/app/search.py)
+- [`backend/main.py`](backend/main.py)

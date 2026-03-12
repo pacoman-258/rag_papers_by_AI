@@ -20,6 +20,9 @@ ArXiv_craw/.python-version
 ArXiv_craw/arxiv_papers_rag/
 local_paper_db/app/metadata_log.jsonl
 local_paper_db/app/ingest_error.log
+config/runtime_settings.json
+frontend/node_modules/
+frontend/dist/
 
 # Nested repository metadata
 ArXiv_craw/.git/

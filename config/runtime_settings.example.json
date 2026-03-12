@@ -1,0 +1,28 @@
+{
+  "query_chat": {
+    "provider": "ollama",
+    "model": "qwen3:8b",
+    "base_url": null,
+    "api_key": null
+  },
+  "answer_chat": {
+    "provider": "ollama",
+    "model": "qwen3:8b",
+    "base_url": null,
+    "api_key": null
+  },
+  "embedding": {
+    "api_url": "http://localhost:11434/api",
+    "model": "qwen3-embedding:0.6b"
+  },
+  "retrieval": {
+    "top_k": 50,
+    "top_n": 10,
+    "request_timeout": 120
+  },
+  "rerank": {
+    "base_url": "https://api.siliconflow.cn/v1",
+    "model": "BAAI/bge-reranker-v2-m3",
+    "api_key": null
+  }
+}
