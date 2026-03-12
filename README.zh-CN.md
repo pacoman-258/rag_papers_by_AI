@@ -114,7 +114,7 @@ npm install
 ```
 
 ## 数据库准备
-
+推荐使用docker一键部署
 入库脚本会自动建表，但 PostgreSQL 仍需要先启用扩展：
 
 ```sql
