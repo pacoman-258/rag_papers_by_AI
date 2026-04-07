@@ -20,8 +20,8 @@ const translations = {
     storedKeyPresent: "Stored key present",
     yes: "yes",
     no: "no",
-    clearStoredKey: "Clear Stored Key",
-    keepStoredKey: "Keep Stored Key",
+    clearStoredKey: "Clear stored key",
+    keepStoredKey: "Keep stored key",
     queryChat: "Query Chat",
     answerChat: "Answer Chat",
     embedding: "Embedding",
@@ -35,7 +35,7 @@ const translations = {
     topN: "Top N",
     timeout: "Timeout",
     researchQuestion: "Research Question",
-    questionPlaceholder: "Ask about a paper topic, method, benchmark, or trend.",
+    questionPlaceholder: "Ask about a topic, author, category, or recent trend.",
     generateQueryPlan: "Generate Query Plan",
     working: "Working...",
     rewriteConfirmation: "Rewrite Confirmation",
@@ -43,18 +43,24 @@ const translations = {
     intentSummary: "Intent Summary",
     retrievalQuery: "Retrieval Query",
     keywords: "Keywords",
+    timeWindow: "Time Window",
+    authors: "Authors",
+    categories: "Categories",
+    sortHint: "Sort Hint",
+    corpusLatestDate: "Corpus Latest Date",
     none: "(none)",
     useRewrite: "Use Rewrite",
     useOriginal: "Use Original",
     improvePrompt: "Tell the model what to improve",
-    improvePlaceholder: "For example: focus more on agent evaluation, or make the query broader.",
+    improvePlaceholder: "For example: narrow it to cs.IR, or focus on the latest 12 months.",
     improveRewrite: "Improve Rewrite",
-    topPapers: "Top 10 Papers",
+    topPapers: "Top Papers",
     answerStream: "Answer Stream",
-    answerPlaceholder: "Answer will stream here.",
+    answerPlaceholder: "The answer will stream here.",
     databaseOverview: "Database Overview",
     papers: "Papers",
     embeddings: "Embeddings",
+    latestIndexedDate: "Latest Indexed Date",
     startIngest: "Start Ingest",
     status: "Status",
     idle: "idle",
@@ -68,11 +74,15 @@ const translations = {
     optionalOllamaBaseUrl: "Optional Ollama base URL",
     openaiBaseUrl: "https://api.example.com/v1",
     keepStoredKeyPlaceholder: "Leave blank to keep the stored key",
-    language: "Language"
+    language: "Language",
+    appliedConstraints: "Applied Constraints",
+    implicitLatest: "Implicit latest window",
+    publishedDate: "Published",
+    primaryCategory: "Primary Category"
   },
   zh: {
     appTitle: "FastAPI + React 可视化工作台",
-    searchTab: "搜索工作区",
+    searchTab: "搜索工作台",
     ingestTab: "入库管理",
     saveDefaults: "保存默认配置",
     defaultsSaved: "默认配置已保存。",
@@ -86,11 +96,11 @@ const translations = {
     model: "模型",
     baseUrl: "接口地址",
     apiKey: "API Key",
-    storedKeyPresent: "已存储密钥",
+    storedKeyPresent: "已保存密钥",
     yes: "是",
     no: "否",
-    clearStoredKey: "清除已存储密钥",
-    keepStoredKey: "保留已存储密钥",
+    clearStoredKey: "清除已保存密钥",
+    keepStoredKey: "保留已保存密钥",
     queryChat: "Query Rewrite 模型",
     answerChat: "最终回答模型",
     embedding: "Embedding",
@@ -102,9 +112,9 @@ const translations = {
     rerankApiKey: "重排 API Key",
     topK: "粗排 Top K",
     topN: "精排 Top N",
-    timeout: "超时时间",
+    timeout: "超时",
     researchQuestion: "研究问题",
-    questionPlaceholder: "输入你想检索的研究主题、方法、基准或趋势。",
+    questionPlaceholder: "输入主题、作者、分类，或者“最新的 XX 研究进展”这类问题。",
     generateQueryPlan: "生成查询改写方案",
     working: "处理中...",
     rewriteConfirmation: "改写确认",
@@ -112,18 +122,24 @@ const translations = {
     intentSummary: "意图摘要",
     retrievalQuery: "检索语句",
     keywords: "关键词",
+    timeWindow: "时间范围",
+    authors: "作者",
+    categories: "分类",
+    sortHint: "排序偏好",
+    corpusLatestDate: "语料库最新日期",
     none: "（无）",
     useRewrite: "使用改写结果",
     useOriginal: "直接用原句",
     improvePrompt: "告诉模型还需要怎么改",
-    improvePlaceholder: "例如：更关注 agent 评测，或者把查询写得更宽一些。",
+    improvePlaceholder: "例如：限定成 cs.IR，或者更关注最近 12 个月。",
     improveRewrite: "继续优化改写",
-    topPapers: "前 10 篇论文",
+    topPapers: "命中论文",
     answerStream: "回答流",
     answerPlaceholder: "最终回答会显示在这里。",
     databaseOverview: "数据库概览",
     papers: "论文数",
     embeddings: "向量数",
+    latestIndexedDate: "最新入库日期",
     startIngest: "开始入库",
     status: "状态",
     idle: "空闲",
@@ -136,8 +152,12 @@ const translations = {
     failedStartIngest: "启动入库失败。",
     optionalOllamaBaseUrl: "可选的 Ollama 接口地址",
     openaiBaseUrl: "https://api.example.com/v1",
-    keepStoredKeyPlaceholder: "留空表示继续使用已存储密钥",
-    language: "语言"
+    keepStoredKeyPlaceholder: "留空表示继续使用已保存密钥",
+    language: "语言",
+    appliedConstraints: "实际使用的约束",
+    implicitLatest: "隐式最新时间窗",
+    publishedDate: "发布日期",
+    primaryCategory: "主分类"
   }
 };
 
@@ -203,6 +223,55 @@ function buildRetrievalText(plan) {
   return `${plan.retrieval_query_en}; keywords: ${plan.keywords_en.join(", ")}`;
 }
 
+function formatTimeWindow(constraints, t) {
+  if (!constraints) {
+    return t("none");
+  }
+  if (constraints.published_after && constraints.published_before) {
+    return `${constraints.published_after} ~ ${constraints.published_before}`;
+  }
+  if (constraints.published_after) {
+    return `>= ${constraints.published_after}`;
+  }
+  if (constraints.published_before) {
+    return `<= ${constraints.published_before}`;
+  }
+  return t("none");
+}
+
+function ConstraintBlock({ constraints, corpusLatestDate, t }) {
+  const authors = constraints?.authors?.length ? constraints.authors.join(", ") : t("none");
+  const categories = constraints?.primary_categories?.length ? constraints.primary_categories.join(", ") : t("none");
+  return (
+    <div className="detail-grid">
+      <div>
+        <strong>{t("timeWindow")}</strong>
+        <p>{formatTimeWindow(constraints, t)}</p>
+      </div>
+      <div>
+        <strong>{t("authors")}</strong>
+        <p>{authors}</p>
+      </div>
+      <div>
+        <strong>{t("categories")}</strong>
+        <p>{categories}</p>
+      </div>
+      <div>
+        <strong>{t("sortHint")}</strong>
+        <p>{constraints?.sort_hint || "relevance"}</p>
+      </div>
+      <div>
+        <strong>{t("corpusLatestDate")}</strong>
+        <p>{corpusLatestDate || t("none")}</p>
+      </div>
+      <div>
+        <strong>{t("implicitLatest")}</strong>
+        <p>{constraints?.is_implicit_latest ? t("yes") : t("no")}</p>
+      </div>
+    </div>
+  );
+}
+
 function EventLog({ lines, t }) {
   return (
     <div className="log-panel">
@@ -218,6 +287,7 @@ function PaperList({ papers, t }) {
   if (!papers.length) {
     return <p className="muted">{t("noPapers")}</p>;
   }
+
   return (
     <div className="paper-list">
       {papers.map((paper, index) => (
@@ -228,6 +298,13 @@ function PaperList({ papers, t }) {
           <p className="paper-score">
             {t("vector")}: {paper.initial_score.toFixed(4)} | {t("rerank")}: {paper.rerank_score.toFixed(4)}
           </p>
+          <div className="tag-list">
+            {paper.published_date ? <span className="tag">{`${t("publishedDate")}: ${paper.published_date}`}</span> : null}
+            {paper.primary_category ? (
+              <span className="tag">{`${t("primaryCategory")}: ${paper.primary_category}`}</span>
+            ) : null}
+            {paper.authors?.length ? <span className="tag">{`${t("authors")}: ${paper.authors.join(", ")}`}</span> : null}
+          </div>
           <p>{paper.text}</p>
           <p className="muted">
             {t("method")}: {paper.method}
@@ -297,6 +374,8 @@ export default function App() {
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [appliedConstraints, setAppliedConstraints] = useState(null);
+  const [corpusLatestDate, setCorpusLatestDate] = useState(null);
   const [ingestStatus, setIngestStatus] = useState(null);
   const [ingestLogs, setIngestLogs] = useState([]);
   const answerSourceRef = useRef(null);
@@ -312,24 +391,6 @@ export default function App() {
   );
   const runtimePayload = useMemo(() => (settings ? buildRuntimeRequest(settings) : null), [settings]);
 
-  async function loadConfig() {
-    const response = await fetch("/api/config");
-    const data = await response.json();
-    setSettings(buildDefaultState(data));
-  }
-
-  async function loadIngestStatus() {
-    const response = await fetch("/api/ingest/status");
-    const data = await response.json();
-    setIngestStatus(data);
-    if (data.recent_logs) {
-      setIngestLogs(data.recent_logs);
-    }
-    if (data.job_id && data.status === "running") {
-      startIngestStream(data.job_id);
-    }
-  }
-
   useEffect(() => {
     window.localStorage.setItem("app_language", language);
     document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
@@ -344,6 +405,22 @@ export default function App() {
       ingestSourceRef.current?.close();
     };
   }, []);
+
+  async function loadConfig() {
+    const response = await fetch("/api/config");
+    const data = await response.json();
+    setSettings(buildDefaultState(data));
+  }
+
+  async function loadIngestStatus() {
+    const response = await fetch("/api/ingest/status");
+    const data = await response.json();
+    setIngestStatus(data);
+    setIngestLogs(data.recent_logs || []);
+    if (data.job_id && data.status === "running") {
+      startIngestStream(data.job_id);
+    }
+  }
 
   function updateNested(section, key, value) {
     setSettings((current) => ({
@@ -388,6 +465,8 @@ export default function App() {
       setPapers([]);
       setWarnings([]);
       setAnswer("");
+      setAppliedConstraints(null);
+      setCorpusLatestDate(data.corpus_latest_date || null);
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -418,6 +497,7 @@ export default function App() {
       }
       setQueryPlan(data);
       setFeedback("");
+      setCorpusLatestDate(data.corpus_latest_date || null);
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -436,11 +516,10 @@ export default function App() {
     source.addEventListener("complete", () => {
       source.close();
     });
-    source.addEventListener("error", (event) => {
+    source.onerror = () => {
       source.close();
-      const payload = event?.data ? JSON.parse(event.data) : null;
-      setMessage(payload?.message || t("answerStreamFailed"));
-    });
+      setMessage(t("answerStreamFailed"));
+    };
   }
 
   async function executeSearch(retrievalText, confirmedPlan) {
@@ -464,6 +543,8 @@ export default function App() {
       }
       setPapers(data.papers);
       setWarnings(data.warnings || []);
+      setAppliedConstraints(data.applied_constraints || null);
+      setCorpusLatestDate(data.corpus_latest_date || null);
       streamAnswer(data.search_id);
     } catch (error) {
       setMessage(String(error));
@@ -492,6 +573,9 @@ export default function App() {
       source.close();
       loadIngestStatus().catch((error) => setMessage(String(error)));
     });
+    source.onerror = () => {
+      source.close();
+    };
   }
 
   async function startIngest() {
@@ -646,9 +730,7 @@ export default function App() {
       </section>
 
       <div className="toolbar">
-        <button onClick={() => saveDefaults().catch((error) => setMessage(String(error)))}>
-          {t("saveDefaults")}
-        </button>
+        <button onClick={() => saveDefaults().catch((error) => setMessage(String(error)))}>{t("saveDefaults")}</button>
       </div>
 
       {activeTab === "search" ? (
@@ -667,7 +749,6 @@ export default function App() {
               {busy ? t("working") : t("generateQueryPlan")}
             </button>
           </div>
-
           {queryPlan ? (
             <section className="rewrite-card">
               <h3>{t("rewriteConfirmation")}</h3>
@@ -683,11 +764,16 @@ export default function App() {
               <p>
                 <strong>{t("keywords")}:</strong> {queryPlan.keywords_en.join(", ") || t("none")}
               </p>
+              <ConstraintBlock
+                constraints={queryPlan.constraints}
+                corpusLatestDate={queryPlan.corpus_latest_date}
+                t={t}
+              />
               <div className="action-row">
                 <button onClick={() => executeSearch(buildRetrievalText(queryPlan), queryPlan)} disabled={busy}>
                   {t("useRewrite")}
                 </button>
-                <button className="secondary" onClick={() => executeSearch(question, null)} disabled={busy}>
+                <button className="secondary" onClick={() => executeSearch(question, queryPlan)} disabled={busy}>
                   {t("useOriginal")}
                 </button>
               </div>
@@ -703,6 +789,13 @@ export default function App() {
               <button className="secondary" onClick={refinePlan} disabled={busy || !feedback.trim()}>
                 {t("improveRewrite")}
               </button>
+            </section>
+          ) : null}
+
+          {appliedConstraints ? (
+            <section>
+              <h3>{t("appliedConstraints")}</h3>
+              <ConstraintBlock constraints={appliedConstraints} corpusLatestDate={corpusLatestDate} t={t} />
             </section>
           ) : null}
 
@@ -732,6 +825,9 @@ export default function App() {
               <p className="muted">
                 {t("papers")}: {ingestStatus?.database_overview?.paper_count ?? "-"} | {t("embeddings")}:{" "}
                 {ingestStatus?.database_overview?.embedding_count ?? "-"}
+              </p>
+              <p className="muted">
+                {t("latestIndexedDate")}: {ingestStatus?.database_overview?.latest_published_date || t("none")}
               </p>
             </div>
             <button onClick={() => startIngest().catch((error) => setMessage(String(error)))}>

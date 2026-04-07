@@ -16,6 +16,7 @@ from local_paper_db.app.search_service import (
     RankedPaper,
     build_retrieval_text,
     execute_search,
+    format_constraints_summary,
     get_env_default_settings,
     plan_query,
     revise_query_plan,
@@ -25,12 +26,18 @@ from local_paper_db.app.search_service import (
 
 
 def print_query_plan(original_query: str, plan: QueryPlan) -> None:
+    constraint_summary = format_constraints_summary(plan.constraints)
     print("\n[Confirmation] Query rewrite candidate")
     print("=" * 60)
     print(f"Original question: {original_query}")
     print(f"Intent summary: {plan.intent_summary}")
     print(f"Retrieval query: {plan.retrieval_query_en}")
     print("Keywords: " + (", ".join(plan.keywords_en) if plan.keywords_en else "(none)"))
+    print(f"Time window: {constraint_summary['time_window']}")
+    print(f"Authors: {constraint_summary['authors']}")
+    print(f"Categories: {constraint_summary['categories']}")
+    print(f"Sort hint: {constraint_summary['sort_hint']}")
+    print(f"Corpus latest date: {plan.corpus_latest_date or '(unknown)'}")
     print("=" * 60)
 
 
@@ -46,7 +53,7 @@ def confirm_query_plan(original_query: str, initial_plan: QueryPlan, settings) -
             choice = input("Choose 1, 2, or 3: ").strip()
         except EOFError:
             print("\n[Confirmation] No input available. Falling back to the original question.")
-            return original_query, None
+            return original_query, current_plan
 
         if choice == "1":
             return build_retrieval_text(current_plan), current_plan
@@ -62,17 +69,24 @@ def confirm_query_plan(original_query: str, initial_plan: QueryPlan, settings) -
                 print(f"[Planning] Rewrite revision failed. Keeping the current candidate. {exc}")
             continue
         if choice == "3":
-            return original_query, None
+            return original_query, current_plan
         print("[Confirmation] Invalid choice. Please enter 1, 2, or 3.")
 
 
 def print_selected_papers(papers: list[RankedPaper]) -> None:
     print("\n[Rerank] Selected papers")
     for index, paper in enumerate(papers, start=1):
+        meta_bits = []
+        if paper.published_date:
+            meta_bits.append(paper.published_date)
+        if paper.primary_category:
+            meta_bits.append(paper.primary_category)
         print(
             f"{index}. [rerank={paper.rerank_score:.4f} | vector={paper.initial_score:.4f}] "
             f"{paper.title}"
         )
+        if meta_bits:
+            print("   " + " | ".join(meta_bits))
 
 
 def search_once(query: str) -> None:
@@ -92,6 +106,18 @@ def search_once(query: str) -> None:
 
     print(f"[Retrieval] Embedding query with model: {settings.embedding.model}")
     execution = execute_search(query, retrieval_text, query_plan, settings)
+    applied_summary = format_constraints_summary(execution.applied_constraints)
+    print("[Retrieval] Applied constraints")
+    print(
+        "   time={time} | authors={authors} | categories={categories} | corpus_latest={latest}".format(
+            time=applied_summary["time_window"],
+            authors=applied_summary["authors"],
+            categories=applied_summary["categories"],
+            latest=execution.corpus_latest_date or "(unknown)",
+        )
+    )
+    for warning in execution.warnings:
+        print(f"[Warning] {warning}")
     print_selected_papers(execution.papers)
 
     print("\n[Generation] Answer")

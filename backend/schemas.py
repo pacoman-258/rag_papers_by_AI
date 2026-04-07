@@ -63,11 +63,22 @@ class RuntimeSettingsResponse(BaseModel):
     rerank: RerankConfigResponse
 
 
+class RetrievalConstraintsModel(BaseModel):
+    published_after: str | None = None
+    published_before: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    primary_categories: list[str] = Field(default_factory=list)
+    sort_hint: Literal["relevance", "latest"] = "relevance"
+    is_implicit_latest: bool = False
+
+
 class QueryPlanModel(BaseModel):
     answer_language: Literal["zh", "en"]
     intent_summary: str
     retrieval_query_en: str
     keywords_en: list[str]
+    constraints: RetrievalConstraintsModel = Field(default_factory=RetrievalConstraintsModel)
+    corpus_latest_date: str | None = None
 
 
 class SearchPlanRequest(BaseModel):
@@ -96,6 +107,9 @@ class RankedPaperResponse(BaseModel):
     method: str
     initial_score: float
     rerank_score: float
+    authors: list[str] = Field(default_factory=list)
+    published_date: str | None = None
+    primary_category: str | None = None
 
 
 class SearchExecuteResponse(BaseModel):
@@ -104,6 +118,8 @@ class SearchExecuteResponse(BaseModel):
     retrieval_text: str
     papers: list[RankedPaperResponse]
     warnings: list[str]
+    applied_constraints: RetrievalConstraintsModel
+    corpus_latest_date: str | None = None
 
 
 class IngestJobResponse(BaseModel):

@@ -22,6 +22,7 @@ from backend.ingest_manager import IngestManager
 from backend.schemas import (
     IngestJobResponse,
     QueryPlanModel,
+    RetrievalConstraintsModel,
     SearchExecuteRequest,
     SearchExecuteResponse,
     SearchPlanRequest,
@@ -32,12 +33,12 @@ from backend.schemas import (
 )
 from local_paper_db.app.search_service import (
     QueryPlan,
+    RetrievalConstraints,
     SearchExecution,
     execute_search,
     get_database_overview,
     plan_query,
     revise_query_plan,
-    serialize_runtime_settings,
     stream_answer_tokens,
     validate_runtime_settings,
 )
@@ -63,6 +64,19 @@ ingest_manager = IngestManager(REPO_ROOT)
 search_sessions: dict[str, tuple[SearchExecution, Any]] = {}
 
 
+def constraints_model_to_dataclass(model: RetrievalConstraintsModel | None) -> RetrievalConstraints:
+    if model is None:
+        return RetrievalConstraints()
+    return RetrievalConstraints(
+        published_after=model.published_after,
+        published_before=model.published_before,
+        authors=list(model.authors),
+        primary_categories=list(model.primary_categories),
+        sort_hint=model.sort_hint,
+        is_implicit_latest=model.is_implicit_latest,
+    )
+
+
 def query_plan_model_to_dataclass(model: QueryPlanModel | None) -> QueryPlan | None:
     if model is None:
         return None
@@ -71,6 +85,8 @@ def query_plan_model_to_dataclass(model: QueryPlanModel | None) -> QueryPlan | N
         intent_summary=model.intent_summary,
         retrieval_query_en=model.retrieval_query_en,
         keywords_en=list(model.keywords_en),
+        constraints=constraints_model_to_dataclass(model.constraints),
+        corpus_latest_date=model.corpus_latest_date,
     )
 
 
@@ -127,6 +143,8 @@ def api_execute_search(payload: SearchExecuteRequest) -> SearchExecuteResponse:
         retrieval_text=execution.retrieval_text,
         papers=[RankedPaperResponse(**asdict(paper)) for paper in execution.papers],
         warnings=execution.warnings,
+        applied_constraints=RetrievalConstraintsModel(**asdict(execution.applied_constraints)),
+        corpus_latest_date=execution.corpus_latest_date,
     )
 
 

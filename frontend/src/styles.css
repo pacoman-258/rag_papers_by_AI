@@ -141,9 +141,35 @@ select {
   gap: 12px;
 }
 
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.detail-grid p {
+  margin: 6px 0 0;
+}
+
 .paper-card {
   border-top: 1px solid rgba(127, 86, 45, 0.12);
   padding-top: 12px;
+}
+
+.tag-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.tag {
+  border-radius: 999px;
+  background: #efe1cf;
+  color: #5f4730;
+  padding: 4px 10px;
+  font-size: 0.92rem;
 }
 
 .paper-score,
