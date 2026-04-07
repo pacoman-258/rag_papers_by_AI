@@ -102,7 +102,24 @@ For safety, commit only [`config/runtime_settings.example.json`](config/runtime_
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+```
+
+Activate the virtual environment:
+
+```bash
+# macOS / Linux
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# Windows cmd.exe
+.venv\Scripts\activate.bat
+```
+
+Then install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
@@ -232,6 +249,13 @@ npm run build
 ```
 
 If `frontend/dist` exists, FastAPI serves the built SPA automatically.
+
+## macOS Notes
+
+- The codebase is mostly cross-platform. The main platform-sensitive services are PostgreSQL + `pgvector`, Ollama, Python, and Node.js.
+- New crawler runs now write `pdf_local_path` using portable `/` separators, so metadata generated on macOS, Linux, and Windows stays consistent.
+- During ingestion, existing metadata with Windows-style `\` separators is normalized automatically before being written to PostgreSQL.
+- If you migrate an existing Windows dataset to macOS, re-ingesting the JSONL metadata is recommended so the stored file paths are normalized.
 
 ## Notes About Providers
 

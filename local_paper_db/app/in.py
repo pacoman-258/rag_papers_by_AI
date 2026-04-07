@@ -47,6 +47,13 @@ def resolve_metadata_path() -> Path:
     return SCRIPT_DIR / metadata_path
 
 
+def normalize_pdf_local_path(raw_path: object) -> str | None:
+    if not isinstance(raw_path, str):
+        return None
+    normalized = raw_path.strip().replace("\\", "/")
+    return normalized or None
+
+
 try:
     db_pool = pool.SimpleConnectionPool(minconn=1, maxconn=MAX_WORKERS + 2, **DB_CONFIG)
 except Exception as exc:  # pragma: no cover
@@ -169,6 +176,9 @@ def process_single_paper(line_data: str):
         meta = json.loads(line_data)
         arxiv_id = meta.get("arxiv_id")
         title = meta.get("title")
+        normalized_pdf_local_path = normalize_pdf_local_path(meta.get("pdf_local_path"))
+        normalized_meta = dict(meta)
+        normalized_meta["pdf_local_path"] = normalized_pdf_local_path
         text_to_embed = meta.get("summary") or title or ""
         if not text_to_embed:
             return False, None, f"Skipped {arxiv_id}: no text to embed."
@@ -190,8 +200,8 @@ def process_single_paper(line_data: str):
                 "authors": meta.get("authors", []),
                 "published_date": meta.get("published_date"),
                 "primary_category": meta.get("primary_category"),
-                "pdf_local_path": meta.get("pdf_local_path"),
-                "extracted_insights": Json(meta),
+                "pdf_local_path": normalized_pdf_local_path,
+                "extracted_insights": Json(normalized_meta),
             },
             "vector": {
                 "embedding_type": "summary",

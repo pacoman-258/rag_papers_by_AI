@@ -45,7 +45,7 @@ FastAPI + React 工作台包含两个主区域：
 - `Ingest Manager`
   可在前端启动 `in.py` 入库任务、查看数据库概览，并通过 SSE 查看实时日志。
 
-前端还支持中英文界面切换，并会在浏览器中记住上一次选择的界面语言。
+前端支持中英文界面切换，并会在浏览器中记住上一次选择的界面语言。
 
 配置优先级：
 
@@ -53,7 +53,7 @@ FastAPI + React 工作台包含两个主区域：
 2. `config/runtime_settings.json`
 3. 环境变量默认值
 
-前端不会回显明文 API Key，后端只返回 `has_api_key: true/false`。
+前端不会回显明文 API Key，后端只返回 `has_api_key: true/false`。  
 出于安全考虑，仓库只提交 [`config/runtime_settings.example.json`](config/runtime_settings.example.json)，真实的 `config/runtime_settings.json` 应保留在本地。
 
 ## 目录结构
@@ -91,7 +91,7 @@ FastAPI + React 工作台包含两个主区域：
 - Node.js `20+`
 - 已安装 `pgvector` 的 PostgreSQL
 - 运行中的 Ollama，默认地址 `http://localhost:11434`
-- 与 `OLLAMA_EMBED_MODEL` 对应的 embedding 模型
+- 一个与 `OLLAMA_EMBED_MODEL` 对应的 embedding 模型
 - 可选：本地 Ollama chat 模型
 - 若要使用 API rerank：SiliconFlow API Key
 - 若要使用远程 chat model：OpenAI-compatible API 凭证
@@ -102,7 +102,24 @@ FastAPI + React 工作台包含两个主区域：
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+```
+
+激活虚拟环境：
+
+```bash
+# macOS / Linux
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# Windows cmd.exe
+.venv\Scripts\activate.bat
+```
+
+然后安装依赖：
+
+```bash
 pip install -r requirements.txt
 ```
 
@@ -232,6 +249,13 @@ npm run build
 ```
 
 如果 `frontend/dist` 存在，FastAPI 会自动托管构建后的 SPA。
+
+## macOS 说明
+
+- 代码主体已经基本跨平台，真正依赖平台的是 PostgreSQL + `pgvector`、Ollama、Python 和 Node.js 的本地安装。
+- 新版抓取脚本会把 `pdf_local_path` 统一写成使用 `/` 分隔符的可移植路径，便于在 macOS、Linux 和 Windows 之间共享元数据。
+- 入库时会自动把旧 metadata 中的 Windows 风格 `\` 路径规范化后再写入 PostgreSQL。
+- 如果你要把现有 Windows 数据迁到 macOS，建议至少重新执行一次 metadata 入库，这样数据库中的本地路径会被清洗成统一格式。
 
 ## Provider 说明
 
