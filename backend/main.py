@@ -18,15 +18,31 @@ from backend.config_store import (
     runtime_settings_to_response,
     save_runtime_settings,
 )
+from backend.live2d_service import (
+    generate_live2d_reply,
+    get_live2d_audio,
+    get_live2d_bootstrap_payload,
+    synthesize_live2d_tts,
+)
 from backend.ingest_manager import IngestManager
 from backend.schemas import (
     IngestJobResponse,
+    Live2DBootstrapResponse,
+    Live2DChatRequest,
+    Live2DChatResponse,
+    Live2DTTSRequest,
+    Live2DTTSResponse,
     QueryPlanModel,
     RetrievalConstraintsModel,
+    TargetPaperModel,
     SearchExecuteRequest,
     SearchExecuteResponse,
     SearchPlanRequest,
     SearchRefineRequest,
+    TraceExecuteRequest,
+    TraceExecuteResponse,
+    TraceResolveRequest,
+    TraceResolveResponse,
     RankedPaperResponse,
     RuntimeSettingsRequest,
     RuntimeSettingsResponse,
@@ -35,17 +51,25 @@ from local_paper_db.app.search_service import (
     QueryPlan,
     RetrievalConstraints,
     SearchExecution,
+    TargetPaper,
+    TraceExecution,
     execute_search,
+    execute_trace,
+    fetch_target_paper_by_id,
     get_database_overview,
+    infer_user_language,
     plan_query,
+    resolve_target_paper,
     revise_query_plan,
     stream_answer_tokens,
+    stream_trace_answer_tokens,
     validate_runtime_settings,
 )
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
+FRONTEND_LIVE2D_DIST = FRONTEND_DIST / "live2d"
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -62,6 +86,7 @@ app.add_middleware(
 
 ingest_manager = IngestManager(REPO_ROOT)
 search_sessions: dict[str, tuple[SearchExecution, Any]] = {}
+trace_sessions: dict[str, tuple[TraceExecution, Any]] = {}
 
 
 def constraints_model_to_dataclass(model: RetrievalConstraintsModel | None) -> RetrievalConstraints:
@@ -87,6 +112,18 @@ def query_plan_model_to_dataclass(model: QueryPlanModel | None) -> QueryPlan | N
         keywords_en=list(model.keywords_en),
         constraints=constraints_model_to_dataclass(model.constraints),
         corpus_latest_date=model.corpus_latest_date,
+    )
+
+
+def target_paper_to_model(target: TargetPaper) -> TargetPaperModel:
+    return TargetPaperModel(
+        id=target.id,
+        arxiv_id=target.arxiv_id,
+        title=target.title,
+        summary=target.summary,
+        authors=list(target.authors),
+        published_date=target.published_date,
+        primary_category=target.primary_category,
     )
 
 
@@ -148,6 +185,43 @@ def api_execute_search(payload: SearchExecuteRequest) -> SearchExecuteResponse:
     )
 
 
+@app.post("/api/trace/resolve-target", response_model=TraceResolveResponse)
+def api_trace_resolve_target(payload: TraceResolveRequest) -> TraceResolveResponse:
+    status, resolved_target, candidates, message = resolve_target_paper(payload.query)
+    return TraceResolveResponse(
+        status=status,
+        query=payload.query,
+        resolved_target=target_paper_to_model(resolved_target) if resolved_target else None,
+        candidates=[target_paper_to_model(candidate) for candidate in candidates],
+        message=message,
+    )
+
+
+@app.post("/api/trace/execute", response_model=TraceExecuteResponse)
+def api_trace_execute(payload: TraceExecuteRequest) -> TraceExecuteResponse:
+    settings = merge_runtime_settings(load_runtime_settings(), payload.settings)
+    validate_runtime_settings(settings)
+    target_paper = fetch_target_paper_by_id(payload.target_id)
+    if target_paper is None:
+        raise HTTPException(status_code=404, detail="Target paper not found.")
+    answer_language = payload.answer_language or infer_user_language(target_paper.title)
+    execution = execute_trace(
+        target_paper=target_paper,
+        settings=settings,
+        answer_language=answer_language,
+    )
+    trace_id = uuid.uuid4().hex
+    trace_sessions[trace_id] = (execution, settings)
+    return TraceExecuteResponse(
+        trace_id=trace_id,
+        answer_language=execution.answer_language,
+        retrieval_text=execution.retrieval_text,
+        target_paper=target_paper_to_model(execution.target_paper),
+        papers=[RankedPaperResponse(**asdict(paper)) for paper in execution.papers],
+        warnings=execution.warnings,
+    )
+
+
 @app.get("/api/search/{search_id}/answer/stream")
 def api_stream_answer(search_id: str) -> StreamingResponse:
     session = search_sessions.get(search_id)
@@ -162,6 +236,26 @@ def api_stream_answer(search_id: str) -> StreamingResponse:
             for token in stream_answer_tokens(execution, settings):
                 yield sse_event("token", {"content": token})
             yield sse_event("complete", {"search_id": search_id})
+        except Exception as exc:
+            yield sse_event("error", {"message": str(exc)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/trace/{trace_id}/answer/stream")
+def api_trace_stream_answer(trace_id: str) -> StreamingResponse:
+    session = trace_sessions.get(trace_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Trace session not found.")
+
+    execution, settings = session
+
+    def event_generator():
+        yield sse_event("start", {"trace_id": trace_id})
+        try:
+            for token in stream_trace_answer_tokens(execution, settings):
+                yield sse_event("token", {"content": token})
+            yield sse_event("complete", {"trace_id": trace_id})
         except Exception as exc:
             yield sse_event("error", {"message": str(exc)})
 
@@ -246,8 +340,51 @@ def api_ingest_logs(job_id: str) -> StreamingResponse:
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@app.get("/api/live2d/bootstrap", response_model=Live2DBootstrapResponse)
+def api_live2d_bootstrap() -> Live2DBootstrapResponse:
+    return Live2DBootstrapResponse(**get_live2d_bootstrap_payload())
+
+
+@app.post("/api/live2d/chat", response_model=Live2DChatResponse)
+def api_live2d_chat(payload: Live2DChatRequest) -> Live2DChatResponse:
+    settings = load_runtime_settings()
+    validate_runtime_settings(settings)
+    bootstrap = get_live2d_bootstrap_payload()
+    response = generate_live2d_reply(
+        source=payload.source,
+        message=payload.message,
+        history=[item.model_dump() for item in payload.history],
+        answer_context=payload.answer_context,
+        settings=settings,
+        available_expressions=list(bootstrap["available_expressions"]),
+    )
+    return Live2DChatResponse(**response)
+
+
+@app.post("/api/live2d/tts", response_model=Live2DTTSResponse)
+async def api_live2d_tts(payload: Live2DTTSRequest) -> Live2DTTSResponse:
+    result = await synthesize_live2d_tts(
+        text=payload.text,
+        voice=payload.voice,
+        rate=payload.rate,
+    )
+    return Live2DTTSResponse(
+        audio_url=result["audio_url"],
+        duration_ms=result["duration_ms"],
+        media_type=result["media_type"],
+    )
+
+
+@app.get("/api/live2d/audio/{file_id}")
+def api_live2d_audio(file_id: str) -> FileResponse:
+    path, media_type = get_live2d_audio(file_id)
+    return FileResponse(path, media_type=media_type)
+
+
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+    if FRONTEND_LIVE2D_DIST.exists():
+        app.mount("/live2d", StaticFiles(directory=FRONTEND_LIVE2D_DIST), name="live2d")
 
     @app.get("/")
     def root() -> FileResponse:

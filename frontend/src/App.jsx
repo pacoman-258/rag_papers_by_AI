@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Component, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 const translations = {
   en: {
     appTitle: "FastAPI + React Workbench",
     searchTab: "Search Workspace",
     ingestTab: "Ingest Manager",
+    qaMode: "QA",
+    pstMode: "PST",
     saveDefaults: "Save Defaults",
     defaultsSaved: "Defaults saved.",
     loading: "Loading...",
     noLogs: "No logs yet.",
     noPapers: "No papers selected yet.",
+    noCandidates: "No target candidates.",
     vector: "Vector",
     rerank: "Rerank",
     method: "Method",
@@ -55,7 +59,9 @@ const translations = {
     improvePlaceholder: "For example: narrow it to cs.IR, or focus on the latest 12 months.",
     improveRewrite: "Improve Rewrite",
     topPapers: "Top Papers",
+    priorPaperCandidates: "Candidate Prior Papers",
     answerStream: "Answer Stream",
+    traceExplanation: "PST Explanation",
     answerPlaceholder: "The answer will stream here.",
     databaseOverview: "Database Overview",
     papers: "Papers",
@@ -65,10 +71,13 @@ const translations = {
     status: "Status",
     idle: "idle",
     pleaseEnterQuestion: "Please enter a question.",
+    pleaseEnterTarget: "Please enter an arXiv ID or title.",
     failedSaveDefaults: "Failed to save defaults.",
     failedGeneratePlan: "Failed to generate a query plan.",
     failedRefinePlan: "Failed to refine the query plan.",
     failedExecuteSearch: "Failed to execute search.",
+    failedResolveTarget: "Failed to resolve the target paper.",
+    failedExecuteTrace: "Failed to execute PST tracing.",
     answerStreamFailed: "Answer stream failed.",
     failedStartIngest: "Failed to start ingest.",
     optionalOllamaBaseUrl: "Optional Ollama base URL",
@@ -78,17 +87,30 @@ const translations = {
     appliedConstraints: "Applied Constraints",
     implicitLatest: "Implicit latest window",
     publishedDate: "Published",
-    primaryCategory: "Primary Category"
+    primaryCategory: "Primary Category",
+    targetPaperQuery: "Target Paper",
+    targetPaperPlaceholder: "Enter an arXiv ID or paper title.",
+    resolveTargetPaper: "Resolve Target Paper",
+    targetPaperCard: "Target Paper",
+    candidatePapers: "Choose Target Paper",
+    useThisPaper: "Use This Paper",
+    arxivId: "arXiv ID",
+    summary: "Summary",
+    runPst: "Run PST-lite",
+    candidateNotice: "Candidate prior papers, not verified citations."
   },
   zh: {
     appTitle: "FastAPI + React 可视化工作台",
     searchTab: "搜索工作台",
     ingestTab: "入库管理",
+    qaMode: "QA",
+    pstMode: "PST",
     saveDefaults: "保存默认配置",
     defaultsSaved: "默认配置已保存。",
     loading: "加载中...",
     noLogs: "暂时还没有日志。",
     noPapers: "还没有选中的论文。",
+    noCandidates: "没有候选目标论文。",
     vector: "向量分",
     rerank: "重排分",
     method: "方法",
@@ -134,7 +156,9 @@ const translations = {
     improvePlaceholder: "例如：限定成 cs.IR，或者更关注最近 12 个月。",
     improveRewrite: "继续优化改写",
     topPapers: "命中论文",
+    priorPaperCandidates: "候选先驱论文",
     answerStream: "回答流",
+    traceExplanation: "PST 解释",
     answerPlaceholder: "最终回答会显示在这里。",
     databaseOverview: "数据库概览",
     papers: "论文数",
@@ -144,10 +168,13 @@ const translations = {
     status: "状态",
     idle: "空闲",
     pleaseEnterQuestion: "请先输入问题。",
+    pleaseEnterTarget: "请输入 arXiv ID 或论文标题。",
     failedSaveDefaults: "保存默认配置失败。",
     failedGeneratePlan: "生成查询改写失败。",
     failedRefinePlan: "优化查询改写失败。",
     failedExecuteSearch: "执行搜索失败。",
+    failedResolveTarget: "解析目标论文失败。",
+    failedExecuteTrace: "执行 PST-lite 失败。",
     answerStreamFailed: "回答流失败。",
     failedStartIngest: "启动入库失败。",
     optionalOllamaBaseUrl: "可选的 Ollama 接口地址",
@@ -157,9 +184,204 @@ const translations = {
     appliedConstraints: "实际使用的约束",
     implicitLatest: "隐式最新时间窗",
     publishedDate: "发布日期",
-    primaryCategory: "主分类"
+    primaryCategory: "主分类",
+    targetPaperQuery: "目标论文",
+    targetPaperPlaceholder: "输入 arXiv ID 或论文标题。",
+    resolveTargetPaper: "解析目标论文",
+    targetPaperCard: "目标论文",
+    candidatePapers: "选择目标论文",
+    useThisPaper: "使用这篇论文",
+    arxivId: "arXiv ID",
+    summary: "摘要",
+    runPst: "运行 PST-lite",
+    candidateNotice: "这些是候选先驱论文，不是已验证引用。"
   }
 };
+
+const assistantLayerCopy = {
+  en: {
+    title: "Assistant layer offline",
+    body: "The main workspace is still available.",
+    retry: "Reload Assistant"
+  },
+  zh: {
+    title: "助手层暂时离线",
+    body: "主工作台仍可正常使用。",
+    retry: "重新加载助手"
+  }
+};
+
+function getAssistantLayerCopy(language) {
+  return assistantLayerCopy[language] ?? assistantLayerCopy.zh;
+}
+
+class AssistantErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("Assistant layer crashed", error, info);
+  }
+
+  componentDidUpdate(prevProps) {
+    if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ error: null });
+    }
+  }
+
+  handleRetry = () => {
+    this.setState({ error: null });
+    this.props.onRetry?.();
+  };
+
+  render() {
+    if (this.state.error) {
+      return this.props.renderFallback({
+        error: this.state.error,
+        retry: this.handleRetry
+      });
+    }
+    return this.props.children;
+  }
+}
+
+function AssistantLayerFallback({ language, onRetry, details = "" }) {
+  const copy = getAssistantLayerCopy(language);
+  return (
+    <aside className="assistant-fallback-shell" role="status" aria-live="polite">
+      <p className="assistant-fallback-title">{copy.title}</p>
+      <p className="assistant-fallback-body">{copy.body}</p>
+      {details ? <p className="assistant-fallback-body muted">{details}</p> : null}
+      <button type="button" onClick={onRetry}>
+        {copy.retry}
+      </button>
+    </aside>
+  );
+}
+
+function AssistantLayerContent({ AssistantComponent, language, autoReply }) {
+  const [latestAnswerContext, setLatestAnswerContext] = useState(null);
+
+  useEffect(() => {
+    const trimmed = String(autoReply?.answerContext || "").trim();
+    if (!trimmed) {
+      return;
+    }
+    setLatestAnswerContext(trimmed);
+  }, [autoReply]);
+
+  return (
+    <AssistantComponent
+      language={language}
+      autoReply={autoReply}
+      latestAnswerContext={latestAnswerContext}
+      onClearAnswerContext={() => setLatestAnswerContext(null)}
+    />
+  );
+}
+
+function IsolatedAssistantLayer({ language, autoReply }) {
+  const [portalHost, setPortalHost] = useState(null);
+  const [instanceKey, setInstanceKey] = useState(0);
+  const [AssistantComponent, setAssistantComponent] = useState(null);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return undefined;
+    }
+    let node = null;
+    try {
+      node = document.createElement("div");
+      node.className = "assistant-root-layer";
+      document.body.appendChild(node);
+      setPortalHost(node);
+    } catch (error) {
+      console.error("Assistant root mount failed", error);
+      setLoadError(String(error));
+    }
+    return () => {
+      if (node?.parentNode) {
+        try {
+          node.parentNode.removeChild(node);
+        } catch (error) {
+          console.error("Assistant root cleanup failed", error);
+        }
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAssistantComponent(null);
+    setLoadError("");
+    import("./Live2DAssistant.jsx")
+      .then((module) => {
+        if (!cancelled) {
+          setAssistantComponent(() => module.default);
+        }
+      })
+      .catch((error) => {
+        console.error("Assistant module load failed", error);
+        if (!cancelled) {
+          setLoadError(String(error));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [instanceKey]);
+
+  if (loadError) {
+    return (
+      <AssistantLayerFallback
+        language={language}
+        onRetry={() => setInstanceKey((current) => current + 1)}
+        details={loadError}
+      />
+    );
+  }
+
+  if (!portalHost || !AssistantComponent) {
+    return null;
+  }
+
+  try {
+    // Keep assistant DOM and runtime outside the main workspace tree.
+    return createPortal(
+      <AssistantErrorBoundary
+        resetKey={`${language}-${instanceKey}-${autoReply?.id || "idle"}`}
+        onRetry={() => setInstanceKey((current) => current + 1)}
+        renderFallback={({ retry, error }) => (
+          <AssistantLayerFallback language={language} onRetry={retry} details={String(error || "")} />
+        )}
+      >
+        <AssistantLayerContent
+          key={instanceKey}
+          AssistantComponent={AssistantComponent}
+          language={language}
+          autoReply={autoReply}
+        />
+      </AssistantErrorBoundary>,
+      portalHost
+    );
+  } catch (error) {
+    console.error("Assistant portal render failed", error);
+    return (
+      <AssistantLayerFallback
+        language={language}
+        onRetry={() => setInstanceKey((current) => current + 1)}
+        details={String(error)}
+      />
+    );
+  }
+}
 
 function getInitialLanguage() {
   const saved = window.localStorage.getItem("app_language");
@@ -221,6 +443,17 @@ function buildRetrievalText(plan) {
     return plan.retrieval_query_en;
   }
   return `${plan.retrieval_query_en}; keywords: ${plan.keywords_en.join(", ")}`;
+}
+
+function trimAssistantAnswerContext(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return null;
+  }
+  if (value.length <= 4000) {
+    return value;
+  }
+  return `${value.slice(0, 4000).trimEnd()}...`;
 }
 
 function formatTimeWindow(constraints, t) {
@@ -300,9 +533,7 @@ function PaperList({ papers, t }) {
           </p>
           <div className="tag-list">
             {paper.published_date ? <span className="tag">{`${t("publishedDate")}: ${paper.published_date}`}</span> : null}
-            {paper.primary_category ? (
-              <span className="tag">{`${t("primaryCategory")}: ${paper.primary_category}`}</span>
-            ) : null}
+            {paper.primary_category ? <span className="tag">{`${t("primaryCategory")}: ${paper.primary_category}`}</span> : null}
             {paper.authors?.length ? <span className="tag">{`${t("authors")}: ${paper.authors.join(", ")}`}</span> : null}
           </div>
           <p>{paper.text}</p>
@@ -362,16 +593,80 @@ function ChatConfigSection({ title, config, onChange, t, providerOptions, showAp
   );
 }
 
+function TargetPaperCard({ paper, t, actionLabel, onAction }) {
+  if (!paper) {
+    return null;
+  }
+  return (
+    <section className="rewrite-card">
+      <h3>{t("targetPaperCard")}</h3>
+      <div className="detail-grid">
+        <div>
+          <strong>{t("arxivId")}</strong>
+          <p>{paper.arxiv_id}</p>
+        </div>
+        <div>
+          <strong>{t("publishedDate")}</strong>
+          <p>{paper.published_date || t("none")}</p>
+        </div>
+        <div>
+          <strong>{t("primaryCategory")}</strong>
+          <p>{paper.primary_category || t("none")}</p>
+        </div>
+        <div>
+          <strong>{t("authors")}</strong>
+          <p>{paper.authors?.length ? paper.authors.join(", ") : t("none")}</p>
+        </div>
+      </div>
+      <p>
+        <strong>{paper.title}</strong>
+      </p>
+      <p>{paper.summary || t("none")}</p>
+      {actionLabel && onAction ? <button onClick={onAction}>{actionLabel}</button> : null}
+    </section>
+  );
+}
+
+function CandidateList({ candidates, onSelect, t }) {
+  if (!candidates.length) {
+    return <p className="muted">{t("noCandidates")}</p>;
+  }
+  return (
+    <section>
+      <h3>{t("candidatePapers")}</h3>
+      <div className="paper-list">
+        {candidates.map((candidate) => (
+          <article key={candidate.id} className="paper-card">
+            <h4>{candidate.title}</h4>
+            <div className="tag-list">
+              <span className="tag">{`${t("arxivId")}: ${candidate.arxiv_id}`}</span>
+              {candidate.published_date ? <span className="tag">{`${t("publishedDate")}: ${candidate.published_date}`}</span> : null}
+              {candidate.primary_category ? <span className="tag">{`${t("primaryCategory")}: ${candidate.primary_category}`}</span> : null}
+            </div>
+            <p>{candidate.summary || t("none")}</p>
+            <button onClick={() => onSelect(candidate)}>{t("useThisPaper")}</button>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const [language, setLanguage] = useState(getInitialLanguage);
   const [activeTab, setActiveTab] = useState("search");
+  const [workspaceMode, setWorkspaceMode] = useState("qa");
   const [settings, setSettings] = useState(null);
   const [question, setQuestion] = useState("");
   const [queryPlan, setQueryPlan] = useState(null);
   const [feedback, setFeedback] = useState("");
+  const [traceQuery, setTraceQuery] = useState("");
+  const [resolvedTarget, setResolvedTarget] = useState(null);
+  const [traceCandidates, setTraceCandidates] = useState([]);
   const [papers, setPapers] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [answer, setAnswer] = useState("");
+  const [assistantAutoReply, setAssistantAutoReply] = useState(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [appliedConstraints, setAppliedConstraints] = useState(null);
@@ -379,6 +674,7 @@ export default function App() {
   const [ingestStatus, setIngestStatus] = useState(null);
   const [ingestLogs, setIngestLogs] = useState([]);
   const answerSourceRef = useRef(null);
+  const answerBufferRef = useRef("");
   const ingestSourceRef = useRef(null);
 
   const t = (key) => translations[language][key] ?? key;
@@ -429,6 +725,28 @@ export default function App() {
     }));
   }
 
+  function resetSearchOutputs() {
+    setPapers([]);
+    setWarnings([]);
+    setAnswer("");
+    setAppliedConstraints(null);
+    setCorpusLatestDate(null);
+    answerBufferRef.current = "";
+    answerSourceRef.current?.close();
+  }
+
+  function scheduleAssistantAutoReply(source, text) {
+    const trimmed = trimAssistantAnswerContext(text);
+    if (!trimmed) {
+      return;
+    }
+    setAssistantAutoReply({
+      id: `${source}-${Date.now()}`,
+      source,
+      answerContext: trimmed
+    });
+  }
+
   async function saveDefaults() {
     setMessage("");
     const response = await fetch("/api/config", {
@@ -462,10 +780,9 @@ export default function App() {
         throw new Error(data.detail || t("failedGeneratePlan"));
       }
       setQueryPlan(data);
-      setPapers([]);
-      setWarnings([]);
-      setAnswer("");
-      setAppliedConstraints(null);
+      resetSearchOutputs();
+      setResolvedTarget(null);
+      setTraceCandidates([]);
       setCorpusLatestDate(data.corpus_latest_date || null);
     } catch (error) {
       setMessage(String(error));
@@ -505,15 +822,20 @@ export default function App() {
     }
   }
 
-  function streamAnswer(searchId) {
+  function streamFrom(path, autoReplySource) {
     answerSourceRef.current?.close();
-    const source = new EventSource(`/api/search/${searchId}/answer/stream`);
+    answerBufferRef.current = "";
+    const source = new EventSource(path);
     answerSourceRef.current = source;
     source.addEventListener("token", (event) => {
       const payload = JSON.parse(event.data);
-      setAnswer((current) => current + payload.content);
+      answerBufferRef.current += payload.content;
+      setAnswer(answerBufferRef.current);
     });
     source.addEventListener("complete", () => {
+      if (autoReplySource) {
+        scheduleAssistantAutoReply(autoReplySource, answerBufferRef.current);
+      }
       source.close();
     });
     source.onerror = () => {
@@ -545,7 +867,73 @@ export default function App() {
       setWarnings(data.warnings || []);
       setAppliedConstraints(data.applied_constraints || null);
       setCorpusLatestDate(data.corpus_latest_date || null);
-      streamAnswer(data.search_id);
+      streamFrom(`/api/search/${data.search_id}/answer/stream`, "qa_auto");
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resolveTraceTarget() {
+    if (!traceQuery.trim()) {
+      setMessage(t("pleaseEnterTarget"));
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/trace/resolve-target", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: traceQuery })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || t("failedResolveTarget"));
+      }
+      resetSearchOutputs();
+      setQueryPlan(null);
+      setFeedback("");
+      setResolvedTarget(data.resolved_target || null);
+      setTraceCandidates(data.status === "ambiguous" ? data.candidates || [] : []);
+      setMessage(data.message || "");
+      if (data.status === "not_found") {
+        setResolvedTarget(null);
+        setTraceCandidates([]);
+      }
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function executeTrace(targetPaper) {
+    setBusy(true);
+    setMessage("");
+    setAnswer("");
+    try {
+      const response = await fetch("/api/trace/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_id: targetPaper.id,
+          answer_language: language,
+          settings: runtimePayload
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || t("failedExecuteTrace"));
+      }
+      setResolvedTarget(data.target_paper);
+      setTraceCandidates([]);
+      setPapers(data.papers);
+      setWarnings(data.warnings || []);
+      setAppliedConstraints(null);
+      setCorpusLatestDate(null);
+      streamFrom(`/api/trace/${data.trace_id}/answer/stream`, "pst_auto");
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -607,18 +995,10 @@ export default function App() {
         </div>
         <div className="header-actions">
           <div className="lang-switch" aria-label={t("language")}>
-            <button
-              type="button"
-              className={language === "en" ? "active" : "secondary"}
-              onClick={() => setLanguage("en")}
-            >
+            <button type="button" className={language === "en" ? "active" : "secondary"} onClick={() => setLanguage("en")}>
               EN
             </button>
-            <button
-              type="button"
-              className={language === "zh" ? "active" : "secondary"}
-              onClick={() => setLanguage("zh")}
-            >
+            <button type="button" className={language === "zh" ? "active" : "secondary"} onClick={() => setLanguage("zh")}>
               中文
             </button>
           </div>
@@ -654,34 +1034,22 @@ export default function App() {
           <h3>{t("embedding")}</h3>
           <label>
             {t("ollamaApiUrl")}
-            <input
-              value={settings.embedding.api_url}
-              onChange={(event) => updateNested("embedding", "api_url", event.target.value)}
-            />
+            <input value={settings.embedding.api_url} onChange={(event) => updateNested("embedding", "api_url", event.target.value)} />
           </label>
           <label>
             {t("embeddingModel")}
-            <input
-              value={settings.embedding.model}
-              onChange={(event) => updateNested("embedding", "model", event.target.value)}
-            />
+            <input value={settings.embedding.model} onChange={(event) => updateNested("embedding", "model", event.target.value)} />
           </label>
         </section>
         <section className="config-section">
           <h3>{t("rerankRetrieval")}</h3>
           <label>
             {t("rerankBaseUrl")}
-            <input
-              value={settings.rerank.base_url}
-              onChange={(event) => updateNested("rerank", "base_url", event.target.value)}
-            />
+            <input value={settings.rerank.base_url} onChange={(event) => updateNested("rerank", "base_url", event.target.value)} />
           </label>
           <label>
             {t("rerankModel")}
-            <input
-              value={settings.rerank.model}
-              onChange={(event) => updateNested("rerank", "model", event.target.value)}
-            />
+            <input value={settings.rerank.model} onChange={(event) => updateNested("rerank", "model", event.target.value)} />
           </label>
           <label>
             {t("rerankApiKey")}
@@ -695,28 +1063,16 @@ export default function App() {
           <p className="muted">
             {t("storedKeyPresent")}: {settings.rerank.has_api_key ? t("yes") : t("no")}
           </p>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => updateNested("rerank", "clear_api_key", !settings.rerank.clear_api_key)}
-          >
+          <button type="button" className="secondary" onClick={() => updateNested("rerank", "clear_api_key", !settings.rerank.clear_api_key)}>
             {settings.rerank.clear_api_key ? t("keepStoredKey") : t("clearStoredKey")}
           </button>
           <label>
             {t("topK")}
-            <input
-              type="number"
-              value={settings.retrieval.top_k}
-              onChange={(event) => updateNested("retrieval", "top_k", event.target.value)}
-            />
+            <input type="number" value={settings.retrieval.top_k} onChange={(event) => updateNested("retrieval", "top_k", event.target.value)} />
           </label>
           <label>
             {t("topN")}
-            <input
-              type="number"
-              value={settings.retrieval.top_n}
-              onChange={(event) => updateNested("retrieval", "top_n", event.target.value)}
-            />
+            <input type="number" value={settings.retrieval.top_n} onChange={(event) => updateNested("retrieval", "top_n", event.target.value)} />
           </label>
           <label>
             {t("timeout")}
@@ -732,73 +1088,116 @@ export default function App() {
       <div className="toolbar">
         <button onClick={() => saveDefaults().catch((error) => setMessage(String(error)))}>{t("saveDefaults")}</button>
       </div>
-
       {activeTab === "search" ? (
         <section className="workspace">
-          <div className="question-box">
-            <label>
-              {t("researchQuestion")}
-              <textarea
-                value={question}
-                onChange={(event) => setQuestion(event.target.value)}
-                rows={4}
-                placeholder={t("questionPlaceholder")}
-              />
-            </label>
-            <button onClick={requestPlan} disabled={busy}>
-              {busy ? t("working") : t("generateQueryPlan")}
+          <div className="tab-row">
+            <button className={workspaceMode === "qa" ? "active" : "secondary"} onClick={() => setWorkspaceMode("qa")}>
+              {t("qaMode")}
+            </button>
+            <button className={workspaceMode === "pst" ? "active" : "secondary"} onClick={() => setWorkspaceMode("pst")}>
+              {t("pstMode")}
             </button>
           </div>
-          {queryPlan ? (
-            <section className="rewrite-card">
-              <h3>{t("rewriteConfirmation")}</h3>
-              <p>
-                <strong>{t("original")}:</strong> {question}
-              </p>
-              <p>
-                <strong>{t("intentSummary")}:</strong> {queryPlan.intent_summary}
-              </p>
-              <p>
-                <strong>{t("retrievalQuery")}:</strong> {queryPlan.retrieval_query_en}
-              </p>
-              <p>
-                <strong>{t("keywords")}:</strong> {queryPlan.keywords_en.join(", ") || t("none")}
-              </p>
-              <ConstraintBlock
-                constraints={queryPlan.constraints}
-                corpusLatestDate={queryPlan.corpus_latest_date}
-                t={t}
-              />
-              <div className="action-row">
-                <button onClick={() => executeSearch(buildRetrievalText(queryPlan), queryPlan)} disabled={busy}>
-                  {t("useRewrite")}
-                </button>
-                <button className="secondary" onClick={() => executeSearch(question, queryPlan)} disabled={busy}>
-                  {t("useOriginal")}
+
+          {workspaceMode === "qa" ? (
+            <>
+              <div className="question-box">
+                <label>
+                  {t("researchQuestion")}
+                  <textarea
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    rows={4}
+                    placeholder={t("questionPlaceholder")}
+                  />
+                </label>
+                <button onClick={requestPlan} disabled={busy}>
+                  {busy ? t("working") : t("generateQueryPlan")}
                 </button>
               </div>
-              <label>
-                {t("improvePrompt")}
-                <textarea
-                  value={feedback}
-                  onChange={(event) => setFeedback(event.target.value)}
-                  rows={3}
-                  placeholder={t("improvePlaceholder")}
+
+              {queryPlan ? (
+                <section className="rewrite-card">
+                  <h3>{t("rewriteConfirmation")}</h3>
+                  <p>
+                    <strong>{t("original")}:</strong> {question}
+                  </p>
+                  <p>
+                    <strong>{t("intentSummary")}:</strong> {queryPlan.intent_summary}
+                  </p>
+                  <p>
+                    <strong>{t("retrievalQuery")}:</strong> {queryPlan.retrieval_query_en}
+                  </p>
+                  <p>
+                    <strong>{t("keywords")}:</strong> {queryPlan.keywords_en.join(", ") || t("none")}
+                  </p>
+                  <ConstraintBlock constraints={queryPlan.constraints} corpusLatestDate={queryPlan.corpus_latest_date} t={t} />
+                  <div className="action-row">
+                    <button onClick={() => executeSearch(buildRetrievalText(queryPlan), queryPlan)} disabled={busy}>
+                      {t("useRewrite")}
+                    </button>
+                    <button className="secondary" onClick={() => executeSearch(question, queryPlan)} disabled={busy}>
+                      {t("useOriginal")}
+                    </button>
+                  </div>
+                  <label>
+                    {t("improvePrompt")}
+                    <textarea
+                      value={feedback}
+                      onChange={(event) => setFeedback(event.target.value)}
+                      rows={3}
+                      placeholder={t("improvePlaceholder")}
+                    />
+                  </label>
+                  <button className="secondary" onClick={refinePlan} disabled={busy || !feedback.trim()}>
+                    {t("improveRewrite")}
+                  </button>
+                </section>
+              ) : null}
+
+              {appliedConstraints ? (
+                <section>
+                  <h3>{t("appliedConstraints")}</h3>
+                  <ConstraintBlock constraints={appliedConstraints} corpusLatestDate={corpusLatestDate} t={t} />
+                </section>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <div className="question-box">
+                <label>
+                  {t("targetPaperQuery")}
+                  <textarea
+                    value={traceQuery}
+                    onChange={(event) => setTraceQuery(event.target.value)}
+                    rows={3}
+                    placeholder={t("targetPaperPlaceholder")}
+                  />
+                </label>
+                <button onClick={resolveTraceTarget} disabled={busy}>
+                  {busy ? t("working") : t("resolveTargetPaper")}
+                </button>
+              </div>
+
+              {resolvedTarget ? (
+                <TargetPaperCard paper={resolvedTarget} t={t} actionLabel={t("runPst")} onAction={() => executeTrace(resolvedTarget)} />
+              ) : null}
+
+              {!resolvedTarget && traceCandidates.length ? (
+                <CandidateList
+                  candidates={traceCandidates}
+                  onSelect={(candidate) => {
+                    setResolvedTarget(candidate);
+                    setTraceCandidates([]);
+                    setMessage("");
+                  }}
+                  t={t}
                 />
-              </label>
-              <button className="secondary" onClick={refinePlan} disabled={busy || !feedback.trim()}>
-                {t("improveRewrite")}
-              </button>
-            </section>
-          ) : null}
+              ) : null}
 
-          {appliedConstraints ? (
-            <section>
-              <h3>{t("appliedConstraints")}</h3>
-              <ConstraintBlock constraints={appliedConstraints} corpusLatestDate={corpusLatestDate} t={t} />
-            </section>
-          ) : null}
-
+              <p className="muted">{t("candidateNotice")}</p>
+            </>
+          )}
           {warnings.length ? (
             <div className="warning-box">
               {warnings.map((warning) => (
@@ -808,12 +1207,12 @@ export default function App() {
           ) : null}
 
           <section>
-            <h3>{t("topPapers")}</h3>
+            <h3>{workspaceMode === "qa" ? t("topPapers") : t("priorPaperCandidates")}</h3>
             <PaperList papers={papers} t={t} />
           </section>
 
           <section>
-            <h3>{t("answerStream")}</h3>
+            <h3>{workspaceMode === "qa" ? t("answerStream") : t("traceExplanation")}</h3>
             <div className="answer-box">{answer || <span className="muted">{t("answerPlaceholder")}</span>}</div>
           </section>
         </section>
@@ -840,6 +1239,11 @@ export default function App() {
           <EventLog lines={ingestLogs} t={t} />
         </section>
       )}
+
+      <IsolatedAssistantLayer
+        language={language}
+        autoReply={assistantAutoReply}
+      />
     </div>
   );
 }

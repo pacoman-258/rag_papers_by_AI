@@ -81,6 +81,16 @@ class QueryPlanModel(BaseModel):
     corpus_latest_date: str | None = None
 
 
+class TargetPaperModel(BaseModel):
+    id: str
+    arxiv_id: str
+    title: str
+    summary: str
+    authors: list[str] = Field(default_factory=list)
+    published_date: str | None = None
+    primary_category: str | None = None
+
+
 class SearchPlanRequest(BaseModel):
     question: str
     settings: RuntimeSettingsRequest | None = None
@@ -122,6 +132,33 @@ class SearchExecuteResponse(BaseModel):
     corpus_latest_date: str | None = None
 
 
+class TraceResolveRequest(BaseModel):
+    query: str
+
+
+class TraceResolveResponse(BaseModel):
+    status: Literal["resolved", "ambiguous", "not_found"]
+    query: str
+    resolved_target: TargetPaperModel | None = None
+    candidates: list[TargetPaperModel] = Field(default_factory=list)
+    message: str | None = None
+
+
+class TraceExecuteRequest(BaseModel):
+    target_id: str
+    answer_language: Literal["zh", "en"] | None = None
+    settings: RuntimeSettingsRequest | None = None
+
+
+class TraceExecuteResponse(BaseModel):
+    trace_id: str
+    answer_language: Literal["zh", "en"]
+    retrieval_text: str
+    target_paper: TargetPaperModel
+    papers: list[RankedPaperResponse]
+    warnings: list[str]
+
+
 class IngestJobResponse(BaseModel):
     job_id: str | None
     status: str
@@ -130,3 +167,42 @@ class IngestJobResponse(BaseModel):
     return_code: int | None = None
     recent_logs: list[str] = Field(default_factory=list)
     database_overview: dict[str, object] | None = None
+
+
+class Live2DBootstrapResponse(BaseModel):
+    model_url: str
+    available_expressions: list[str] = Field(default_factory=list)
+    default_expression: str | None = None
+    default_voice: str
+    tts_enabled: bool
+    position: Literal["bottom-right"]
+
+
+class Live2DHistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str
+
+
+class Live2DChatRequest(BaseModel):
+    source: Literal["user", "qa_auto", "pst_auto"]
+    message: str = ""
+    history: list[Live2DHistoryMessage] = Field(default_factory=list)
+    answer_context: str | None = None
+
+
+class Live2DChatResponse(BaseModel):
+    reply_text: str
+    expression: str | None = None
+    speak_text: str
+
+
+class Live2DTTSRequest(BaseModel):
+    text: str
+    voice: str | None = None
+    rate: str | None = None
+
+
+class Live2DTTSResponse(BaseModel):
+    audio_url: str
+    duration_ms: int
+    media_type: str

@@ -14,13 +14,19 @@ if str(REPO_ROOT) not in sys.path:
 from local_paper_db.app.search_service import (
     QueryPlan,
     RankedPaper,
+    TargetPaper,
     build_retrieval_text,
     execute_search,
+    execute_trace,
     format_constraints_summary,
     get_env_default_settings,
+    infer_user_language,
+    parse_arxiv_query,
     plan_query,
+    resolve_target_paper,
     revise_query_plan,
     stream_answer_tokens,
+    stream_trace_answer_tokens,
     validate_runtime_settings,
 )
 
@@ -89,6 +95,39 @@ def print_selected_papers(papers: list[RankedPaper]) -> None:
             print("   " + " | ".join(meta_bits))
 
 
+def print_target_paper(target_paper: TargetPaper) -> None:
+    print("\n[Target Paper]")
+    print("=" * 60)
+    print(f"Title: {target_paper.title}")
+    print(f"arXiv ID: {target_paper.arxiv_id}")
+    print(f"Published date: {target_paper.published_date or 'Unknown'}")
+    print(f"Primary category: {target_paper.primary_category or 'Unknown'}")
+    print(f"Authors: {', '.join(target_paper.authors) if target_paper.authors else 'Unknown'}")
+    print(f"Summary: {target_paper.summary}")
+    print("=" * 60)
+
+
+def choose_target_paper(candidates: list[TargetPaper]) -> TargetPaper | None:
+    print("\n[Target Selection] Multiple candidate papers were found.")
+    for index, candidate in enumerate(candidates, start=1):
+        print(f"{index}. {candidate.title} | {candidate.arxiv_id} | {candidate.published_date or 'Unknown'}")
+    try:
+        choice = input("Choose a paper number (or press Enter to cancel): ").strip()
+    except EOFError:
+        print()
+        return None
+    if not choice:
+        return None
+    if not choice.isdigit():
+        print("[Target Selection] Invalid choice.")
+        return None
+    selected_index = int(choice) - 1
+    if not (0 <= selected_index < len(candidates)):
+        print("[Target Selection] Invalid choice.")
+        return None
+    return candidates[selected_index]
+
+
 def search_once(query: str) -> None:
     settings = get_env_default_settings()
     validate_runtime_settings(settings)
@@ -128,17 +167,59 @@ def search_once(query: str) -> None:
     print(f"\nElapsed: {time.time() - started_at:.2f}s")
 
 
+def trace_once(target_query: str, answer_language: str | None = None) -> None:
+    settings = get_env_default_settings()
+    validate_runtime_settings(settings)
+
+    started_at = time.time()
+    status, resolved_target, candidates, message = resolve_target_paper(target_query)
+    if status == "not_found":
+        raise RuntimeError(message or "Target paper not found.")
+
+    target_paper = resolved_target
+    if status == "ambiguous":
+        target_paper = choose_target_paper(candidates)
+        if target_paper is None:
+            raise RuntimeError("Target paper selection was cancelled.")
+
+    if target_paper is None:
+        raise RuntimeError("Failed to resolve the target paper.")
+
+    if answer_language is not None:
+        answer_lang = answer_language
+    else:
+        answer_lang = "zh" if parse_arxiv_query(target_query) is not None else infer_user_language(target_query)
+    print_target_paper(target_paper)
+    execution = execute_trace(target_paper=target_paper, settings=settings, answer_language=answer_lang)
+    for warning in execution.warnings:
+        print(f"[Warning] {warning}")
+    print_selected_papers(execution.papers)
+
+    print("\n[PST] Candidate Prior Papers")
+    print("=" * 60)
+    for token in stream_trace_answer_tokens(execution, settings):
+        print(token, end="", flush=True)
+    print("\n" + "=" * 60)
+    print(f"\nElapsed: {time.time() - started_at:.2f}s")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Search the local arXiv RAG paper database from the terminal."
     )
-    parser.add_argument("query", nargs="?", help="Optional query. If omitted, interactive mode starts.")
+    parser.add_argument("query", nargs="?", help="Optional search query. If omitted, interactive mode starts.")
+    parser.add_argument("--trace", dest="trace_query", help="Trace likely precursor papers for a target paper.")
+    parser.add_argument("--trace-language", choices=["zh", "en"], help="Answer language for --trace mode.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
+        if args.trace_query:
+            trace_once(args.trace_query, answer_language=args.trace_language)
+            return 0
+
         if args.query:
             search_once(args.query)
             return 0
