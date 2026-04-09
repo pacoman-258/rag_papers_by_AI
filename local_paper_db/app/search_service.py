@@ -5,7 +5,7 @@ import os
 import re
 from calendar import monthrange
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Iterator
 
 import psycopg2
@@ -117,6 +117,27 @@ class SearchExecution:
     warnings: list[str]
     applied_constraints: RetrievalConstraints
     corpus_latest_date: str | None = None
+
+
+@dataclass(slots=True)
+class TargetPaper:
+    id: str
+    arxiv_id: str
+    title: str
+    summary: str
+    authors: list[str] = field(default_factory=list)
+    published_date: str | None = None
+    primary_category: str | None = None
+
+
+@dataclass(slots=True)
+class TraceExecution:
+    target_paper: TargetPaper
+    retrieval_text: str
+    answer_language: str
+    papers: list[RankedPaper]
+    answer_prompt: str
+    warnings: list[str]
 
 
 def normalize_provider(value: str) -> str:
@@ -585,6 +606,220 @@ def safe_get_corpus_latest_date(db_config: dict[str, str] | None = None) -> str 
         return None
 
 
+ARXIV_QUERY_PATTERN = re.compile(r"^(?:arxiv:)?(?P<base>\d{4}\.\d{4,5})(?:v(?P<version>\d+))?$", re.IGNORECASE)
+
+
+def has_recent_intent(text: str) -> bool:
+    lowered = text.lower()
+    english_patterns = ("latest", "recent", "newest", "most recent", "current", "up-to-date")
+    chinese_patterns = ("最新", "最近", "近期", "近一年", "近两年", "近三年", "近半年")
+    return any(pattern in lowered for pattern in english_patterns) or any(pattern in text for pattern in chinese_patterns)
+
+
+def normalize_whitespace(text: str) -> str:
+    return " ".join(text.split()).strip()
+
+
+def parse_arxiv_query(query: str) -> tuple[str, int | None] | None:
+    match = ARXIV_QUERY_PATTERN.match(query.strip())
+    if match is None:
+        return None
+    version = match.group("version")
+    return match.group("base"), int(version) if version is not None else None
+
+
+def extract_arxiv_base_id(arxiv_id: str | None) -> str | None:
+    if not arxiv_id:
+        return None
+    parsed = parse_arxiv_query(arxiv_id.strip())
+    if parsed is not None:
+        return parsed[0]
+    return arxiv_id.strip().split("v", 1)[0]
+
+
+def build_target_paper_select_sql(db_config: dict[str, str] | None = None) -> str:
+    category_sql = get_primary_category_sql(db_config)
+    return f"""
+        SELECT
+            m.id,
+            m.arxiv_id,
+            m.title,
+            COALESCE(
+                m.extracted_insights->>'summary',
+                m.extracted_insights->>'summary_for_embedding',
+                m.title
+            ) AS summary_text,
+            COALESCE(m.authors, ARRAY[]::text[]),
+            m.published_date,
+            {category_sql} AS primary_category
+        FROM papers_meta AS m
+    """
+
+
+def target_paper_from_row(row: tuple[Any, ...]) -> TargetPaper:
+    return TargetPaper(
+        id=str(row[0]),
+        arxiv_id=row[1],
+        title=row[2],
+        summary=row[3] or row[2] or "",
+        authors=list(row[4] or []),
+        published_date=row[5].isoformat() if row[5] else None,
+        primary_category=row[6] or None,
+    )
+
+
+def fetch_target_papers(sql_suffix: str, params: tuple[Any, ...], db_config: dict[str, str] | None = None) -> list[TargetPaper]:
+    conn = psycopg2.connect(**(db_config or DEFAULT_DB_CONFIG))
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(build_target_paper_select_sql(db_config) + "\n" + sql_suffix, params)
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+    return [target_paper_from_row(row) for row in rows]
+
+
+def fetch_target_paper_by_id(paper_id: str, db_config: dict[str, str] | None = None) -> TargetPaper | None:
+    papers = fetch_target_papers("WHERE m.id = %s::uuid LIMIT 1", (paper_id,), db_config=db_config)
+    return papers[0] if papers else None
+
+
+def find_target_candidates(query: str, limit: int = 5, db_config: dict[str, str] | None = None) -> list[TargetPaper]:
+    normalized_query = normalize_whitespace(query)
+    if not normalized_query:
+        return []
+
+    arxiv_parts = parse_arxiv_query(normalized_query)
+    if arxiv_parts is not None:
+        base_id, version = arxiv_parts
+        if version is not None:
+            exact = fetch_target_papers(
+                "WHERE lower(m.arxiv_id) = lower(%s) LIMIT 1",
+                (normalized_query,),
+                db_config=db_config,
+            )
+            if exact:
+                return exact
+        return fetch_target_papers(
+            """
+            WHERE lower(split_part(m.arxiv_id, 'v', 1)) = lower(%s)
+            ORDER BY
+                COALESCE((regexp_match(lower(m.arxiv_id), 'v([0-9]+)$'))[1]::int, 0) DESC,
+                m.published_date DESC NULLS LAST
+            LIMIT %s
+            """,
+            (base_id, limit),
+            db_config=db_config,
+        )
+
+    exact_title_matches = fetch_target_papers(
+        """
+        WHERE lower(m.title) = lower(%s)
+        ORDER BY m.published_date DESC NULLS LAST, m.id
+        LIMIT %s
+        """,
+        (normalized_query, limit),
+        db_config=db_config,
+    )
+    if exact_title_matches:
+        return exact_title_matches
+
+    like_query = f"%{normalized_query}%"
+    return fetch_target_papers(
+        """
+        WHERE m.title ILIKE %s
+        ORDER BY
+            CASE
+                WHEN lower(m.title) LIKE lower(%s) || '%%' THEN 0
+                ELSE 1
+            END,
+            m.published_date DESC NULLS LAST,
+            m.id
+        LIMIT %s
+        """,
+        (like_query, normalized_query, limit),
+        db_config=db_config,
+    )
+
+
+def resolve_target_paper(
+    query: str,
+    db_config: dict[str, str] | None = None,
+) -> tuple[str, TargetPaper | None, list[TargetPaper], str | None]:
+    normalized_query = normalize_whitespace(query)
+    if not normalized_query:
+        return "not_found", None, [], "Target paper query is empty."
+
+    arxiv_parts = parse_arxiv_query(normalized_query)
+    candidates = find_target_candidates(normalized_query, db_config=db_config)
+    if not candidates:
+        return "not_found", None, [], "No target paper was found for the given arXiv ID or title."
+
+    if arxiv_parts is not None:
+        return "resolved", candidates[0], candidates, None
+
+    exact_matches = [paper for paper in candidates if paper.title.casefold() == normalized_query.casefold()]
+    if len(exact_matches) == 1:
+        return "resolved", exact_matches[0], exact_matches, None
+    if len(exact_matches) > 1:
+        return "ambiguous", None, exact_matches[:5], "Multiple papers share this title. Please choose the target paper."
+
+    return "ambiguous", None, candidates[:5], "Multiple similar titles were found. Please choose the target paper."
+
+
+def build_planning_messages(
+    original_query: str,
+    corpus_latest_date: str | None,
+    previous_plan: QueryPlan | None = None,
+    user_feedback: str | None = None,
+) -> list[dict[str, str]]:
+    system_prompt = f"""
+You optimize user questions for semantic retrieval over an English arXiv paper database about Retrieval-Augmented Generation.
+Return only one JSON object with this exact shape:
+{{
+  "answer_language": "zh" or "en",
+  "intent_summary": "brief summary",
+  "retrieval_query_en": "one concise English retrieval sentence",
+  "keywords_en": ["keyword 1", "keyword 2"],
+  "constraints": {{
+    "published_after": "YYYY-MM-DD or null",
+    "published_before": "YYYY-MM-DD or null",
+    "authors": ["full author name"],
+    "primary_categories": ["cs.CL"],
+    "sort_hint": "relevance" or "latest",
+    "is_implicit_latest": true or false
+  }}
+}}
+
+Rules:
+- The paper database is English. retrieval_query_en and keywords_en must be English.
+- Preserve the user's technical meaning.
+- Only add author filters if the user explicitly names an author.
+- Only add category filters if the user explicitly names arXiv categories or clearly implies a primary category.
+- If the user gives an absolute date or year range, convert it to absolute ISO dates.
+- If the user gives a relative time like "last 6 months" or "近一年", convert it to absolute ISO dates relative to the corpus latest date.
+- If the user asks for "latest" or "recent" without a concrete window, use a 12-month window ending at the corpus latest date, set sort_hint to "latest", and set is_implicit_latest to true.
+- If you cannot determine a time range, keep the published_* fields null.
+- If corpus latest date is unknown, keep time fields null unless the user gave absolute dates.
+- Do not output markdown, explanations, or code fences.
+
+Corpus latest indexed publication date: {corpus_latest_date or "unknown"}
+""".strip()
+
+    user_sections = [f"Original user question:\n{original_query}"]
+    if previous_plan is not None:
+        user_sections.append(
+            "Previous query plan JSON:\n" + json.dumps(asdict(previous_plan), ensure_ascii=False, indent=2)
+        )
+    if user_feedback:
+        user_sections.append(f"User feedback for improvement:\n{user_feedback}")
+    user_sections.append("Return only the JSON object.")
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "\n\n".join(user_sections)},
+    ]
+
+
 def build_planning_messages(
     original_query: str,
     corpus_latest_date: str | None,
@@ -679,6 +914,24 @@ def build_retrieval_text(plan: QueryPlan) -> str:
     return f"{plan.retrieval_query_en}; keywords: {', '.join(plan.keywords_en)}"
 
 
+def build_trace_retrieval_text(target_paper: TargetPaper) -> str:
+    summary = normalize_whitespace(target_paper.summary)
+    if summary:
+        return f"{target_paper.title}. {summary}"
+    return target_paper.title
+
+
+def build_trace_rerank_query(target_paper: TargetPaper) -> str:
+    return (
+        "Most important prior papers for this target paper. "
+        "Focus on foundational methods, problem framing, and techniques the target paper likely builds on.\n"
+        f"Target paper title: {target_paper.title}\n"
+        f"Target paper published date: {target_paper.published_date or 'Unknown'}\n"
+        f"Target paper category: {target_paper.primary_category or 'Unknown'}\n"
+        f"Target paper summary: {target_paper.summary}"
+    )
+
+
 def embedding_to_vector_literal(query_vec: list[float]) -> str:
     return json.dumps(query_vec, separators=(",", ":"))
 
@@ -769,6 +1022,77 @@ def vector_search_top_k(
             )
         )
     return papers
+
+
+def vector_search_prior_work_top_k(
+    query_vec: list[float],
+    target_paper: TargetPaper,
+    limit: int,
+    db_config: dict[str, str] | None = None,
+) -> list[RetrievedPaper]:
+    target_date = parse_iso_date(target_paper.published_date)
+    if target_date is None:
+        raise RuntimeError("Target paper is missing a valid published_date.")
+
+    target_base_id = extract_arxiv_base_id(target_paper.arxiv_id)
+    category_sql = get_primary_category_sql(db_config)
+    sql = f"""
+        SELECT
+            m.id,
+            m.title,
+            COALESCE(
+                m.extracted_insights->>'summary_for_embedding',
+                m.extracted_insights->>'summary',
+                m.title
+            ) AS summary_text,
+            COALESCE(
+                m.extracted_insights->>'methodology',
+                m.extracted_insights->>'summary',
+                ''
+            ) AS methodology_text,
+            1 - (e.embedding <=> %s::vector) AS similarity,
+            COALESCE(m.authors, ARRAY[]::text[]),
+            m.published_date,
+            {category_sql} AS primary_category
+        FROM papers_embeddings AS e
+        JOIN papers_meta AS m ON e.paper_id = m.id
+        WHERE
+            m.id <> %s::uuid
+            AND m.published_date < %s
+            AND lower(split_part(m.arxiv_id, 'v', 1)) <> lower(%s)
+        ORDER BY e.embedding <=> %s::vector
+        LIMIT %s;
+    """
+    params = (
+        embedding_to_vector_literal(query_vec),
+        target_paper.id,
+        target_date.isoformat(),
+        target_base_id or "",
+        embedding_to_vector_literal(query_vec),
+        limit,
+    )
+
+    conn = psycopg2.connect(**(db_config or DEFAULT_DB_CONFIG))
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    return [
+        RetrievedPaper(
+            id=str(row[0]),
+            title=row[1],
+            text=row[2] or row[1] or "No summary available.",
+            method=row[3] or "Not provided.",
+            initial_score=float(row[4]),
+            authors=list(row[5] or []),
+            published_date=row[6].isoformat() if row[6] else None,
+            primary_category=row[7] or None,
+        )
+        for row in rows
+    ]
 
 
 def build_rerank_document(paper: RetrievedPaper) -> str:
@@ -923,6 +1247,100 @@ Selected papers:
 """
 
 
+def build_trace_generation_prompt(
+    target_paper: TargetPaper,
+    answer_language: str,
+    papers: list[RankedPaper],
+) -> str:
+    language_instruction = "Reply in Chinese." if answer_language == "zh" else "Reply in English."
+    candidate_blocks: list[str] = []
+    for index, paper in enumerate(papers, start=1):
+        authors_text = ", ".join(paper.authors) if paper.authors else "Unknown"
+        candidate_blocks.append(
+            "\n".join(
+                [
+                    f"[Paper {index}]",
+                    f"Title: {paper.title}",
+                    f"Published date: {paper.published_date or 'Unknown'}",
+                    f"Primary category: {paper.primary_category or 'Unknown'}",
+                    f"Authors: {authors_text}",
+                    f"Summary: {paper.text}",
+                    f"Method: {paper.method}",
+                ]
+            )
+        )
+
+    return f"""You are a research assistant performing PST-lite prior-work tracing.
+This task returns candidate precursor papers, not verified citations.
+Use only the candidate papers provided below.
+For each candidate paper, explain in 1-2 sentences why it is likely important prior work for the target paper.
+If the evidence is uncertain, explicitly say that the uncertainty comes from the lack of explicit reference/citation data.
+Use labels like [Paper 1].
+{language_instruction}
+
+Target paper:
+Title: {target_paper.title}
+arXiv ID: {target_paper.arxiv_id}
+Published date: {target_paper.published_date or 'Unknown'}
+Primary category: {target_paper.primary_category or 'Unknown'}
+Authors: {", ".join(target_paper.authors) if target_paper.authors else 'Unknown'}
+Summary: {target_paper.summary}
+
+Candidate prior papers:
+
+{chr(10).join(candidate_blocks)}
+"""
+
+
+def execute_trace(
+    target_paper: TargetPaper,
+    settings: RuntimeSettings,
+    answer_language: str = "zh",
+    db_config: dict[str, str] | None = None,
+) -> TraceExecution:
+    retrieval_text = build_trace_retrieval_text(target_paper)
+    query_vec = get_embedding(retrieval_text, settings)
+    coarse_results = vector_search_prior_work_top_k(
+        query_vec,
+        target_paper=target_paper,
+        limit=settings.retrieval.top_k,
+        db_config=db_config,
+    )
+    if not coarse_results:
+        raise RuntimeError("No prior paper candidates were found before the target paper's publication date.")
+
+    warnings: list[str] = []
+    rerank_query = build_trace_rerank_query(target_paper)
+    try:
+        papers = rerank_with_api(rerank_query, coarse_results, settings)
+    except Exception as exc:
+        warnings.append(f"Rerank fallback used: {exc}")
+        papers = [
+            RankedPaper(
+                id=doc.id,
+                title=doc.title,
+                text=doc.text,
+                method=doc.method,
+                initial_score=doc.initial_score,
+                authors=list(doc.authors),
+                published_date=doc.published_date,
+                primary_category=doc.primary_category,
+                rerank_score=doc.initial_score,
+            )
+            for doc in coarse_results[: settings.retrieval.top_n]
+        ]
+
+    prompt = build_trace_generation_prompt(target_paper, answer_language, papers)
+    return TraceExecution(
+        target_paper=target_paper,
+        retrieval_text=retrieval_text,
+        answer_language=answer_language,
+        papers=papers,
+        answer_prompt=prompt,
+        warnings=warnings,
+    )
+
+
 def execute_search(
     original_query: str,
     retrieval_text: str,
@@ -1005,6 +1423,15 @@ def execute_search(
 
 
 def stream_answer_tokens(execution: SearchExecution, settings: RuntimeSettings) -> Iterator[str]:
+    yield from stream_chat_tokens(
+        [{"role": "user", "content": execution.answer_prompt}],
+        settings.answer_chat,
+        settings.retrieval.request_timeout,
+        settings.embedding.api_url,
+    )
+
+
+def stream_trace_answer_tokens(execution: TraceExecution, settings: RuntimeSettings) -> Iterator[str]:
     yield from stream_chat_tokens(
         [{"role": "user", "content": execution.answer_prompt}],
         settings.answer_chat,
