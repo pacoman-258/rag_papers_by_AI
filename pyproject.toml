@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "arxiv>=2.4.0",
+    "edge-tts>=7.2.3",
     "fastapi>=0.115.0",
     "openai>=1.0.0",
     "psycopg2-binary>=2.9.10",
