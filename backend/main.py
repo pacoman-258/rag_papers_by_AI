@@ -32,6 +32,8 @@ from backend.schemas import (
     Live2DChatResponse,
     Live2DTTSRequest,
     Live2DTTSResponse,
+    ModelListRequest,
+    ModelListResponse,
     QueryPlanModel,
     RetrievalConstraintsModel,
     TargetPaperModel,
@@ -58,6 +60,8 @@ from local_paper_db.app.search_service import (
     fetch_target_paper_by_id,
     get_database_overview,
     infer_user_language,
+    list_available_models,
+    normalize_openai_compatible_base_url,
     plan_query,
     resolve_target_paper,
     revise_query_plan,
@@ -127,6 +131,20 @@ def target_paper_to_model(target: TargetPaper) -> TargetPaperModel:
     )
 
 
+def resolve_saved_model_list_api_key(payload: ModelListRequest) -> str | None:
+    if payload.provider != "openai_compatible" or payload.api_key or payload.clear_api_key:
+        return payload.api_key
+
+    saved_settings = load_runtime_settings()
+    requested_base_url = normalize_openai_compatible_base_url(payload.base_url)
+    for chat_config in (saved_settings.query_chat, saved_settings.answer_chat):
+        if chat_config.provider != "openai_compatible":
+            continue
+        if normalize_openai_compatible_base_url(chat_config.base_url) == requested_base_url and chat_config.api_key:
+            return chat_config.api_key
+    return None
+
+
 @app.get("/api/config", response_model=RuntimeSettingsResponse)
 def get_config() -> RuntimeSettingsResponse:
     return runtime_settings_to_response(load_runtime_settings())
@@ -139,6 +157,22 @@ def put_config(payload: RuntimeSettingsRequest) -> RuntimeSettingsResponse:
     validate_runtime_settings(merged)
     saved = save_runtime_settings(merged)
     return runtime_settings_to_response(saved)
+
+
+@app.post("/api/models/list", response_model=ModelListResponse)
+def api_list_models(payload: ModelListRequest) -> ModelListResponse:
+    try:
+        models = list_available_models(
+            provider=payload.provider,
+            base_url=payload.base_url,
+            api_key=resolve_saved_model_list_api_key(payload),
+            kind=payload.kind,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return ModelListResponse(models=models, provider=payload.provider)
 
 
 @app.post("/api/search/plan", response_model=QueryPlanModel)

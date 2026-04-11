@@ -7,6 +7,7 @@ from calendar import monthrange
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from typing import Any, Iterator
+from urllib.parse import urlsplit, urlunsplit
 
 import psycopg2
 import requests
@@ -156,6 +157,90 @@ def normalize_ollama_api_url(base_url: str | None) -> str:
     if normalized.endswith("/api"):
         return normalized
     return f"{normalized}/api"
+
+
+def normalize_openai_compatible_base_url(base_url: str | None) -> str | None:
+    normalized = (base_url or "").strip()
+    if not normalized:
+        return None
+
+    parsed = urlsplit(normalized)
+    path = parsed.path.rstrip("/")
+    if path in {"", "/"}:
+        path = "/v1"
+
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+
+
+def dedupe_model_ids(items: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        lowered = value.casefold()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(value)
+    return sorted(normalized, key=str.casefold)
+
+
+def list_available_models(
+    provider: str,
+    base_url: str | None,
+    api_key: str | None,
+    kind: str,
+    timeout: int = 20,
+) -> list[str]:
+    resolved_provider = normalize_provider(provider)
+    if kind not in {"chat", "embedding"}:
+        raise ValueError(f"Unsupported model list kind: {kind}")
+
+    if resolved_provider == "ollama":
+        endpoint = f"{normalize_ollama_api_url(base_url)}/tags"
+        try:
+            response = requests.get(endpoint, timeout=timeout)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Failed to fetch Ollama models: {exc}") from exc
+
+        payload = response.json()
+        models = [
+            str(item.get("name") or item.get("model") or "").strip()
+            for item in payload.get("models", [])
+            if isinstance(item, dict)
+        ]
+        return dedupe_model_ids(models)
+
+    resolved_base_url = normalize_openai_compatible_base_url(base_url)
+    if not resolved_base_url:
+        raise ValueError("Base URL is required for openai-compatible providers.")
+    if not api_key:
+        raise ValueError("API key is required for openai-compatible providers.")
+
+    try:
+        response = requests.get(
+            f"{resolved_base_url}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to fetch model list: {exc}") from exc
+
+    payload = response.json()
+    models = [
+        str(item.get("id") or "").strip()
+        for item in payload.get("data", [])
+        if isinstance(item, dict)
+    ]
+    if kind == "embedding":
+        filtered = [model for model in models if "embed" in model.casefold()]
+        if filtered:
+            return dedupe_model_ids(filtered)
+    return dedupe_model_ids(models)
 
 
 def get_env_default_settings() -> RuntimeSettings:
@@ -455,7 +540,29 @@ def create_openai_client(config: ChatConfig, timeout: int):
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("openai package is required for openai_compatible provider.") from exc
 
-    return OpenAI(base_url=config.base_url, api_key=config.api_key, timeout=timeout)
+    return OpenAI(
+        base_url=normalize_openai_compatible_base_url(config.base_url),
+        api_key=config.api_key,
+        timeout=timeout,
+    )
+
+
+def collect_openai_stream_text(messages: list[dict[str, str]], config: ChatConfig, timeout: int) -> str:
+    client = create_openai_client(config, timeout)
+    stream = client.chat.completions.create(
+        model=config.model,
+        messages=messages,
+        temperature=0.2,
+        stream=True,
+    )
+    parts: list[str] = []
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        content = normalize_openai_message_content(getattr(chunk.choices[0].delta, "content", ""))
+        if content:
+            parts.append(content)
+    return "".join(parts)
 
 
 def chat_completion(messages: list[dict[str, str]], config: ChatConfig, timeout: int) -> str:
@@ -475,16 +582,7 @@ def chat_completion(messages: list[dict[str, str]], config: ChatConfig, timeout:
             raise RuntimeError("Ollama returned an empty chat response.")
         return content
 
-    client = create_openai_client(config, timeout)
-    response = client.chat.completions.create(
-        model=config.model,
-        messages=messages,
-        temperature=0.2,
-        stream=False,
-    )
-    if not response.choices:
-        raise RuntimeError("Chat API returned no choices.")
-    content = normalize_openai_message_content(response.choices[0].message.content)
+    content = collect_openai_stream_text(messages, config, timeout)
     if not content:
         raise RuntimeError("Chat API returned an empty response.")
     return content
@@ -827,7 +925,7 @@ def build_planning_messages(
     user_feedback: str | None = None,
 ) -> list[dict[str, str]]:
     system_prompt = f"""
-You optimize user questions for semantic retrieval over an English arXiv paper database about Retrieval-Augmented Generation.
+You optimize user questions for semantic retrieval over an English arXiv paper database about Computer Science.
 Return only one JSON object with this exact shape:
 {{
   "answer_language": "zh" or "en",
@@ -1223,7 +1321,7 @@ def build_generation_prompt(
         )
 
     joined_blocks = "\n\n".join(paper_blocks)
-    return f"""You are a research assistant for arXiv papers about Retrieval-Augmented Generation.
+    return f"""You are a research assistant for arXiv papers about Computer Science.
 Use only the provided papers to answer the question.
 If the evidence is insufficient, say so clearly.
 Cite evidence using labels like [Paper 1].

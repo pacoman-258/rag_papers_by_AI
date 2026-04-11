@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 Provider = Literal["ollama", "openai_compatible"]
+ModelListKind = Literal["chat", "embedding"]
 
 
 class ChatConfigRequest(BaseModel):
@@ -61,6 +62,19 @@ class RuntimeSettingsResponse(BaseModel):
     embedding: EmbeddingConfigModel
     retrieval: RetrievalConfigModel
     rerank: RerankConfigResponse
+
+
+class ModelListRequest(BaseModel):
+    provider: Provider
+    base_url: str | None = None
+    api_key: str | None = None
+    clear_api_key: bool = False
+    kind: ModelListKind
+
+
+class ModelListResponse(BaseModel):
+    models: list[str] = Field(default_factory=list)
+    provider: Provider
 
 
 class RetrievalConstraintsModel(BaseModel):

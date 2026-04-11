@@ -161,6 +161,19 @@ function buildHistoryPayload(messages) {
   return messages.slice(-10).map((item) => ({ role: item.role, text: item.text }));
 }
 
+function readJsonWithDetailFallback(response) {
+  return response.text().then((text) => {
+    if (!text) {
+      return {};
+    }
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return { detail: text };
+    }
+  });
+}
+
 export default function Live2DAssistant({
   language,
   autoReply,
@@ -224,11 +237,11 @@ export default function Live2DAssistant({
 
     fetch("/api/live2d/bootstrap")
       .then(async (response) => {
+        const payload = await readJsonWithDetailFallback(response);
         if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
           throw new Error(payload.detail || `HTTP ${response.status}`);
         }
-        return response.json();
+        return payload;
       })
       .then((payload) => {
         if (!cancelled) {
@@ -254,6 +267,13 @@ export default function Live2DAssistant({
   }, [messages, busy]);
 
   useEffect(() => {
+    if (collapsed) {
+      if (mountedRef.current) {
+        setModelReady(false);
+      }
+      return undefined;
+    }
+
     if (!bootstrap || !scriptsReady || !stageRef.current || !canvasMountRef.current) {
       return undefined;
     }
@@ -343,6 +363,9 @@ export default function Live2DAssistant({
 
     return () => {
       disposed = true;
+      if (mountedRef.current) {
+        setModelReady(false);
+      }
       if (onResize) {
         window.removeEventListener("resize", onResize);
       }
@@ -366,7 +389,7 @@ export default function Live2DAssistant({
       pixiAppRef.current = null;
       live2dModelRef.current = null;
     };
-  }, [bootstrap, scriptsReady, t.modelOffline]);
+  }, [bootstrap, collapsed, scriptsReady, t.modelOffline]);
 
   useEffect(() => {
     if (!autoReply || !autoReply.id || autoReply.id === lastAutoReplyIdRef.current) {
@@ -621,10 +644,10 @@ export default function Live2DAssistant({
           rate: "+0%"
         })
       });
+      const payload = await readJsonWithDetailFallback(response);
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(payload.detail || `HTTP ${response.status}`);
       }
-      const payload = await response.json();
       const audioResponse = await fetch(payload.audio_url);
       if (!audioResponse.ok) {
         throw new Error(`HTTP ${audioResponse.status}`);
@@ -699,11 +722,10 @@ export default function Live2DAssistant({
           answer_context: resolvedContext
         })
       });
+      const payload = await readJsonWithDetailFallback(response);
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
         throw new Error(payload.detail || `HTTP ${response.status}`);
       }
-      const payload = await response.json();
       triggerExpressionSafe(payload.expression);
       if (mountedRef.current) {
         setMessages((current) => [
@@ -749,75 +771,77 @@ export default function Live2DAssistant({
 
   return (
     <aside className={`assistant-shell${collapsed ? " is-collapsed" : ""}`}>
-      {!collapsed ? (
-        <div className="assistant-panel">
-          <div className="assistant-panel-head">
-            <div>
-              <p className="assistant-kicker">{t.title}</p>
-              <p className="assistant-subtitle">{linkedAnswerContext ? t.subtitleLinked : t.subtitleIdle}</p>
-            </div>
-            <div className="assistant-head-actions">
-              {linkedAnswerContext ? (
-                <button type="button" className="secondary" onClick={onClearAnswerContext}>
-                  {t.clearContext}
-                </button>
-              ) : null}
-              <button type="button" className="secondary" onClick={() => setMuted((current) => !current)}>
-                {muted ? t.unmute : t.mute}
-              </button>
-              <button type="button" className="secondary" onClick={() => setCollapsed(true)}>
-                {t.collapse}
-              </button>
-            </div>
-          </div>
-
-          {linkedAnswerContext ? <div className="assistant-context-chip">{t.linked}</div> : null}
-
-          <div ref={panelLogRef} className="assistant-log">
-            {messages.length === 0 ? (
-              <p className="muted">{t.subtitleIdle}</p>
-            ) : (
-              messages.map((item, index) => (
-                <article
-                  key={`${item.role}-${index}-${item.text}`}
-                  className={`assistant-message assistant-message-${item.role}`}
-                >
-                  <p>{item.text}</p>
-                  {item.isAutomatic ? (
-                    <span className="assistant-message-tag">{t.autoReply}</span>
-                  ) : null}
-                </article>
-              ))
-            )}
-            {busy ? <p className="muted">{t.thinking}</p> : null}
-          </div>
-
-          <form className="assistant-composer" onSubmit={handleSubmit}>
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              rows={3}
-              placeholder={t.inputPlaceholder}
-            />
-            <button type="submit" disabled={busy || !draft.trim()}>
-              {t.send}
-            </button>
-          </form>
-
-          {error ? <div className="assistant-error">{error}</div> : null}
-        </div>
-      ) : (
+      {collapsed ? (
         <button type="button" className="assistant-expand-pill" onClick={() => setCollapsed(false)}>
           {t.expand}
         </button>
-      )}
+      ) : (
+        <>
+          <div className="assistant-stage-card">
+            <div className="assistant-stage-frame" ref={stageRef}>
+              <div className="assistant-stage-canvas" ref={canvasMountRef} />
+              {!modelReady ? <div className="assistant-stage-placeholder">{t.modelOffline}</div> : null}
+            </div>
+          </div>
 
-      <div className="assistant-stage-card">
-        <div className="assistant-stage-frame" ref={stageRef}>
-          <div className="assistant-stage-canvas" ref={canvasMountRef} />
-          {!modelReady ? <div className="assistant-stage-placeholder">{t.modelOffline}</div> : null}
-        </div>
-      </div>
+          <div className="assistant-panel">
+            <div className="assistant-panel-head">
+              <div>
+                <p className="assistant-kicker">{t.title}</p>
+                <p className="assistant-subtitle">{linkedAnswerContext ? t.subtitleLinked : t.subtitleIdle}</p>
+              </div>
+              <div className="assistant-head-actions">
+                {linkedAnswerContext ? (
+                  <button type="button" className="secondary" onClick={onClearAnswerContext}>
+                    {t.clearContext}
+                  </button>
+                ) : null}
+                <button type="button" className="secondary" onClick={() => setMuted((current) => !current)}>
+                  {muted ? t.unmute : t.mute}
+                </button>
+                <button type="button" className="secondary" onClick={() => setCollapsed(true)}>
+                  {t.collapse}
+                </button>
+              </div>
+            </div>
+
+            {linkedAnswerContext ? <div className="assistant-context-chip">{t.linked}</div> : null}
+
+            <div ref={panelLogRef} className="assistant-log">
+              {messages.length === 0 ? (
+                <p className="muted">{t.subtitleIdle}</p>
+              ) : (
+                messages.map((item, index) => (
+                  <article
+                    key={`${item.role}-${index}-${item.text}`}
+                    className={`assistant-message assistant-message-${item.role}`}
+                  >
+                    <p>{item.text}</p>
+                    {item.isAutomatic ? (
+                      <span className="assistant-message-tag">{t.autoReply}</span>
+                    ) : null}
+                  </article>
+                ))
+              )}
+              {busy ? <p className="muted">{t.thinking}</p> : null}
+            </div>
+
+            <form className="assistant-composer" onSubmit={handleSubmit}>
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                rows={3}
+                placeholder={t.inputPlaceholder}
+              />
+              <button type="submit" disabled={busy || !draft.trim()}>
+                {t.send}
+              </button>
+            </form>
+
+            {error ? <div className="assistant-error">{error}</div> : null}
+          </div>
+        </>
+      )}
     </aside>
   );
 }

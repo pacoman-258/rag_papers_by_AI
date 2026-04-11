@@ -1,15 +1,17 @@
 import { Component, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 
 const translations = {
   en: {
     appTitle: "FastAPI + React Workbench",
     searchTab: "Search Workspace",
     ingestTab: "Ingest Manager",
+    settingsTab: "Settings",
     qaMode: "QA",
     pstMode: "PST",
     saveDefaults: "Save Defaults",
     defaultsSaved: "Defaults saved.",
+    settingsTitle: "Model & Runtime Settings",
+    settingsDescription: "Manage model providers, API endpoints, retrieval defaults, and saved credentials.",
     loading: "Loading...",
     noLogs: "No logs yet.",
     noPapers: "No papers selected yet.",
@@ -83,6 +85,9 @@ const translations = {
     optionalOllamaBaseUrl: "Optional Ollama base URL",
     openaiBaseUrl: "https://api.example.com/v1",
     keepStoredKeyPlaceholder: "Leave blank to keep the stored key",
+    fetchModels: "Fetch Models",
+    loadingModels: "Loading models...",
+    fetchedModels: "Fetched models",
     language: "Language",
     appliedConstraints: "Applied Constraints",
     implicitLatest: "Implicit latest window",
@@ -103,10 +108,13 @@ const translations = {
     appTitle: "FastAPI + React 可视化工作台",
     searchTab: "搜索工作台",
     ingestTab: "入库管理",
+    settingsTab: "设置",
     qaMode: "QA",
     pstMode: "PST",
     saveDefaults: "保存默认配置",
     defaultsSaved: "默认配置已保存。",
+    settingsTitle: "模型与运行配置",
+    settingsDescription: "统一管理模型提供方、接口地址、检索默认值和已保存凭据。",
     loading: "加载中...",
     noLogs: "暂时还没有日志。",
     noPapers: "还没有选中的论文。",
@@ -180,6 +188,9 @@ const translations = {
     optionalOllamaBaseUrl: "可选的 Ollama 接口地址",
     openaiBaseUrl: "https://api.example.com/v1",
     keepStoredKeyPlaceholder: "留空表示继续使用已保存密钥",
+    fetchModels: "拉取模型列表",
+    loadingModels: "正在拉取模型...",
+    fetchedModels: "已拉取模型",
     language: "语言",
     appliedConstraints: "实际使用的约束",
     implicitLatest: "隐式最新时间窗",
@@ -213,6 +224,27 @@ const assistantLayerCopy = {
 
 function getAssistantLayerCopy(language) {
   return assistantLayerCopy[language] ?? assistantLayerCopy.zh;
+}
+
+function buildEmptyModelCatalog() {
+  return {
+    models: [],
+    loading: false,
+    error: "",
+    fetched: false
+  };
+}
+
+function buildInitialModelCatalogs() {
+  return {
+    query_chat: buildEmptyModelCatalog(),
+    answer_chat: buildEmptyModelCatalog(),
+    embedding: buildEmptyModelCatalog()
+  };
+}
+
+function formatFetchedModelsLabel(language, count) {
+  return language === "zh" ? `已拉取模型：${count}` : `Fetched models: ${count}`;
 }
 
 class AssistantErrorBoundary extends Component {
@@ -287,35 +319,9 @@ function AssistantLayerContent({ AssistantComponent, language, autoReply }) {
 }
 
 function IsolatedAssistantLayer({ language, autoReply }) {
-  const [portalHost, setPortalHost] = useState(null);
   const [instanceKey, setInstanceKey] = useState(0);
   const [AssistantComponent, setAssistantComponent] = useState(null);
   const [loadError, setLoadError] = useState("");
-
-  useEffect(() => {
-    if (typeof document === "undefined") {
-      return undefined;
-    }
-    let node = null;
-    try {
-      node = document.createElement("div");
-      node.className = "assistant-root-layer";
-      document.body.appendChild(node);
-      setPortalHost(node);
-    } catch (error) {
-      console.error("Assistant root mount failed", error);
-      setLoadError(String(error));
-    }
-    return () => {
-      if (node?.parentNode) {
-        try {
-          node.parentNode.removeChild(node);
-        } catch (error) {
-          console.error("Assistant root cleanup failed", error);
-        }
-      }
-    };
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -348,13 +354,12 @@ function IsolatedAssistantLayer({ language, autoReply }) {
     );
   }
 
-  if (!portalHost || !AssistantComponent) {
+  if (!AssistantComponent) {
     return null;
   }
 
   try {
-    // Keep assistant DOM and runtime outside the main workspace tree.
-    return createPortal(
+    return (
       <AssistantErrorBoundary
         resetKey={`${language}-${instanceKey}-${autoReply?.id || "idle"}`}
         onRetry={() => setInstanceKey((current) => current + 1)}
@@ -368,8 +373,7 @@ function IsolatedAssistantLayer({ language, autoReply }) {
           language={language}
           autoReply={autoReply}
         />
-      </AssistantErrorBoundary>,
-      portalHost
+      </AssistantErrorBoundary>
     );
   } catch (error) {
     console.error("Assistant portal render failed", error);
@@ -433,6 +437,19 @@ function buildRuntimeRequest(settings) {
       clear_api_key: settings.rerank.clear_api_key
     }
   };
+}
+
+function readJsonWithDetailFallback(response) {
+  return response.text().then((text) => {
+    if (!text) {
+      return {};
+    }
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return { detail: text };
+    }
+  });
 }
 
 function buildRetrievalText(plan) {
@@ -546,7 +563,41 @@ function PaperList({ papers, t }) {
   );
 }
 
-function ChatConfigSection({ title, config, onChange, t, providerOptions, showApiKeyStatus = true }) {
+function ModelSelectorField({ listId, value, onChange, models, loading, error, onFetch, t, language }) {
+  return (
+    <div className="model-selector-group">
+      <label>
+        {t("model")}
+        <input list={listId} value={value} onChange={(event) => onChange(event.target.value)} />
+      </label>
+      <datalist id={listId}>
+        {models.map((model) => (
+          <option key={model} value={model} />
+        ))}
+      </datalist>
+      <div className="field-action-row">
+        <button type="button" className="secondary" onClick={onFetch} disabled={loading}>
+          {loading ? t("loadingModels") : t("fetchModels")}
+        </button>
+        {models.length ? <span className="muted">{formatFetchedModelsLabel(language, models.length)}</span> : null}
+      </div>
+      {error ? <p className="field-error">{error}</p> : null}
+    </div>
+  );
+}
+
+function ChatConfigSection({
+  title,
+  config,
+  onChange,
+  t,
+  language,
+  providerOptions,
+  modelCatalog,
+  onFetchModels,
+  modelListId,
+  showApiKeyStatus = true
+}) {
   return (
     <section className="config-section">
       <h3>{title}</h3>
@@ -560,10 +611,17 @@ function ChatConfigSection({ title, config, onChange, t, providerOptions, showAp
           ))}
         </select>
       </label>
-      <label>
-        {t("model")}
-        <input value={config.model} onChange={(event) => onChange("model", event.target.value)} />
-      </label>
+      <ModelSelectorField
+        listId={modelListId}
+        value={config.model}
+        onChange={(value) => onChange("model", value)}
+        models={modelCatalog.models}
+        loading={modelCatalog.loading}
+        error={modelCatalog.error}
+        onFetch={onFetchModels}
+        t={t}
+        language={language}
+      />
       <label>
         {t("baseUrl")}
         <input
@@ -669,6 +727,7 @@ export default function App() {
   const [assistantAutoReply, setAssistantAutoReply] = useState(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [modelCatalogs, setModelCatalogs] = useState(buildInitialModelCatalogs);
   const [appliedConstraints, setAppliedConstraints] = useState(null);
   const [corpusLatestDate, setCorpusLatestDate] = useState(null);
   const [ingestStatus, setIngestStatus] = useState(null);
@@ -704,13 +763,20 @@ export default function App() {
 
   async function loadConfig() {
     const response = await fetch("/api/config");
-    const data = await response.json();
+    const data = await readJsonWithDetailFallback(response);
+    if (!response.ok) {
+      throw new Error(data.detail || `HTTP ${response.status}`);
+    }
     setSettings(buildDefaultState(data));
+    setModelCatalogs(buildInitialModelCatalogs());
   }
 
   async function loadIngestStatus() {
     const response = await fetch("/api/ingest/status");
-    const data = await response.json();
+    const data = await readJsonWithDetailFallback(response);
+    if (!response.ok) {
+      throw new Error(data.detail || `HTTP ${response.status}`);
+    }
     setIngestStatus(data);
     setIngestLogs(data.recent_logs || []);
     if (data.job_id && data.status === "running") {
@@ -723,6 +789,21 @@ export default function App() {
       ...current,
       [section]: { ...current[section], [key]: value }
     }));
+    if (
+      (section === "query_chat" || section === "answer_chat") &&
+      ["provider", "base_url", "api_key", "clear_api_key"].includes(key)
+    ) {
+      setModelCatalogs((current) => ({
+        ...current,
+        [section]: buildEmptyModelCatalog()
+      }));
+    }
+    if (section === "embedding" && key === "api_url") {
+      setModelCatalogs((current) => ({
+        ...current,
+        embedding: buildEmptyModelCatalog()
+      }));
+    }
   }
 
   function resetSearchOutputs() {
@@ -754,12 +835,75 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(runtimePayload)
     });
-    const data = await response.json();
+    const data = await readJsonWithDetailFallback(response);
     if (!response.ok) {
       throw new Error(data.detail || t("failedSaveDefaults"));
     }
     setSettings(buildDefaultState(data));
+    setModelCatalogs(buildInitialModelCatalogs());
     setMessage(t("defaultsSaved"));
+  }
+
+  function buildModelListPayload(section) {
+    if (section === "embedding") {
+      return {
+        provider: "ollama",
+        base_url: settings.embedding.api_url || null,
+        api_key: null,
+        clear_api_key: false,
+        kind: "embedding"
+      };
+    }
+
+    return {
+      provider: settings[section].provider,
+      base_url: settings[section].base_url || null,
+      api_key: settings[section].api_key || null,
+      clear_api_key: settings[section].clear_api_key,
+      kind: "chat"
+    };
+  }
+
+  async function fetchAvailableModels(section) {
+    setModelCatalogs((current) => ({
+      ...current,
+      [section]: {
+        ...current[section],
+        loading: true,
+        error: ""
+      }
+    }));
+
+    try {
+      const response = await fetch("/api/models/list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildModelListPayload(section))
+      });
+      const data = await readJsonWithDetailFallback(response);
+      if (!response.ok) {
+        throw new Error(data.detail || `HTTP ${response.status}`);
+      }
+      setModelCatalogs((current) => ({
+        ...current,
+        [section]: {
+          models: Array.isArray(data.models) ? data.models : [],
+          loading: false,
+          error: "",
+          fetched: true
+        }
+      }));
+    } catch (error) {
+      setModelCatalogs((current) => ({
+        ...current,
+        [section]: {
+          ...current[section],
+          loading: false,
+          error: String(error),
+          fetched: false
+        }
+      }));
+    }
   }
 
   async function requestPlan() {
@@ -775,7 +919,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, settings: runtimePayload })
       });
-      const data = await response.json();
+      const data = await readJsonWithDetailFallback(response);
       if (!response.ok) {
         throw new Error(data.detail || t("failedGeneratePlan"));
       }
@@ -808,7 +952,7 @@ export default function App() {
           settings: runtimePayload
         })
       });
-      const data = await response.json();
+      const data = await readJsonWithDetailFallback(response);
       if (!response.ok) {
         throw new Error(data.detail || t("failedRefinePlan"));
       }
@@ -859,7 +1003,7 @@ export default function App() {
           settings: runtimePayload
         })
       });
-      const data = await response.json();
+      const data = await readJsonWithDetailFallback(response);
       if (!response.ok) {
         throw new Error(data.detail || t("failedExecuteSearch"));
       }
@@ -888,7 +1032,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: traceQuery })
       });
-      const data = await response.json();
+      const data = await readJsonWithDetailFallback(response);
       if (!response.ok) {
         throw new Error(data.detail || t("failedResolveTarget"));
       }
@@ -923,7 +1067,7 @@ export default function App() {
           settings: runtimePayload
         })
       });
-      const data = await response.json();
+      const data = await readJsonWithDetailFallback(response);
       if (!response.ok) {
         throw new Error(data.detail || t("failedExecuteTrace"));
       }
@@ -969,7 +1113,7 @@ export default function App() {
   async function startIngest() {
     setMessage("");
     const response = await fetch("/api/ingest/run", { method: "POST" });
-    const data = await response.json();
+    const data = await readJsonWithDetailFallback(response);
     if (!response.ok) {
       throw new Error(data.detail || t("failedStartIngest"));
     }
@@ -1009,214 +1153,151 @@ export default function App() {
             <button className={activeTab === "ingest" ? "active" : ""} onClick={() => setActiveTab("ingest")}>
               {t("ingestTab")}
             </button>
+            <button className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>
+              {t("settingsTab")}
+            </button>
           </div>
         </div>
       </header>
 
       {message ? <div className="message">{message}</div> : null}
-
-      <section className="settings-grid">
-        <ChatConfigSection
-          title={t("queryChat")}
-          config={settings.query_chat}
-          onChange={(key, value) => updateNested("query_chat", key, value)}
-          t={t}
-          providerOptions={providerOptions}
-        />
-        <ChatConfigSection
-          title={t("answerChat")}
-          config={settings.answer_chat}
-          onChange={(key, value) => updateNested("answer_chat", key, value)}
-          t={t}
-          providerOptions={providerOptions}
-        />
-        <section className="config-section">
-          <h3>{t("embedding")}</h3>
-          <label>
-            {t("ollamaApiUrl")}
-            <input value={settings.embedding.api_url} onChange={(event) => updateNested("embedding", "api_url", event.target.value)} />
-          </label>
-          <label>
-            {t("embeddingModel")}
-            <input value={settings.embedding.model} onChange={(event) => updateNested("embedding", "model", event.target.value)} />
-          </label>
-        </section>
-        <section className="config-section">
-          <h3>{t("rerankRetrieval")}</h3>
-          <label>
-            {t("rerankBaseUrl")}
-            <input value={settings.rerank.base_url} onChange={(event) => updateNested("rerank", "base_url", event.target.value)} />
-          </label>
-          <label>
-            {t("rerankModel")}
-            <input value={settings.rerank.model} onChange={(event) => updateNested("rerank", "model", event.target.value)} />
-          </label>
-          <label>
-            {t("rerankApiKey")}
-            <input
-              type="password"
-              value={settings.rerank.api_key || ""}
-              onChange={(event) => updateNested("rerank", "api_key", event.target.value)}
-              placeholder={t("keepStoredKeyPlaceholder")}
-            />
-          </label>
-          <p className="muted">
-            {t("storedKeyPresent")}: {settings.rerank.has_api_key ? t("yes") : t("no")}
-          </p>
-          <button type="button" className="secondary" onClick={() => updateNested("rerank", "clear_api_key", !settings.rerank.clear_api_key)}>
-            {settings.rerank.clear_api_key ? t("keepStoredKey") : t("clearStoredKey")}
-          </button>
-          <label>
-            {t("topK")}
-            <input type="number" value={settings.retrieval.top_k} onChange={(event) => updateNested("retrieval", "top_k", event.target.value)} />
-          </label>
-          <label>
-            {t("topN")}
-            <input type="number" value={settings.retrieval.top_n} onChange={(event) => updateNested("retrieval", "top_n", event.target.value)} />
-          </label>
-          <label>
-            {t("timeout")}
-            <input
-              type="number"
-              value={settings.retrieval.request_timeout}
-              onChange={(event) => updateNested("retrieval", "request_timeout", event.target.value)}
-            />
-          </label>
-        </section>
-      </section>
-
-      <div className="toolbar">
-        <button onClick={() => saveDefaults().catch((error) => setMessage(String(error)))}>{t("saveDefaults")}</button>
-      </div>
       {activeTab === "search" ? (
-        <section className="workspace">
-          <div className="tab-row">
-            <button className={workspaceMode === "qa" ? "active" : "secondary"} onClick={() => setWorkspaceMode("qa")}>
-              {t("qaMode")}
-            </button>
-            <button className={workspaceMode === "pst" ? "active" : "secondary"} onClick={() => setWorkspaceMode("pst")}>
-              {t("pstMode")}
-            </button>
-          </div>
+        <div className="search-layout">
+          <section className="workspace search-main">
+            <div className="tab-row">
+              <button className={workspaceMode === "qa" ? "active" : "secondary"} onClick={() => setWorkspaceMode("qa")}>
+                {t("qaMode")}
+              </button>
+              <button className={workspaceMode === "pst" ? "active" : "secondary"} onClick={() => setWorkspaceMode("pst")}>
+                {t("pstMode")}
+              </button>
+            </div>
 
-          {workspaceMode === "qa" ? (
-            <>
-              <div className="question-box">
-                <label>
-                  {t("researchQuestion")}
-                  <textarea
-                    value={question}
-                    onChange={(event) => setQuestion(event.target.value)}
-                    rows={4}
-                    placeholder={t("questionPlaceholder")}
-                  />
-                </label>
-                <button onClick={requestPlan} disabled={busy}>
-                  {busy ? t("working") : t("generateQueryPlan")}
-                </button>
-              </div>
-
-              {queryPlan ? (
-                <section className="rewrite-card">
-                  <h3>{t("rewriteConfirmation")}</h3>
-                  <p>
-                    <strong>{t("original")}:</strong> {question}
-                  </p>
-                  <p>
-                    <strong>{t("intentSummary")}:</strong> {queryPlan.intent_summary}
-                  </p>
-                  <p>
-                    <strong>{t("retrievalQuery")}:</strong> {queryPlan.retrieval_query_en}
-                  </p>
-                  <p>
-                    <strong>{t("keywords")}:</strong> {queryPlan.keywords_en.join(", ") || t("none")}
-                  </p>
-                  <ConstraintBlock constraints={queryPlan.constraints} corpusLatestDate={queryPlan.corpus_latest_date} t={t} />
-                  <div className="action-row">
-                    <button onClick={() => executeSearch(buildRetrievalText(queryPlan), queryPlan)} disabled={busy}>
-                      {t("useRewrite")}
-                    </button>
-                    <button className="secondary" onClick={() => executeSearch(question, queryPlan)} disabled={busy}>
-                      {t("useOriginal")}
-                    </button>
-                  </div>
+            {workspaceMode === "qa" ? (
+              <>
+                <div className="question-box">
                   <label>
-                    {t("improvePrompt")}
+                    {t("researchQuestion")}
                     <textarea
-                      value={feedback}
-                      onChange={(event) => setFeedback(event.target.value)}
-                      rows={3}
-                      placeholder={t("improvePlaceholder")}
+                      value={question}
+                      onChange={(event) => setQuestion(event.target.value)}
+                      rows={4}
+                      placeholder={t("questionPlaceholder")}
                     />
                   </label>
-                  <button className="secondary" onClick={refinePlan} disabled={busy || !feedback.trim()}>
-                    {t("improveRewrite")}
+                  <button onClick={requestPlan} disabled={busy}>
+                    {busy ? t("working") : t("generateQueryPlan")}
                   </button>
-                </section>
-              ) : null}
+                </div>
 
-              {appliedConstraints ? (
-                <section>
-                  <h3>{t("appliedConstraints")}</h3>
-                  <ConstraintBlock constraints={appliedConstraints} corpusLatestDate={corpusLatestDate} t={t} />
-                </section>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <div className="question-box">
-                <label>
-                  {t("targetPaperQuery")}
-                  <textarea
-                    value={traceQuery}
-                    onChange={(event) => setTraceQuery(event.target.value)}
-                    rows={3}
-                    placeholder={t("targetPaperPlaceholder")}
+                {queryPlan ? (
+                  <section className="rewrite-card">
+                    <h3>{t("rewriteConfirmation")}</h3>
+                    <p>
+                      <strong>{t("original")}:</strong> {question}
+                    </p>
+                    <p>
+                      <strong>{t("intentSummary")}:</strong> {queryPlan.intent_summary}
+                    </p>
+                    <p>
+                      <strong>{t("retrievalQuery")}:</strong> {queryPlan.retrieval_query_en}
+                    </p>
+                    <p>
+                      <strong>{t("keywords")}:</strong> {queryPlan.keywords_en.join(", ") || t("none")}
+                    </p>
+                    <ConstraintBlock constraints={queryPlan.constraints} corpusLatestDate={queryPlan.corpus_latest_date} t={t} />
+                    <div className="action-row">
+                      <button onClick={() => executeSearch(buildRetrievalText(queryPlan), queryPlan)} disabled={busy}>
+                        {t("useRewrite")}
+                      </button>
+                      <button className="secondary" onClick={() => executeSearch(question, queryPlan)} disabled={busy}>
+                        {t("useOriginal")}
+                      </button>
+                    </div>
+                    <label>
+                      {t("improvePrompt")}
+                      <textarea
+                        value={feedback}
+                        onChange={(event) => setFeedback(event.target.value)}
+                        rows={3}
+                        placeholder={t("improvePlaceholder")}
+                      />
+                    </label>
+                    <button className="secondary" onClick={refinePlan} disabled={busy || !feedback.trim()}>
+                      {t("improveRewrite")}
+                    </button>
+                  </section>
+                ) : null}
+
+                {appliedConstraints ? (
+                  <section>
+                    <h3>{t("appliedConstraints")}</h3>
+                    <ConstraintBlock constraints={appliedConstraints} corpusLatestDate={corpusLatestDate} t={t} />
+                  </section>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div className="question-box">
+                  <label>
+                    {t("targetPaperQuery")}
+                    <textarea
+                      value={traceQuery}
+                      onChange={(event) => setTraceQuery(event.target.value)}
+                      rows={3}
+                      placeholder={t("targetPaperPlaceholder")}
+                    />
+                  </label>
+                  <button onClick={resolveTraceTarget} disabled={busy}>
+                    {busy ? t("working") : t("resolveTargetPaper")}
+                  </button>
+                </div>
+
+                {resolvedTarget ? (
+                  <TargetPaperCard paper={resolvedTarget} t={t} actionLabel={t("runPst")} onAction={() => executeTrace(resolvedTarget)} />
+                ) : null}
+
+                {!resolvedTarget && traceCandidates.length ? (
+                  <CandidateList
+                    candidates={traceCandidates}
+                    onSelect={(candidate) => {
+                      setResolvedTarget(candidate);
+                      setTraceCandidates([]);
+                      setMessage("");
+                    }}
+                    t={t}
                   />
-                </label>
-                <button onClick={resolveTraceTarget} disabled={busy}>
-                  {busy ? t("working") : t("resolveTargetPaper")}
-                </button>
+                ) : null}
+
+                <p className="muted">{t("candidateNotice")}</p>
+              </>
+            )}
+            {warnings.length ? (
+              <div className="warning-box">
+                {warnings.map((warning) => (
+                  <div key={warning}>{warning}</div>
+                ))}
               </div>
+            ) : null}
 
-              {resolvedTarget ? (
-                <TargetPaperCard paper={resolvedTarget} t={t} actionLabel={t("runPst")} onAction={() => executeTrace(resolvedTarget)} />
-              ) : null}
+            <section>
+              <h3>{workspaceMode === "qa" ? t("topPapers") : t("priorPaperCandidates")}</h3>
+              <PaperList papers={papers} t={t} />
+            </section>
 
-              {!resolvedTarget && traceCandidates.length ? (
-                <CandidateList
-                  candidates={traceCandidates}
-                  onSelect={(candidate) => {
-                    setResolvedTarget(candidate);
-                    setTraceCandidates([]);
-                    setMessage("");
-                  }}
-                  t={t}
-                />
-              ) : null}
-
-              <p className="muted">{t("candidateNotice")}</p>
-            </>
-          )}
-          {warnings.length ? (
-            <div className="warning-box">
-              {warnings.map((warning) => (
-                <div key={warning}>{warning}</div>
-              ))}
-            </div>
-          ) : null}
-
-          <section>
-            <h3>{workspaceMode === "qa" ? t("topPapers") : t("priorPaperCandidates")}</h3>
-            <PaperList papers={papers} t={t} />
+            <section>
+              <h3>{workspaceMode === "qa" ? t("answerStream") : t("traceExplanation")}</h3>
+              <div className="answer-box">{answer || <span className="muted">{t("answerPlaceholder")}</span>}</div>
+            </section>
           </section>
 
-          <section>
-            <h3>{workspaceMode === "qa" ? t("answerStream") : t("traceExplanation")}</h3>
-            <div className="answer-box">{answer || <span className="muted">{t("answerPlaceholder")}</span>}</div>
-          </section>
-        </section>
-      ) : (
+          <aside className="assistant-column">
+            <IsolatedAssistantLayer language={language} autoReply={assistantAutoReply} />
+          </aside>
+        </div>
+      ) : null}
+
+      {activeTab === "ingest" ? (
         <section className="workspace">
           <div className="ingest-head">
             <div>
@@ -1238,12 +1319,104 @@ export default function App() {
           </p>
           <EventLog lines={ingestLogs} t={t} />
         </section>
-      )}
+      ) : null}
 
-      <IsolatedAssistantLayer
-        language={language}
-        autoReply={assistantAutoReply}
-      />
+      {activeTab === "settings" ? (
+        <section className="settings-page">
+          <div className="settings-page-head config-section">
+            <div>
+              <h3>{t("settingsTitle")}</h3>
+              <p className="muted">{t("settingsDescription")}</p>
+            </div>
+            <button onClick={() => saveDefaults().catch((error) => setMessage(String(error)))}>{t("saveDefaults")}</button>
+          </div>
+
+          <section className="settings-grid">
+            <ChatConfigSection
+              title={t("queryChat")}
+              config={settings.query_chat}
+              onChange={(key, value) => updateNested("query_chat", key, value)}
+              t={t}
+              language={language}
+              providerOptions={providerOptions}
+              modelCatalog={modelCatalogs.query_chat}
+              onFetchModels={() => fetchAvailableModels("query_chat")}
+              modelListId="query-chat-models"
+            />
+            <ChatConfigSection
+              title={t("answerChat")}
+              config={settings.answer_chat}
+              onChange={(key, value) => updateNested("answer_chat", key, value)}
+              t={t}
+              language={language}
+              providerOptions={providerOptions}
+              modelCatalog={modelCatalogs.answer_chat}
+              onFetchModels={() => fetchAvailableModels("answer_chat")}
+              modelListId="answer-chat-models"
+            />
+            <section className="config-section">
+              <h3>{t("embedding")}</h3>
+              <label>
+                {t("ollamaApiUrl")}
+                <input value={settings.embedding.api_url} onChange={(event) => updateNested("embedding", "api_url", event.target.value)} />
+              </label>
+              <ModelSelectorField
+                listId="embedding-models"
+                value={settings.embedding.model}
+                onChange={(value) => updateNested("embedding", "model", value)}
+                models={modelCatalogs.embedding.models}
+                loading={modelCatalogs.embedding.loading}
+                error={modelCatalogs.embedding.error}
+                onFetch={() => fetchAvailableModels("embedding")}
+                t={t}
+                language={language}
+              />
+            </section>
+            <section className="config-section">
+              <h3>{t("rerankRetrieval")}</h3>
+              <label>
+                {t("rerankBaseUrl")}
+                <input value={settings.rerank.base_url} onChange={(event) => updateNested("rerank", "base_url", event.target.value)} />
+              </label>
+              <label>
+                {t("rerankModel")}
+                <input value={settings.rerank.model} onChange={(event) => updateNested("rerank", "model", event.target.value)} />
+              </label>
+              <label>
+                {t("rerankApiKey")}
+                <input
+                  type="password"
+                  value={settings.rerank.api_key || ""}
+                  onChange={(event) => updateNested("rerank", "api_key", event.target.value)}
+                  placeholder={t("keepStoredKeyPlaceholder")}
+                />
+              </label>
+              <p className="muted">
+                {t("storedKeyPresent")}: {settings.rerank.has_api_key ? t("yes") : t("no")}
+              </p>
+              <button type="button" className="secondary" onClick={() => updateNested("rerank", "clear_api_key", !settings.rerank.clear_api_key)}>
+                {settings.rerank.clear_api_key ? t("keepStoredKey") : t("clearStoredKey")}
+              </button>
+              <label>
+                {t("topK")}
+                <input type="number" value={settings.retrieval.top_k} onChange={(event) => updateNested("retrieval", "top_k", event.target.value)} />
+              </label>
+              <label>
+                {t("topN")}
+                <input type="number" value={settings.retrieval.top_n} onChange={(event) => updateNested("retrieval", "top_n", event.target.value)} />
+              </label>
+              <label>
+                {t("timeout")}
+                <input
+                  type="number"
+                  value={settings.retrieval.request_timeout}
+                  onChange={(event) => updateNested("retrieval", "request_timeout", event.target.value)}
+                />
+              </label>
+            </section>
+          </section>
+        </section>
+      ) : null}
     </div>
   );
 }
