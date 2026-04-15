@@ -62,12 +62,23 @@ class RerankConfig:
 
 
 @dataclass(slots=True)
+class AssistantMemoryConfig:
+    enabled: bool = True
+    summary_interval_turns: int = 6
+    major_summary_group_size: int = 3
+    max_recall_items: int = 5
+    recall_threshold: float = 0.72
+    auto_save_enabled: bool = True
+
+
+@dataclass(slots=True)
 class RuntimeSettings:
     query_chat: ChatConfig
     answer_chat: ChatConfig
     embedding: EmbeddingConfig
     retrieval: RetrievalConfig
     rerank: RerankConfig
+    assistant_memory: AssistantMemoryConfig = field(default_factory=AssistantMemoryConfig)
 
 
 @dataclass(slots=True)
@@ -274,6 +285,15 @@ def get_env_default_settings() -> RuntimeSettings:
             model=os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"),
             api_key=os.getenv("RERANK_API_KEY"),
         ),
+        assistant_memory=AssistantMemoryConfig(
+            enabled=os.getenv("ASSISTANT_MEMORY_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"},
+            summary_interval_turns=int(os.getenv("ASSISTANT_MEMORY_SUMMARY_INTERVAL_TURNS", "6")),
+            major_summary_group_size=int(os.getenv("ASSISTANT_MEMORY_MAJOR_SUMMARY_GROUP_SIZE", "3")),
+            max_recall_items=int(os.getenv("ASSISTANT_MEMORY_MAX_RECALL_ITEMS", "5")),
+            recall_threshold=float(os.getenv("ASSISTANT_MEMORY_RECALL_THRESHOLD", "0.72")),
+            auto_save_enabled=os.getenv("ASSISTANT_MEMORY_AUTO_SAVE_ENABLED", "true").strip().lower()
+            not in {"0", "false", "no", "off"},
+        ),
     )
 
 
@@ -300,6 +320,14 @@ def validate_runtime_settings(settings: RuntimeSettings) -> None:
         raise RuntimeError("Missing embedding.model")
     if settings.retrieval.top_k <= 0 or settings.retrieval.top_n <= 0:
         raise RuntimeError("Retrieval top_k and top_n must be positive.")
+    if settings.assistant_memory.summary_interval_turns <= 0:
+        raise RuntimeError("assistant_memory.summary_interval_turns must be positive.")
+    if settings.assistant_memory.major_summary_group_size <= 0:
+        raise RuntimeError("assistant_memory.major_summary_group_size must be positive.")
+    if settings.assistant_memory.max_recall_items <= 0:
+        raise RuntimeError("assistant_memory.max_recall_items must be positive.")
+    if settings.assistant_memory.recall_threshold < 0 or settings.assistant_memory.recall_threshold > 1:
+        raise RuntimeError("assistant_memory.recall_threshold must be between 0 and 1.")
 
 
 def serialize_runtime_settings(settings: RuntimeSettings) -> dict[str, Any]:

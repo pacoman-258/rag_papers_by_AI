@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import tempfile
 import time
@@ -16,6 +17,13 @@ except Exception:  # pragma: no cover
 
 from fastapi import HTTPException
 
+from backend.assistant_memory import (
+    delete_assistant_memory_item,
+    finalize_live2d_chat_turn,
+    get_live2d_memory_state,
+    pin_assistant_memory_item,
+    prepare_live2d_chat_context,
+)
 from local_paper_db.app.search_service import (
     RuntimeSettings,
     chat_completion,
@@ -38,6 +46,7 @@ PREFERRED_MODEL_NAMES = (
 )
 
 _AUDIO_INDEX: dict[str, dict[str, Any]] = {}
+LOGGER = logging.getLogger(__name__)
 
 
 def get_live2d_runtime_root() -> Path:
@@ -249,6 +258,8 @@ Behavior rules:
 - Be helpful, upbeat, and brief.
 - Never invent papers, experiments, citations, or retrieval results.
 - If linked workflow answer context exists, treat it as the only workflow context you know.
+- If long-term memory hints are provided, use them as soft personalization signals.
+- Do not claim certainty when memory hints might be outdated.
 - If no workflow answer context exists, behave like a normal chatbot.
 - For automatic QA/PST follow-ups, do not wait for user input. Send one concise suggestion or clarification.
 - Avoid markdown tables and long lists.
@@ -266,23 +277,53 @@ If no expression fits, use an empty string.
 """.strip()
 
 
+def _format_workflow_context_for_prompt(workflow_context: dict[str, Any] | None) -> str | None:
+    if not workflow_context:
+        return None
+    try:
+        text = json.dumps(workflow_context, ensure_ascii=False, indent=2)
+    except Exception:
+        text = str(workflow_context)
+    text = text.strip()
+    if not text:
+        return None
+    return text if len(text) <= DEFAULT_CONTEXT_LIMIT else text[:DEFAULT_CONTEXT_LIMIT].rstrip() + "..."
+
+
 def _build_live2d_messages(
     *,
     source: str,
     message: str,
     history: list[dict[str, str]],
     answer_context: str | None,
+    workflow_context: dict[str, Any] | None,
+    memory_prompt_block: str | None,
     available_expressions: list[str],
 ) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = [
         {"role": "system", "content": _build_live2d_system_prompt(available_expressions)}
     ]
 
+    workflow_context_text = _format_workflow_context_for_prompt(workflow_context)
+    if workflow_context_text:
+        messages.append(
+            {
+                "role": "system",
+                "content": "Latest linked workflow structured context:\n" + workflow_context_text,
+            }
+        )
     if answer_context:
         messages.append(
             {
                 "role": "system",
                 "content": "Latest linked workflow answer context:\n" + answer_context,
+            }
+        )
+    if memory_prompt_block:
+        messages.append(
+            {
+                "role": "system",
+                "content": "Long-term memory context (only when relevant):\n" + memory_prompt_block,
             }
         )
 
@@ -320,21 +361,49 @@ def generate_live2d_reply(
     message: str,
     history: list[dict[str, Any]] | None,
     answer_context: str | None,
+    workflow_context: dict[str, Any] | None = None,
+    session_id: str | None = None,
     settings: RuntimeSettings,
     available_expressions: list[str],
+    db_config: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     normalized_history = _normalize_history(history)
     trimmed_context = trim_answer_context(answer_context)
     trimmed_message = str(message or "").strip()
+    resolved_workflow_context = workflow_context if isinstance(workflow_context, dict) else None
 
     if source == "user" and not trimmed_message:
         raise HTTPException(status_code=400, detail="User message is empty.")
+
+    memory_context: dict[str, Any] = {
+        "session_id": str(session_id or "").strip() or None,
+        "memory_used": False,
+        "used_memory_items": [],
+        "memory_prompt_block": None,
+        "memory_notice": None,
+        "workflow_context": resolved_workflow_context,
+    }
+    try:
+        memory_context = prepare_live2d_chat_context(
+            source=source,
+            message=trimmed_message,
+            answer_context=trimmed_context,
+            workflow_context=resolved_workflow_context,
+            settings=settings,
+            session_id=session_id,
+            history=history,
+            db_config=db_config,
+        )
+    except Exception as exc:
+        LOGGER.warning("live2d memory prepare failed, fallback to stateless chat: %s", exc)
 
     messages = _build_live2d_messages(
         source=source,
         message=trimmed_message,
         history=normalized_history,
         answer_context=trimmed_context,
+        workflow_context=memory_context.get("workflow_context"),
+        memory_prompt_block=memory_context.get("memory_prompt_block"),
         available_expressions=available_expressions,
     )
     raw_content = chat_completion(messages, settings.answer_chat, settings.retrieval.request_timeout)
@@ -360,11 +429,67 @@ def generate_live2d_reply(
     if not speak_text:
         speak_text = reply_text
 
+    try:
+        finalize_live2d_chat_turn(
+            session_id=str(memory_context.get("session_id") or session_id or ""),
+            source=source,
+            assistant_reply=reply_text,
+            answer_context=trimmed_context,
+            workflow_context=memory_context.get("workflow_context"),
+            settings=settings,
+            db_config=db_config,
+        )
+    except Exception as exc:
+        LOGGER.warning("live2d memory finalize failed: %s", exc)
+
     return {
         "reply_text": reply_text,
         "speak_text": speak_text,
         "expression": expression,
+        "session_id": memory_context.get("session_id") or session_id,
+        "memory_used": bool(memory_context.get("memory_used")),
+        "memory_notice": memory_context.get("memory_notice"),
+        "used_memory_items": memory_context.get("used_memory_items") or [],
     }
+
+
+def list_live2d_memory_items(
+    *,
+    session_id: str | None = None,
+    limit: int = 20,
+    db_config: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    try:
+        return get_live2d_memory_state(session_id=session_id, limit=limit, db_config=db_config)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to list assistant memory: {exc}") from exc
+
+
+def pin_live2d_memory_item(
+    memory_id: str,
+    *,
+    db_config: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    try:
+        return pin_assistant_memory_item(memory_id, pinned=True, db_config=db_config)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to pin assistant memory: {exc}") from exc
+
+
+def delete_live2d_memory_item(
+    memory_id: str,
+    *,
+    db_config: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    try:
+        deleted = delete_assistant_memory_item(memory_id, db_config=db_config)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to delete assistant memory: {exc}") from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Memory item not found.")
+    return {"memory_id": memory_id, "deleted": True}
 
 
 def tts_available() -> bool:

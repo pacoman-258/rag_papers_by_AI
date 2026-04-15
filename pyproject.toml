@@ -15,4 +15,5 @@ dependencies = [
     "requests>=2.32.0",
     "tqdm>=4.67.0",
     "uvicorn>=0.34.0",
+    "vite>=1.5.2",
 ]

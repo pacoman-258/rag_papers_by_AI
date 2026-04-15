@@ -222,6 +222,8 @@ const assistantLayerCopy = {
   }
 };
 
+const ASSISTANT_SESSION_STORAGE_KEY = "live2d_assistant_session_id";
+
 function getAssistantLayerCopy(language) {
   return assistantLayerCopy[language] ?? assistantLayerCopy.zh;
 }
@@ -297,28 +299,46 @@ function AssistantLayerFallback({ language, onRetry, details = "" }) {
   );
 }
 
-function AssistantLayerContent({ AssistantComponent, language, autoReply }) {
-  const [latestAnswerContext, setLatestAnswerContext] = useState(null);
+function AssistantLayerContent({ AssistantComponent, language, autoReply, assistantSessionId, onAssistantSessionIdChange }) {
+  const [latestAutoContext, setLatestAutoContext] = useState({
+    answerContext: null,
+    workflowContext: null
+  });
 
   useEffect(() => {
     const trimmed = String(autoReply?.answerContext || "").trim();
-    if (!trimmed) {
+    const workflowContext =
+      autoReply?.workflowContext && typeof autoReply.workflowContext === "object" && !Array.isArray(autoReply.workflowContext)
+        ? autoReply.workflowContext
+        : null;
+    if (!trimmed && !workflowContext) {
       return;
     }
-    setLatestAnswerContext(trimmed);
+    setLatestAutoContext({
+      answerContext: trimmed || null,
+      workflowContext
+    });
   }, [autoReply]);
 
   return (
     <AssistantComponent
       language={language}
       autoReply={autoReply}
-      latestAnswerContext={latestAnswerContext}
-      onClearAnswerContext={() => setLatestAnswerContext(null)}
+      latestAnswerContext={latestAutoContext.answerContext}
+      latestWorkflowContext={latestAutoContext.workflowContext}
+      assistantSessionId={assistantSessionId}
+      onAssistantSessionIdChange={onAssistantSessionIdChange}
+      onClearAnswerContext={() =>
+        setLatestAutoContext({
+          answerContext: null,
+          workflowContext: null
+        })
+      }
     />
   );
 }
 
-function IsolatedAssistantLayer({ language, autoReply }) {
+function IsolatedAssistantLayer({ language, autoReply, assistantSessionId, onAssistantSessionIdChange }) {
   const [instanceKey, setInstanceKey] = useState(0);
   const [AssistantComponent, setAssistantComponent] = useState(null);
   const [loadError, setLoadError] = useState("");
@@ -372,6 +392,8 @@ function IsolatedAssistantLayer({ language, autoReply }) {
           AssistantComponent={AssistantComponent}
           language={language}
           autoReply={autoReply}
+          assistantSessionId={assistantSessionId}
+          onAssistantSessionIdChange={onAssistantSessionIdChange}
         />
       </AssistantErrorBoundary>
     );
@@ -471,6 +493,67 @@ function trimAssistantAnswerContext(text) {
     return value;
   }
   return `${value.slice(0, 4000).trimEnd()}...`;
+}
+
+function createAssistantSessionId() {
+  if (typeof window !== "undefined" && window.crypto?.randomUUID) {
+    return `sess-${window.crypto.randomUUID()}`;
+  }
+  return `sess-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function getOrCreateAssistantSessionId() {
+  if (typeof window === "undefined") {
+    return createAssistantSessionId();
+  }
+  const saved = String(window.localStorage.getItem(ASSISTANT_SESSION_STORAGE_KEY) || "").trim();
+  if (saved) {
+    return saved;
+  }
+  const generated = createAssistantSessionId();
+  window.localStorage.setItem(ASSISTANT_SESSION_STORAGE_KEY, generated);
+  return generated;
+}
+
+function normalizeAssistantPaperRefs(papers) {
+  const list = Array.isArray(papers) ? papers : [];
+  return {
+    paper_ids: list.map((paper) => String(paper?.id || "").trim()).filter(Boolean),
+    paper_titles: list.map((paper) => String(paper?.title || "").trim()).filter(Boolean)
+  };
+}
+
+function buildQaWorkflowContext({ question, retrievalText, answerText, papers, appliedConstraints, corpusLatestDate, searchId }) {
+  const { paper_ids, paper_titles } = normalizeAssistantPaperRefs(papers);
+  return {
+    kind: "qa",
+    query: String(question || "").trim(),
+    answer_text: trimAssistantAnswerContext(answerText),
+    paper_ids,
+    paper_titles,
+    applied_constraints: appliedConstraints || null,
+    metadata: {
+      retrieval_text: String(retrievalText || "").trim() || null,
+      corpus_latest_date: corpusLatestDate || null,
+      search_id: searchId || null
+    }
+  };
+}
+
+function buildPstWorkflowContext({ query, answerText, papers, targetPaper, traceId }) {
+  const { paper_ids, paper_titles } = normalizeAssistantPaperRefs(papers);
+  return {
+    kind: "pst",
+    query: String(query || "").trim(),
+    answer_text: trimAssistantAnswerContext(answerText),
+    paper_ids,
+    paper_titles,
+    target_paper_id: targetPaper?.id || null,
+    metadata: {
+      target_paper_title: targetPaper?.title || null,
+      trace_id: traceId || null
+    }
+  };
 }
 
 function formatTimeWindow(constraints, t) {
@@ -725,6 +808,7 @@ export default function App() {
   const [warnings, setWarnings] = useState([]);
   const [answer, setAnswer] = useState("");
   const [assistantAutoReply, setAssistantAutoReply] = useState(null);
+  const [assistantSessionId, setAssistantSessionId] = useState(getOrCreateAssistantSessionId);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [modelCatalogs, setModelCatalogs] = useState(buildInitialModelCatalogs);
@@ -816,15 +900,25 @@ export default function App() {
     answerSourceRef.current?.close();
   }
 
-  function scheduleAssistantAutoReply(source, text) {
-    const trimmed = trimAssistantAnswerContext(text);
+  function setAssistantSessionIdWithPersistence(nextSessionId) {
+    const trimmed = String(nextSessionId || "").trim();
+    if (!trimmed) {
+      return;
+    }
+    setAssistantSessionId(trimmed);
+    window.localStorage.setItem(ASSISTANT_SESSION_STORAGE_KEY, trimmed);
+  }
+
+  function scheduleAssistantAutoReply({ source, answerContext, workflowContext = null }) {
+    const trimmed = trimAssistantAnswerContext(answerContext);
     if (!trimmed) {
       return;
     }
     setAssistantAutoReply({
       id: `${source}-${Date.now()}`,
       source,
-      answerContext: trimmed
+      answerContext: trimmed,
+      workflowContext
     });
   }
 
@@ -966,7 +1060,7 @@ export default function App() {
     }
   }
 
-  function streamFrom(path, autoReplySource) {
+  function streamFrom(path, autoReplySource, buildWorkflowContext) {
     answerSourceRef.current?.close();
     answerBufferRef.current = "";
     const source = new EventSource(path);
@@ -978,7 +1072,19 @@ export default function App() {
     });
     source.addEventListener("complete", () => {
       if (autoReplySource) {
-        scheduleAssistantAutoReply(autoReplySource, answerBufferRef.current);
+        let workflowContext = null;
+        if (typeof buildWorkflowContext === "function") {
+          try {
+            workflowContext = buildWorkflowContext(answerBufferRef.current);
+          } catch (_) {
+            workflowContext = null;
+          }
+        }
+        scheduleAssistantAutoReply({
+          source: autoReplySource,
+          answerContext: answerBufferRef.current,
+          workflowContext
+        });
       }
       source.close();
     });
@@ -1011,7 +1117,17 @@ export default function App() {
       setWarnings(data.warnings || []);
       setAppliedConstraints(data.applied_constraints || null);
       setCorpusLatestDate(data.corpus_latest_date || null);
-      streamFrom(`/api/search/${data.search_id}/answer/stream`, "qa_auto");
+      streamFrom(`/api/search/${data.search_id}/answer/stream`, "qa_auto", (answerText) =>
+        buildQaWorkflowContext({
+          question,
+          retrievalText,
+          answerText,
+          papers: data.papers,
+          appliedConstraints: data.applied_constraints || null,
+          corpusLatestDate: data.corpus_latest_date || null,
+          searchId: data.search_id
+        })
+      );
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -1077,7 +1193,15 @@ export default function App() {
       setWarnings(data.warnings || []);
       setAppliedConstraints(null);
       setCorpusLatestDate(null);
-      streamFrom(`/api/trace/${data.trace_id}/answer/stream`, "pst_auto");
+      streamFrom(`/api/trace/${data.trace_id}/answer/stream`, "pst_auto", (answerText) =>
+        buildPstWorkflowContext({
+          query: traceQuery,
+          answerText,
+          papers: data.papers,
+          targetPaper: data.target_paper || targetPaper,
+          traceId: data.trace_id
+        })
+      );
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -1292,7 +1416,12 @@ export default function App() {
           </section>
 
           <aside className="assistant-column">
-            <IsolatedAssistantLayer language={language} autoReply={assistantAutoReply} />
+            <IsolatedAssistantLayer
+              language={language}
+              autoReply={assistantAutoReply}
+              assistantSessionId={assistantSessionId}
+              onAssistantSessionIdChange={setAssistantSessionIdWithPersistence}
+            />
           </aside>
         </div>
       ) : null}

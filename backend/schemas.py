@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -48,12 +48,22 @@ class RerankConfigResponse(BaseModel):
     has_api_key: bool
 
 
+class AssistantMemoryConfigModel(BaseModel):
+    enabled: bool = True
+    summary_interval_turns: int = Field(default=6, ge=1)
+    major_summary_group_size: int = Field(default=3, ge=1)
+    max_recall_items: int = Field(default=5, ge=1)
+    recall_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
+    auto_save_enabled: bool = True
+
+
 class RuntimeSettingsRequest(BaseModel):
     query_chat: ChatConfigRequest
     answer_chat: ChatConfigRequest
     embedding: EmbeddingConfigModel
     retrieval: RetrievalConfigModel
     rerank: RerankConfigRequest
+    assistant_memory: AssistantMemoryConfigModel | None = None
 
 
 class RuntimeSettingsResponse(BaseModel):
@@ -62,6 +72,7 @@ class RuntimeSettingsResponse(BaseModel):
     embedding: EmbeddingConfigModel
     retrieval: RetrievalConfigModel
     rerank: RerankConfigResponse
+    assistant_memory: AssistantMemoryConfigModel
 
 
 class ModelListRequest(BaseModel):
@@ -197,10 +208,31 @@ class Live2DHistoryMessage(BaseModel):
     text: str
 
 
+class WorkflowContextModel(BaseModel):
+    kind: str | None = None
+    query: str | None = None
+    answer_text: str | None = None
+    paper_ids: list[str] = Field(default_factory=list)
+    paper_titles: list[str] = Field(default_factory=list)
+    target_paper_id: str | None = None
+    applied_constraints: RetrievalConstraintsModel | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UsedMemoryItemModel(BaseModel):
+    memory_id: str
+    summary: str
+    memory_type: str | None = None
+    score: float | None = None
+    pinned: bool = False
+
+
 class Live2DChatRequest(BaseModel):
     source: Literal["user", "qa_auto", "pst_auto"]
     message: str = ""
     history: list[Live2DHistoryMessage] = Field(default_factory=list)
+    session_id: str | None = None
+    workflow_context: WorkflowContextModel | None = None
     answer_context: str | None = None
 
 
@@ -208,6 +240,41 @@ class Live2DChatResponse(BaseModel):
     reply_text: str
     expression: str | None = None
     speak_text: str
+    session_id: str
+    memory_used: bool = False
+    memory_notice: str | None = None
+    used_memory_items: list[UsedMemoryItemModel] = Field(default_factory=list)
+
+
+class AssistantMemoryItemModel(BaseModel):
+    memory_id: str
+    summary: str
+    memory_type: str | None = None
+    pinned: bool = False
+    score: float | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class AssistantMemoryListResponse(BaseModel):
+    session_id: str
+    items: list[AssistantMemoryItemModel] = Field(default_factory=list)
+
+
+class AssistantMemoryPinRequest(BaseModel):
+    pinned: bool = True
+
+
+class AssistantMemoryPinResponse(BaseModel):
+    session_id: str
+    memory_id: str
+    pinned: bool
+
+
+class AssistantMemoryDeleteResponse(BaseModel):
+    session_id: str
+    memory_id: str
+    deleted: bool
 
 
 class Live2DTTSRequest(BaseModel):

@@ -19,13 +19,21 @@ from backend.config_store import (
     save_runtime_settings,
 )
 from backend.live2d_service import (
+    delete_live2d_memory_item,
     generate_live2d_reply,
     get_live2d_audio,
     get_live2d_bootstrap_payload,
+    list_live2d_memory_items,
+    pin_live2d_memory_item,
     synthesize_live2d_tts,
 )
 from backend.ingest_manager import IngestManager
 from backend.schemas import (
+    AssistantMemoryDeleteResponse,
+    AssistantMemoryItemModel,
+    AssistantMemoryListResponse,
+    AssistantMemoryPinRequest,
+    AssistantMemoryPinResponse,
     IngestJobResponse,
     Live2DBootstrapResponse,
     Live2DChatRequest,
@@ -48,6 +56,7 @@ from backend.schemas import (
     RankedPaperResponse,
     RuntimeSettingsRequest,
     RuntimeSettingsResponse,
+    UsedMemoryItemModel,
 )
 from local_paper_db.app.search_service import (
     QueryPlan,
@@ -91,6 +100,82 @@ app.add_middleware(
 ingest_manager = IngestManager(REPO_ROOT)
 search_sessions: dict[str, tuple[SearchExecution, Any]] = {}
 trace_sessions: dict[str, tuple[TraceExecution, Any]] = {}
+
+
+def normalize_session_id(raw_session_id: str | None) -> str:
+    value = str(raw_session_id or "").strip()
+    return value or uuid.uuid4().hex
+
+
+def require_session_id(raw_session_id: str | None) -> str:
+    value = str(raw_session_id or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="session_id is required.")
+    return value
+
+
+def compose_answer_context(payload: Live2DChatRequest) -> str | None:
+    explicit = str(payload.answer_context or "").strip()
+    if explicit:
+        return explicit
+    context = payload.workflow_context
+    if context is None:
+        return None
+    if context.answer_text and context.answer_text.strip():
+        return context.answer_text.strip()
+    context_payload = context.model_dump(exclude_none=True)
+    if not context_payload:
+        return None
+    return json.dumps(context_payload, ensure_ascii=False)
+
+
+def coerce_used_memory_items(raw_items: Any) -> list[UsedMemoryItemModel]:
+    if not isinstance(raw_items, list):
+        return []
+    items: list[UsedMemoryItemModel] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        memory_id = str(raw.get("memory_id") or raw.get("id") or "").strip()
+        summary = str(raw.get("summary") or raw.get("text") or "").strip()
+        if not memory_id or not summary:
+            continue
+        item = UsedMemoryItemModel(
+            memory_id=memory_id,
+            summary=summary,
+            memory_type=(str(raw.get("memory_type")).strip() or None) if raw.get("memory_type") is not None else None,
+            score=float(raw["score"]) if isinstance(raw.get("score"), (float, int)) else None,
+            pinned=bool(raw.get("pinned", False)),
+        )
+        items.append(item)
+    return items
+
+
+def coerce_memory_list_items(raw_items: Any) -> list[AssistantMemoryItemModel]:
+    if not isinstance(raw_items, list):
+        return []
+    items: list[AssistantMemoryItemModel] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        memory_id = str(raw.get("memory_id") or raw.get("id") or "").strip()
+        summary = str(raw.get("summary") or raw.get("text") or "").strip()
+        if not memory_id or not summary:
+            continue
+        items.append(
+            AssistantMemoryItemModel(
+                memory_id=memory_id,
+                summary=summary,
+                memory_type=(str(raw.get("memory_type")).strip() or None)
+                if raw.get("memory_type") is not None
+                else None,
+                pinned=bool(raw.get("pinned", False)),
+                score=float(raw["score"]) if isinstance(raw.get("score"), (float, int)) else None,
+                created_at=(str(raw.get("created_at")).strip() or None) if raw.get("created_at") is not None else None,
+                updated_at=(str(raw.get("updated_at")).strip() or None) if raw.get("updated_at") is not None else None,
+            )
+        )
+    return items
 
 
 def constraints_model_to_dataclass(model: RetrievalConstraintsModel | None) -> RetrievalConstraints:
@@ -384,15 +469,109 @@ def api_live2d_chat(payload: Live2DChatRequest) -> Live2DChatResponse:
     settings = load_runtime_settings()
     validate_runtime_settings(settings)
     bootstrap = get_live2d_bootstrap_payload()
+    workflow_context_data = (
+        payload.workflow_context.model_dump(exclude_none=True)
+        if payload.workflow_context is not None
+        else None
+    )
+    session_id = normalize_session_id(payload.session_id)
     response = generate_live2d_reply(
         source=payload.source,
         message=payload.message,
         history=[item.model_dump() for item in payload.history],
-        answer_context=payload.answer_context,
+        answer_context=compose_answer_context(payload),
+        workflow_context=workflow_context_data,
+        session_id=session_id,
         settings=settings,
         available_expressions=list(bootstrap["available_expressions"]),
     )
-    return Live2DChatResponse(**response)
+    used_memory_items = coerce_used_memory_items(response.get("used_memory_items"))
+    return Live2DChatResponse(
+        reply_text=response["reply_text"],
+        expression=response.get("expression"),
+        speak_text=response["speak_text"],
+        session_id=str(response.get("session_id") or session_id),
+        memory_used=bool(response.get("memory_used")) or bool(used_memory_items),
+        memory_notice=response.get("memory_notice"),
+        used_memory_items=used_memory_items,
+    )
+
+
+@app.get("/api/live2d/memory", response_model=AssistantMemoryListResponse)
+def api_live2d_memory_list(session_id: str) -> AssistantMemoryListResponse:
+    resolved_session_id = require_session_id(session_id)
+    try:
+        raw_items = list_live2d_memory_items(
+            session_id=resolved_session_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to list memory items: {exc}") from exc
+
+    if isinstance(raw_items, dict):
+        raw_items = raw_items.get("items")
+    return AssistantMemoryListResponse(
+        session_id=resolved_session_id,
+        items=coerce_memory_list_items(raw_items),
+    )
+
+
+@app.post("/api/live2d/memory/{memory_id}/pin", response_model=AssistantMemoryPinResponse)
+def api_live2d_memory_pin(
+    memory_id: str,
+    payload: AssistantMemoryPinRequest | None = None,
+    session_id: str | None = None,
+) -> AssistantMemoryPinResponse:
+    normalized_memory_id = str(memory_id or "").strip()
+    if not normalized_memory_id:
+        raise HTTPException(status_code=400, detail="memory_id is required.")
+    resolved_session_id = str(session_id or "").strip()
+    pinned = True if payload is None else payload.pinned
+    try:
+        raw_result = pin_live2d_memory_item(
+            memory_id=normalized_memory_id,
+            pinned=pinned,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to pin memory item: {exc}") from exc
+
+    if isinstance(raw_result, dict) and isinstance(raw_result.get("pinned"), bool):
+        pinned = raw_result["pinned"]
+
+    return AssistantMemoryPinResponse(
+        session_id=resolved_session_id,
+        memory_id=normalized_memory_id,
+        pinned=pinned,
+    )
+
+
+@app.delete("/api/live2d/memory/{memory_id}", response_model=AssistantMemoryDeleteResponse)
+def api_live2d_memory_delete(memory_id: str, session_id: str | None = None) -> AssistantMemoryDeleteResponse:
+    normalized_memory_id = str(memory_id or "").strip()
+    if not normalized_memory_id:
+        raise HTTPException(status_code=400, detail="memory_id is required.")
+    resolved_session_id = str(session_id or "").strip()
+    try:
+        raw_result = delete_live2d_memory_item(
+            memory_id=normalized_memory_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to delete memory item: {exc}") from exc
+
+    deleted = True
+    if isinstance(raw_result, dict) and isinstance(raw_result.get("deleted"), bool):
+        deleted = raw_result["deleted"]
+
+    return AssistantMemoryDeleteResponse(
+        session_id=resolved_session_id,
+        memory_id=normalized_memory_id,
+        deleted=deleted,
+    )
 
 
 @app.post("/api/live2d/tts", response_model=Live2DTTSResponse)

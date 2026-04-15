@@ -7,9 +7,9 @@ from pathlib import Path
 import arxiv
 
 
-KEYWORD = "Retrieval Augmented Generation"
-CATEGORY = "cs.CL"
-MAX_RESULTS = 100
+KEYWORD = "KV cache"
+CATEGORY = "AI Agents"
+MAX_RESULTS = 200
 SAVE_DIR = Path("./arxiv_papers_rag")
 
 
@@ -41,19 +41,12 @@ def run_downloader() -> None:
         paper_id = result.get_short_id()
         publish_date = result.published.strftime("%Y-%m-%d")
         safe_title = sanitize_filename(result.title)
-        pdf_filename = f"[{publish_date}] {safe_title}.pdf"
-        pdf_path = SAVE_DIR / pdf_filename
+        
 
         print(f"Processing: {result.title}")
-        if pdf_path.exists():
-            print("  -> Skipped (already downloaded)")
-            continue
+        
 
-        try:
-            result.download_pdf(dirpath=str(SAVE_DIR), filename=pdf_filename)
-        except Exception as exc:  # pragma: no cover
-            print(f"  -> Download failed: {exc}")
-            continue
+        
 
         metadata_list.append(
             {
@@ -62,7 +55,6 @@ def run_downloader() -> None:
                 "published_date": publish_date,
                 "authors": [author.name for author in result.authors],
                 "summary": result.summary.replace("\n", " "),
-                "pdf_local_path": to_portable_relative_path(pdf_path),
                 "url": result.entry_id,
                 "primary_category": result.primary_category,
             }

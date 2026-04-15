@@ -26,6 +26,12 @@ const copy = {
     clearContext: "Clear Answer Link",
     linked: "Using latest answer context",
     autoReply: "Auto suggestion from latest answer",
+    memoryUsed: "Used long-term memory",
+    memoryHint: "Memory context influenced this reply.",
+    memoryPin: "Pin",
+    memoryPinned: "Pinned",
+    memoryDelete: "Delete",
+    memoryActionUnavailable: "Memory actions are unavailable on the current backend.",
     modelOffline: "Model unavailable",
     assistantOffline: "Assistant unavailable right now.",
     ttsFallback: "TTS unavailable, switched to browser voice."
@@ -44,6 +50,12 @@ const copy = {
     clearContext: "清除回答关联",
     linked: "当前会参考最近一次回答",
     autoReply: "已根据最新回答自动补充建议",
+    memoryUsed: "已使用长期记忆",
+    memoryHint: "这条回复参考了历史记忆。",
+    memoryPin: "置顶",
+    memoryPinned: "已置顶",
+    memoryDelete: "删除",
+    memoryActionUnavailable: "当前后端暂不支持记忆操作。",
     modelOffline: "模型未就绪",
     assistantOffline: "助手暂时不可用。",
     ttsFallback: "TTS 不可用，已切换浏览器语音。"
@@ -139,6 +151,47 @@ function trimAnswerContext(text) {
   return `${value.slice(0, DEFAULT_CONTEXT_LIMIT).trimEnd()}...`;
 }
 
+function normalizeWorkflowContext(context) {
+  if (!context || typeof context !== "object" || Array.isArray(context)) {
+    return null;
+  }
+  return context;
+}
+
+function normalizeUsedMemoryItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item, index) => {
+      if (typeof item === "string") {
+        const summary = item.trim();
+        if (!summary) {
+          return null;
+        }
+        return {
+          memoryId: "",
+          title: "",
+          summary,
+          pinned: false
+        };
+      }
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const memoryId = String(item.memory_id ?? item.id ?? item.node_id ?? "").trim();
+      const title = String(item.title ?? item.label ?? item.name ?? item.key ?? "").trim();
+      const summary = String(item.summary ?? item.text ?? item.content ?? item.snippet ?? "").trim();
+      return {
+        memoryId,
+        title,
+        summary: summary || title || `memory-${index + 1}`,
+        pinned: Boolean(item.pinned ?? item.is_pinned ?? item.pin)
+      };
+    })
+    .filter(Boolean);
+}
+
 function normalizeExpressionName(name) {
   return String(name || "")
     .toLowerCase()
@@ -178,6 +231,9 @@ export default function Live2DAssistant({
   language,
   autoReply,
   latestAnswerContext,
+  latestWorkflowContext,
+  assistantSessionId,
+  onAssistantSessionIdChange,
   onClearAnswerContext
 }) {
   const t = getCopy(language);
@@ -206,9 +262,13 @@ export default function Live2DAssistant({
   const [busy, setBusy] = useState(false);
   const [muted, setMuted] = useState(false);
   const [error, setError] = useState("");
+  const [memoryActionError, setMemoryActionError] = useState("");
+  const [memoryActionBusyMap, setMemoryActionBusyMap] = useState({});
   const [scriptsReady, setScriptsReady] = useState(false);
 
   const linkedAnswerContext = useMemo(() => trimAnswerContext(latestAnswerContext), [latestAnswerContext]);
+  const linkedWorkflowContext = useMemo(() => normalizeWorkflowContext(latestWorkflowContext), [latestWorkflowContext]);
+  const hasLinkedContext = Boolean(linkedAnswerContext || linkedWorkflowContext);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -401,6 +461,7 @@ export default function Live2DAssistant({
       source: autoReply.source,
       message: "",
       answerContext: autoReply.answerContext,
+      workflowContext: autoReply.workflowContext,
       isAutomatic: true
     });
   }, [autoReply]);
@@ -694,9 +755,76 @@ export default function Live2DAssistant({
     }
   }
 
-  async function requestAssistantReply({ source, message, answerContext, isAutomatic = false }) {
+  function updateMessageMemoryItems(memoryId, updater) {
+    if (!memoryId) {
+      return;
+    }
+    setMessages((current) =>
+      current.map((entry) => {
+        if (!Array.isArray(entry.usedMemoryItems) || entry.usedMemoryItems.length === 0) {
+          return entry;
+        }
+        const nextItems = entry.usedMemoryItems.map((item) => (item.memoryId === memoryId ? updater(item) : item)).filter(Boolean);
+        return { ...entry, usedMemoryItems: nextItems };
+      })
+    );
+  }
+
+  async function handleMemoryAction(memoryItem, action) {
+    const memoryId = String(memoryItem?.memoryId || "").trim();
+    if (!memoryId) {
+      return;
+    }
+    setMemoryActionError("");
+    setMemoryActionBusyMap((current) => ({ ...current, [memoryId]: action }));
+    try {
+      const sessionQuery = assistantSessionId
+        ? `?session_id=${encodeURIComponent(String(assistantSessionId).trim())}`
+        : "";
+      const url =
+        action === "pin"
+          ? `/api/live2d/memory/${encodeURIComponent(memoryId)}/pin${sessionQuery}`
+          : `/api/live2d/memory/${encodeURIComponent(memoryId)}${sessionQuery}`;
+      const response = await fetch(url, {
+        method: action === "pin" ? "POST" : "DELETE",
+        headers: action === "pin" ? { "Content-Type": "application/json" } : undefined,
+        body: action === "pin" ? JSON.stringify({ pinned: true }) : undefined
+      });
+      const payload = await readJsonWithDetailFallback(response);
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 405) {
+          throw new Error(t.memoryActionUnavailable);
+        }
+        throw new Error(payload.detail || `HTTP ${response.status}`);
+      }
+      const nextSessionId = String(payload.session_id || "").trim();
+      if (nextSessionId && typeof onAssistantSessionIdChange === "function") {
+        onAssistantSessionIdChange(nextSessionId);
+      }
+      if (action === "pin") {
+        updateMessageMemoryItems(memoryId, (item) => ({ ...item, pinned: true }));
+      } else {
+        updateMessageMemoryItems(memoryId, () => null);
+      }
+    } catch (err) {
+      if (mountedRef.current) {
+        setMemoryActionError(String(err));
+      }
+    } finally {
+      if (mountedRef.current) {
+        setMemoryActionBusyMap((current) => {
+          const next = { ...current };
+          delete next[memoryId];
+          return next;
+        });
+      }
+    }
+  }
+
+  async function requestAssistantReply({ source, message, answerContext, workflowContext, isAutomatic = false }) {
     const trimmedMessage = String(message || "").trim();
     const resolvedContext = trimAnswerContext(answerContext ?? linkedAnswerContext);
+    const resolvedWorkflowContext = normalizeWorkflowContext(workflowContext ?? linkedWorkflowContext);
     const history = buildHistoryPayload(messages);
 
     if (source === "user" && !trimmedMessage) {
@@ -710,6 +838,7 @@ export default function Live2DAssistant({
 
     setBusy(true);
     setError("");
+    setMemoryActionError("");
 
     try {
       const response = await fetch("/api/live2d/chat", {
@@ -719,26 +848,39 @@ export default function Live2DAssistant({
           source,
           message: trimmedMessage,
           history,
-          answer_context: resolvedContext
+          answer_context: resolvedContext,
+          workflow_context: resolvedWorkflowContext,
+          session_id: String(assistantSessionId || "").trim() || null
         })
       });
       const payload = await readJsonWithDetailFallback(response);
       if (!response.ok) {
         throw new Error(payload.detail || `HTTP ${response.status}`);
       }
+      const nextSessionId = String(payload.session_id || "").trim();
+      if (nextSessionId && typeof onAssistantSessionIdChange === "function") {
+        onAssistantSessionIdChange(nextSessionId);
+      }
+      const replyText = String(payload.reply_text || "").trim() || t.assistantOffline;
+      const usedMemoryItems = normalizeUsedMemoryItems(payload.used_memory_items);
+      const memoryUsed = Boolean(payload.memory_used) || usedMemoryItems.length > 0;
+      const memoryNotice = String(payload.memory_notice || "").trim();
       triggerExpressionSafe(payload.expression);
       if (mountedRef.current) {
         setMessages((current) => [
           ...current,
           {
             role: "assistant",
-            text: payload.reply_text,
+            text: replyText,
             source,
-            isAutomatic
+            isAutomatic,
+            memoryUsed,
+            memoryNotice: memoryNotice || null,
+            usedMemoryItems
           }
         ]);
       }
-      await speakText(payload.speak_text || payload.reply_text);
+      await speakText(payload.speak_text || replyText);
     } catch (err) {
       if (mountedRef.current) {
         setError(String(err));
@@ -765,6 +907,7 @@ export default function Live2DAssistant({
       source: "user",
       message: draft,
       answerContext: linkedAnswerContext,
+      workflowContext: linkedWorkflowContext,
       isAutomatic: false
     });
   }
@@ -788,10 +931,10 @@ export default function Live2DAssistant({
             <div className="assistant-panel-head">
               <div>
                 <p className="assistant-kicker">{t.title}</p>
-                <p className="assistant-subtitle">{linkedAnswerContext ? t.subtitleLinked : t.subtitleIdle}</p>
+                <p className="assistant-subtitle">{hasLinkedContext ? t.subtitleLinked : t.subtitleIdle}</p>
               </div>
               <div className="assistant-head-actions">
-                {linkedAnswerContext ? (
+                {hasLinkedContext ? (
                   <button type="button" className="secondary" onClick={onClearAnswerContext}>
                     {t.clearContext}
                   </button>
@@ -805,7 +948,7 @@ export default function Live2DAssistant({
               </div>
             </div>
 
-            {linkedAnswerContext ? <div className="assistant-context-chip">{t.linked}</div> : null}
+            {hasLinkedContext ? <div className="assistant-context-chip">{t.linked}</div> : null}
 
             <div ref={panelLogRef} className="assistant-log">
               {messages.length === 0 ? (
@@ -819,6 +962,48 @@ export default function Live2DAssistant({
                     <p>{item.text}</p>
                     {item.isAutomatic ? (
                       <span className="assistant-message-tag">{t.autoReply}</span>
+                    ) : null}
+                    {item.memoryUsed || item.memoryNotice || item.usedMemoryItems?.length ? (
+                      <div className="assistant-memory-meta">
+                        <div className="assistant-memory-notice">
+                          {item.memoryNotice || (item.memoryUsed ? t.memoryHint : t.memoryUsed)}
+                        </div>
+                        {item.usedMemoryItems?.length ? (
+                          <div className="assistant-memory-list">
+                            {item.usedMemoryItems.map((memoryItem, memoryIndex) => {
+                              const itemId = String(memoryItem.memoryId || "").trim();
+                              const actionBusy = memoryActionBusyMap[itemId];
+                              return (
+                                <article
+                                  key={`${itemId || "mem"}-${memoryIndex}-${memoryItem.summary}`}
+                                  className="assistant-memory-item"
+                                >
+                                  {memoryItem.title ? <p className="assistant-memory-item-title">{memoryItem.title}</p> : null}
+                                  <p className="assistant-memory-item-summary">{memoryItem.summary}</p>
+                                  <div className="assistant-memory-item-actions">
+                                    <button
+                                      type="button"
+                                      className="secondary"
+                                      onClick={() => void handleMemoryAction(memoryItem, "pin")}
+                                      disabled={!itemId || Boolean(actionBusy) || memoryItem.pinned}
+                                    >
+                                      {memoryItem.pinned ? t.memoryPinned : t.memoryPin}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary"
+                                      onClick={() => void handleMemoryAction(memoryItem, "delete")}
+                                      disabled={!itemId || Boolean(actionBusy)}
+                                    >
+                                      {t.memoryDelete}
+                                    </button>
+                                  </div>
+                                </article>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
                     ) : null}
                   </article>
                 ))
@@ -838,6 +1023,7 @@ export default function Live2DAssistant({
               </button>
             </form>
 
+            {memoryActionError ? <div className="assistant-error">{memoryActionError}</div> : null}
             {error ? <div className="assistant-error">{error}</div> : null}
           </div>
         </>

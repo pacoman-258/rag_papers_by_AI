@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.schemas import (
+    AssistantMemoryConfigModel,
     ChatConfigRequest,
     ChatConfigResponse,
     EmbeddingConfigModel,
@@ -15,6 +16,7 @@ from backend.schemas import (
     RuntimeSettingsResponse,
 )
 from local_paper_db.app.search_service import (
+    AssistantMemoryConfig,
     ChatConfig,
     EmbeddingConfig,
     RerankConfig,
@@ -26,6 +28,21 @@ from local_paper_db.app.search_service import (
 
 
 CONFIG_PATH = Path("config/runtime_settings.json")
+
+
+def coerce_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def ensure_config_file() -> None:
@@ -63,11 +80,21 @@ def runtime_settings_to_storage(settings: RuntimeSettings) -> dict[str, Any]:
             "model": settings.rerank.model,
             "api_key": settings.rerank.api_key,
         },
+        "assistant_memory": {
+            "enabled": settings.assistant_memory.enabled,
+            "summary_interval_turns": settings.assistant_memory.summary_interval_turns,
+            "major_summary_group_size": settings.assistant_memory.major_summary_group_size,
+            "max_recall_items": settings.assistant_memory.max_recall_items,
+            "recall_threshold": settings.assistant_memory.recall_threshold,
+            "auto_save_enabled": settings.assistant_memory.auto_save_enabled,
+        },
     }
 
 
 def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
     embedding_api_url = normalize_ollama_api_url(data["embedding"]["api_url"])
+    default_assistant_memory = get_env_default_settings().assistant_memory
+    assistant_memory_data = data.get("assistant_memory") if isinstance(data.get("assistant_memory"), dict) else {}
     return RuntimeSettings(
         query_chat=ChatConfig(
             provider=data["query_chat"]["provider"],
@@ -84,6 +111,24 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
         embedding=EmbeddingConfig(api_url=embedding_api_url, model=data["embedding"]["model"]),
         retrieval=RetrievalConfig(**data["retrieval"]),
         rerank=RerankConfig(**data["rerank"]),
+        assistant_memory=AssistantMemoryConfig(
+            enabled=coerce_bool(assistant_memory_data.get("enabled"), default_assistant_memory.enabled),
+            summary_interval_turns=int(
+                assistant_memory_data.get("summary_interval_turns", default_assistant_memory.summary_interval_turns)
+            ),
+            major_summary_group_size=int(
+                assistant_memory_data.get("major_summary_group_size", default_assistant_memory.major_summary_group_size)
+            ),
+            max_recall_items=int(
+                assistant_memory_data.get("max_recall_items", default_assistant_memory.max_recall_items)
+            ),
+            recall_threshold=float(
+                assistant_memory_data.get("recall_threshold", default_assistant_memory.recall_threshold)
+            ),
+            auto_save_enabled=coerce_bool(
+                assistant_memory_data.get("auto_save_enabled"), default_assistant_memory.auto_save_enabled
+            ),
+        ),
     )
 
 
@@ -152,6 +197,18 @@ def merge_runtime_settings(
             base_url=embedding_api_url,
             api_key=answer_chat.api_key,
         )
+    assistant_memory = (
+        AssistantMemoryConfig(
+            enabled=incoming.assistant_memory.enabled,
+            summary_interval_turns=incoming.assistant_memory.summary_interval_turns,
+            major_summary_group_size=incoming.assistant_memory.major_summary_group_size,
+            max_recall_items=incoming.assistant_memory.max_recall_items,
+            recall_threshold=incoming.assistant_memory.recall_threshold,
+            auto_save_enabled=incoming.assistant_memory.auto_save_enabled,
+        )
+        if incoming.assistant_memory is not None
+        else base.assistant_memory
+    )
 
     return RuntimeSettings(
         query_chat=query_chat,
@@ -166,6 +223,7 @@ def merge_runtime_settings(
             request_timeout=incoming.retrieval.request_timeout,
         ),
         rerank=merge_rerank(base.rerank, incoming.rerank),
+        assistant_memory=assistant_memory,
     )
 
 
@@ -196,5 +254,13 @@ def runtime_settings_to_response(settings: RuntimeSettings) -> RuntimeSettingsRe
             base_url=settings.rerank.base_url,
             model=settings.rerank.model,
             has_api_key=bool(settings.rerank.api_key),
+        ),
+        assistant_memory=AssistantMemoryConfigModel(
+            enabled=settings.assistant_memory.enabled,
+            summary_interval_turns=settings.assistant_memory.summary_interval_turns,
+            major_summary_group_size=settings.assistant_memory.major_summary_group_size,
+            max_recall_items=settings.assistant_memory.max_recall_items,
+            recall_threshold=settings.assistant_memory.recall_threshold,
+            auto_save_enabled=settings.assistant_memory.auto_save_enabled,
         ),
     )
