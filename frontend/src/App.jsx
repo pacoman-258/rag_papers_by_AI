@@ -11,7 +11,7 @@ const translations = {
     saveDefaults: "Save Defaults",
     defaultsSaved: "Defaults saved.",
     settingsTitle: "Model & Runtime Settings",
-    settingsDescription: "Manage model providers, API endpoints, retrieval defaults, and saved credentials.",
+    settingsDescription: "Manage model providers, retrieval sources, API endpoints, and saved credentials.",
     loading: "Loading...",
     noLogs: "No logs yet.",
     noPapers: "No papers selected yet.",
@@ -33,6 +33,14 @@ const translations = {
     embedding: "Embedding",
     ollamaApiUrl: "Ollama API URL",
     embeddingModel: "Embedding Model",
+    retrievalProviders: "Retrieval Providers",
+    retrievalProvidersDescription: "Choose which paper sources can participate in planning, search, and trace requests.",
+    localProvider: "Local",
+    arxivProvider: "arXiv",
+    wosProvider: "Web of Science",
+    localProviderDescription: "Use the indexed local corpus.",
+    arxivProviderDescription: "Query the arXiv API.",
+    wosProviderDescription: "Query the Web of Science API.",
     rerankRetrieval: "Rerank + Retrieval",
     rerankBaseUrl: "Rerank Base URL",
     rerankModel: "Rerank Model",
@@ -54,6 +62,11 @@ const translations = {
     categories: "Categories",
     sortHint: "Sort Hint",
     corpusLatestDate: "Corpus Latest Date",
+    retrievalSources: "Retrieval Sources",
+    source: "Source",
+    sourceFreshness: "Source Freshness",
+    matchedSources: "Matched Sources",
+    openSource: "Open Source Page",
     none: "(none)",
     useRewrite: "Use Rewrite",
     useOriginal: "Use Original",
@@ -65,7 +78,7 @@ const translations = {
     answerStream: "Answer Stream",
     traceExplanation: "PST Explanation",
     answerPlaceholder: "The answer will stream here.",
-    databaseOverview: "Database Overview",
+    databaseOverview: "Local Database Overview",
     papers: "Papers",
     embeddings: "Embeddings",
     latestIndexedDate: "Latest Indexed Date",
@@ -114,7 +127,7 @@ const translations = {
     saveDefaults: "保存默认配置",
     defaultsSaved: "默认配置已保存。",
     settingsTitle: "模型与运行配置",
-    settingsDescription: "统一管理模型提供方、接口地址、检索默认值和已保存凭据。",
+    settingsDescription: "统一管理模型提供方、检索来源、接口地址、检索默认值和已保存凭据。",
     loading: "加载中...",
     noLogs: "暂时还没有日志。",
     noPapers: "还没有选中的论文。",
@@ -136,6 +149,14 @@ const translations = {
     embedding: "Embedding",
     ollamaApiUrl: "Ollama API 地址",
     embeddingModel: "Embedding 模型",
+    retrievalProviders: "检索提供方",
+    retrievalProvidersDescription: "选择哪些论文来源可以参与规划、检索和 trace 请求。",
+    localProvider: "本地库",
+    arxivProvider: "arXiv",
+    wosProvider: "Web of Science",
+    localProviderDescription: "使用已索引的本地语料库。",
+    arxivProviderDescription: "查询 arXiv API。",
+    wosProviderDescription: "查询 Web of Science API。",
     rerankRetrieval: "重排与检索",
     rerankBaseUrl: "重排接口地址",
     rerankModel: "重排模型",
@@ -157,6 +178,11 @@ const translations = {
     categories: "分类",
     sortHint: "排序偏好",
     corpusLatestDate: "语料库最新日期",
+    retrievalSources: "检索来源",
+    source: "来源",
+    sourceFreshness: "来源新鲜度",
+    matchedSources: "命中来源",
+    openSource: "打开来源页面",
     none: "（无）",
     useRewrite: "使用改写结果",
     useOriginal: "直接用原句",
@@ -168,7 +194,7 @@ const translations = {
     answerStream: "回答流",
     traceExplanation: "PST 解释",
     answerPlaceholder: "最终回答会显示在这里。",
-    databaseOverview: "数据库概览",
+    databaseOverview: "本地数据库概览",
     papers: "论文数",
     embeddings: "向量数",
     latestIndexedDate: "最新入库日期",
@@ -422,7 +448,14 @@ function buildDefaultState(config) {
     query_chat: { ...config.query_chat, api_key: "", clear_api_key: false },
     answer_chat: { ...config.answer_chat, api_key: "", clear_api_key: false },
     embedding: { ...config.embedding },
-    retrieval: { ...config.retrieval },
+    retrieval: {
+      ...config.retrieval,
+      providers: {
+        local: config.retrieval?.providers?.local ?? true,
+        arxiv: config.retrieval?.providers?.arxiv ?? true,
+        wos: config.retrieval?.providers?.wos ?? false
+      }
+    },
     rerank: { ...config.rerank, api_key: "", clear_api_key: false }
   };
 }
@@ -450,7 +483,12 @@ function buildRuntimeRequest(settings) {
     retrieval: {
       top_k: Number(settings.retrieval.top_k),
       top_n: Number(settings.retrieval.top_n),
-      request_timeout: Number(settings.retrieval.request_timeout)
+      request_timeout: Number(settings.retrieval.request_timeout),
+      providers: {
+        local: Boolean(settings.retrieval.providers?.local),
+        arxiv: Boolean(settings.retrieval.providers?.arxiv),
+        wos: Boolean(settings.retrieval.providers?.wos)
+      }
     },
     rerank: {
       base_url: settings.rerank.base_url,
@@ -523,7 +561,17 @@ function normalizeAssistantPaperRefs(papers) {
   };
 }
 
-function buildQaWorkflowContext({ question, retrievalText, answerText, papers, appliedConstraints, corpusLatestDate, searchId }) {
+function buildQaWorkflowContext({
+  question,
+  retrievalText,
+  answerText,
+  papers,
+  appliedConstraints,
+  corpusLatestDate,
+  searchId,
+  retrievalSources,
+  sourceFreshness
+}) {
   const { paper_ids, paper_titles } = normalizeAssistantPaperRefs(papers);
   return {
     kind: "qa",
@@ -535,12 +583,14 @@ function buildQaWorkflowContext({ question, retrievalText, answerText, papers, a
     metadata: {
       retrieval_text: String(retrievalText || "").trim() || null,
       corpus_latest_date: corpusLatestDate || null,
-      search_id: searchId || null
+      search_id: searchId || null,
+      retrieval_sources: Array.isArray(retrievalSources) ? retrievalSources : [],
+      source_freshness: sourceFreshness || {}
     }
   };
 }
 
-function buildPstWorkflowContext({ query, answerText, papers, targetPaper, traceId }) {
+function buildPstWorkflowContext({ query, answerText, papers, targetPaper, traceId, retrievalSources, sourceFreshness }) {
   const { paper_ids, paper_titles } = normalizeAssistantPaperRefs(papers);
   return {
     kind: "pst",
@@ -551,7 +601,9 @@ function buildPstWorkflowContext({ query, answerText, papers, targetPaper, trace
     target_paper_id: targetPaper?.id || null,
     metadata: {
       target_paper_title: targetPaper?.title || null,
-      trace_id: traceId || null
+      trace_id: traceId || null,
+      retrieval_sources: Array.isArray(retrievalSources) ? retrievalSources : [],
+      source_freshness: sourceFreshness || {}
     }
   };
 }
@@ -572,9 +624,15 @@ function formatTimeWindow(constraints, t) {
   return t("none");
 }
 
-function ConstraintBlock({ constraints, corpusLatestDate, t }) {
+function ConstraintBlock({ constraints, corpusLatestDate, retrievalSources, sourceFreshness, t }) {
   const authors = constraints?.authors?.length ? constraints.authors.join(", ") : t("none");
   const categories = constraints?.primary_categories?.length ? constraints.primary_categories.join(", ") : t("none");
+  const sources = retrievalSources?.length ? retrievalSources.join(", ") : t("none");
+  const freshnessEntries = sourceFreshness
+    ? Object.entries(sourceFreshness)
+        .filter(([, value]) => Boolean(value))
+        .map(([key, value]) => `${key}: ${value}`)
+    : [];
   return (
     <div className="detail-grid">
       <div>
@@ -600,6 +658,14 @@ function ConstraintBlock({ constraints, corpusLatestDate, t }) {
       <div>
         <strong>{t("implicitLatest")}</strong>
         <p>{constraints?.is_implicit_latest ? t("yes") : t("no")}</p>
+      </div>
+      <div>
+        <strong>{t("retrievalSources")}</strong>
+        <p>{sources}</p>
+      </div>
+      <div>
+        <strong>{t("sourceFreshness")}</strong>
+        <p>{freshnessEntries.length ? freshnessEntries.join(" | ") : t("none")}</p>
       </div>
     </div>
   );
@@ -632,6 +698,8 @@ function PaperList({ papers, t }) {
             {t("vector")}: {paper.initial_score.toFixed(4)} | {t("rerank")}: {paper.rerank_score.toFixed(4)}
           </p>
           <div className="tag-list">
+            {paper.source ? <span className="tag">{`${t("source")}: ${paper.source}`}</span> : null}
+            {paper.matched_sources?.length ? <span className="tag">{`${t("matchedSources")}: ${paper.matched_sources.join(", ")}`}</span> : null}
             {paper.published_date ? <span className="tag">{`${t("publishedDate")}: ${paper.published_date}`}</span> : null}
             {paper.primary_category ? <span className="tag">{`${t("primaryCategory")}: ${paper.primary_category}`}</span> : null}
             {paper.authors?.length ? <span className="tag">{`${t("authors")}: ${paper.authors.join(", ")}`}</span> : null}
@@ -640,6 +708,13 @@ function PaperList({ papers, t }) {
           <p className="muted">
             {t("method")}: {paper.method}
           </p>
+          {paper.external_url ? (
+            <p>
+              <a href={paper.external_url} target="_blank" rel="noreferrer">
+                {t("openSource")}
+              </a>
+            </p>
+          ) : null}
         </article>
       ))}
     </div>
@@ -734,6 +809,53 @@ function ChatConfigSection({
   );
 }
 
+function RetrievalProviderSection({ providers, onChange, t }) {
+  const providerItems = [
+    {
+      key: "local",
+      label: t("localProvider"),
+      description: t("localProviderDescription")
+    },
+    {
+      key: "arxiv",
+      label: t("arxivProvider"),
+      description: t("arxivProviderDescription")
+    },
+    {
+      key: "wos",
+      label: t("wosProvider"),
+      description: t("wosProviderDescription")
+    }
+  ];
+
+  return (
+    <section className="config-section">
+      <h3>{t("retrievalProviders")}</h3>
+      <p className="muted">{t("retrievalProvidersDescription")}</p>
+      <div className="provider-toggle-grid">
+        {providerItems.map((item) => (
+          <label key={item.key} className="provider-toggle-item">
+            <span className="provider-toggle-row">
+              <input
+                type="checkbox"
+                checked={Boolean(providers?.[item.key])}
+                onChange={(event) =>
+                  onChange("providers", {
+                    ...(providers || {}),
+                    [item.key]: event.target.checked
+                  })
+                }
+              />
+              <span className="provider-toggle-title">{item.label}</span>
+            </span>
+            <span className="muted">{item.description}</span>
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function TargetPaperCard({ paper, t, actionLabel, onAction }) {
   if (!paper) {
     return null;
@@ -744,7 +866,11 @@ function TargetPaperCard({ paper, t, actionLabel, onAction }) {
       <div className="detail-grid">
         <div>
           <strong>{t("arxivId")}</strong>
-          <p>{paper.arxiv_id}</p>
+          <p>{paper.arxiv_id || t("none")}</p>
+        </div>
+        <div>
+          <strong>{t("source")}</strong>
+          <p>{paper.source || t("none")}</p>
         </div>
         <div>
           <strong>{t("publishedDate")}</strong>
@@ -763,6 +889,13 @@ function TargetPaperCard({ paper, t, actionLabel, onAction }) {
         <strong>{paper.title}</strong>
       </p>
       <p>{paper.summary || t("none")}</p>
+      {paper.external_url ? (
+        <p>
+          <a href={paper.external_url} target="_blank" rel="noreferrer">
+            {t("openSource")}
+          </a>
+        </p>
+      ) : null}
       {actionLabel && onAction ? <button onClick={onAction}>{actionLabel}</button> : null}
     </section>
   );
@@ -780,11 +913,19 @@ function CandidateList({ candidates, onSelect, t }) {
           <article key={candidate.id} className="paper-card">
             <h4>{candidate.title}</h4>
             <div className="tag-list">
-              <span className="tag">{`${t("arxivId")}: ${candidate.arxiv_id}`}</span>
+              <span className="tag">{`${t("source")}: ${candidate.source || t("none")}`}</span>
+              {candidate.arxiv_id ? <span className="tag">{`${t("arxivId")}: ${candidate.arxiv_id}`}</span> : null}
               {candidate.published_date ? <span className="tag">{`${t("publishedDate")}: ${candidate.published_date}`}</span> : null}
               {candidate.primary_category ? <span className="tag">{`${t("primaryCategory")}: ${candidate.primary_category}`}</span> : null}
             </div>
             <p>{candidate.summary || t("none")}</p>
+            {candidate.external_url ? (
+              <p>
+                <a href={candidate.external_url} target="_blank" rel="noreferrer">
+                  {t("openSource")}
+                </a>
+              </p>
+            ) : null}
             <button onClick={() => onSelect(candidate)}>{t("useThisPaper")}</button>
           </article>
         ))}
@@ -814,6 +955,8 @@ export default function App() {
   const [modelCatalogs, setModelCatalogs] = useState(buildInitialModelCatalogs);
   const [appliedConstraints, setAppliedConstraints] = useState(null);
   const [corpusLatestDate, setCorpusLatestDate] = useState(null);
+  const [retrievalSources, setRetrievalSources] = useState([]);
+  const [sourceFreshness, setSourceFreshness] = useState({});
   const [ingestStatus, setIngestStatus] = useState(null);
   const [ingestLogs, setIngestLogs] = useState([]);
   const answerSourceRef = useRef(null);
@@ -896,6 +1039,8 @@ export default function App() {
     setAnswer("");
     setAppliedConstraints(null);
     setCorpusLatestDate(null);
+    setRetrievalSources([]);
+    setSourceFreshness({});
     answerBufferRef.current = "";
     answerSourceRef.current?.close();
   }
@@ -1117,6 +1262,8 @@ export default function App() {
       setWarnings(data.warnings || []);
       setAppliedConstraints(data.applied_constraints || null);
       setCorpusLatestDate(data.corpus_latest_date || null);
+      setRetrievalSources(data.retrieval_sources || []);
+      setSourceFreshness(data.source_freshness || {});
       streamFrom(`/api/search/${data.search_id}/answer/stream`, "qa_auto", (answerText) =>
         buildQaWorkflowContext({
           question,
@@ -1125,7 +1272,9 @@ export default function App() {
           papers: data.papers,
           appliedConstraints: data.applied_constraints || null,
           corpusLatestDate: data.corpus_latest_date || null,
-          searchId: data.search_id
+          searchId: data.search_id,
+          retrievalSources: data.retrieval_sources || [],
+          sourceFreshness: data.source_freshness || {}
         })
       );
     } catch (error) {
@@ -1193,13 +1342,17 @@ export default function App() {
       setWarnings(data.warnings || []);
       setAppliedConstraints(null);
       setCorpusLatestDate(null);
+      setRetrievalSources(data.retrieval_sources || []);
+      setSourceFreshness(data.source_freshness || {});
       streamFrom(`/api/trace/${data.trace_id}/answer/stream`, "pst_auto", (answerText) =>
         buildPstWorkflowContext({
           query: traceQuery,
           answerText,
           papers: data.papers,
           targetPaper: data.target_paper || targetPaper,
-          traceId: data.trace_id
+          traceId: data.trace_id,
+          retrievalSources: data.retrieval_sources || [],
+          sourceFreshness: data.source_freshness || {}
         })
       );
     } catch (error) {
@@ -1329,7 +1482,13 @@ export default function App() {
                     <p>
                       <strong>{t("keywords")}:</strong> {queryPlan.keywords_en.join(", ") || t("none")}
                     </p>
-                    <ConstraintBlock constraints={queryPlan.constraints} corpusLatestDate={queryPlan.corpus_latest_date} t={t} />
+                    <ConstraintBlock
+                      constraints={queryPlan.constraints}
+                      corpusLatestDate={queryPlan.corpus_latest_date}
+                      retrievalSources={retrievalSources}
+                      sourceFreshness={sourceFreshness}
+                      t={t}
+                    />
                     <div className="action-row">
                       <button onClick={() => executeSearch(buildRetrievalText(queryPlan), queryPlan)} disabled={busy}>
                         {t("useRewrite")}
@@ -1356,7 +1515,13 @@ export default function App() {
                 {appliedConstraints ? (
                   <section>
                     <h3>{t("appliedConstraints")}</h3>
-                    <ConstraintBlock constraints={appliedConstraints} corpusLatestDate={corpusLatestDate} t={t} />
+                    <ConstraintBlock
+                      constraints={appliedConstraints}
+                      corpusLatestDate={corpusLatestDate}
+                      retrievalSources={retrievalSources}
+                      sourceFreshness={sourceFreshness}
+                      t={t}
+                    />
                   </section>
                 ) : null}
               </>
@@ -1543,6 +1708,11 @@ export default function App() {
                 />
               </label>
             </section>
+            <RetrievalProviderSection
+              providers={settings.retrieval.providers}
+              onChange={(key, value) => updateNested("retrieval", key, value)}
+              t={t}
+            />
           </section>
         </section>
       ) : null}

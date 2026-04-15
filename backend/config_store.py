@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from backend.schemas import (
     RerankConfigRequest,
     RerankConfigResponse,
     RetrievalConfigModel,
+    RetrievalProvidersModel,
     RuntimeSettingsRequest,
     RuntimeSettingsResponse,
 )
@@ -28,6 +30,8 @@ from local_paper_db.app.search_service import (
 
 
 CONFIG_PATH = Path("config/runtime_settings.json")
+_DEFAULT_RETRIEVAL_PROVIDERS = RetrievalProvidersModel()
+_CURRENT_RETRIEVAL_PROVIDERS = _DEFAULT_RETRIEVAL_PROVIDERS.model_copy()
 
 
 def coerce_bool(value: Any, default: bool) -> bool:
@@ -45,14 +49,79 @@ def coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _default_retrieval_providers() -> RetrievalProvidersModel:
+    return _DEFAULT_RETRIEVAL_PROVIDERS.model_copy()
+
+
+def _coerce_retrieval_providers(
+    value: Any,
+    default: RetrievalProvidersModel | None = None,
+) -> RetrievalProvidersModel:
+    fallback = default or _default_retrieval_providers()
+    data = value if isinstance(value, dict) else {}
+    return RetrievalProvidersModel(
+        local=coerce_bool(data.get("local"), fallback.local),
+        arxiv=coerce_bool(data.get("arxiv"), fallback.arxiv),
+        wos=coerce_bool(data.get("wos"), fallback.wos),
+    )
+
+
+def _set_current_retrieval_providers(providers: RetrievalProvidersModel) -> RetrievalProvidersModel:
+    global _CURRENT_RETRIEVAL_PROVIDERS
+    _CURRENT_RETRIEVAL_PROVIDERS = providers.model_copy()
+    return _CURRENT_RETRIEVAL_PROVIDERS.model_copy()
+
+
+def current_retrieval_providers() -> RetrievalProvidersModel:
+    return _CURRENT_RETRIEVAL_PROVIDERS.model_copy()
+
+
+def retrieval_providers_to_source_list(providers: RetrievalProvidersModel | None) -> list[str]:
+    resolved = providers or current_retrieval_providers()
+    sources: list[str] = []
+    if resolved.local:
+        sources.append("local")
+    if resolved.arxiv:
+        sources.append("arxiv")
+    if resolved.wos:
+        sources.append("wos")
+    return sources
+
+
+def validate_retrieval_providers(providers: RetrievalProvidersModel) -> None:
+    if not (providers.local or providers.arxiv or providers.wos):
+        raise RuntimeError("At least one retrieval provider must be enabled.")
+
+
+def sync_retrieval_enabled_sources(providers: RetrievalProvidersModel | None = None) -> None:
+    os.environ["RETRIEVAL_ENABLED_SOURCES"] = ",".join(retrieval_providers_to_source_list(providers))
+
+
+def merge_retrieval_providers(
+    base: RetrievalProvidersModel,
+    incoming: RetrievalProvidersModel | None,
+) -> RetrievalProvidersModel:
+    if incoming is None:
+        return base.model_copy()
+    return RetrievalProvidersModel(
+        local=incoming.local,
+        arxiv=incoming.arxiv,
+        wos=incoming.wos,
+    )
+
+
 def ensure_config_file() -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not CONFIG_PATH.exists():
-        default_settings = runtime_settings_to_storage(get_env_default_settings())
+        default_settings = runtime_settings_to_storage(get_env_default_settings(), _default_retrieval_providers())
         CONFIG_PATH.write_text(json.dumps(default_settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def runtime_settings_to_storage(settings: RuntimeSettings) -> dict[str, Any]:
+def runtime_settings_to_storage(
+    settings: RuntimeSettings,
+    retrieval_providers: RetrievalProvidersModel | None = None,
+) -> dict[str, Any]:
+    providers = retrieval_providers or current_retrieval_providers()
     return {
         "query_chat": {
             "provider": settings.query_chat.provider,
@@ -74,6 +143,11 @@ def runtime_settings_to_storage(settings: RuntimeSettings) -> dict[str, Any]:
             "top_k": settings.retrieval.top_k,
             "top_n": settings.retrieval.top_n,
             "request_timeout": settings.retrieval.request_timeout,
+            "providers": {
+                "local": providers.local,
+                "arxiv": providers.arxiv,
+                "wos": providers.wos,
+            },
         },
         "rerank": {
             "base_url": settings.rerank.base_url,
@@ -92,9 +166,17 @@ def runtime_settings_to_storage(settings: RuntimeSettings) -> dict[str, Any]:
 
 
 def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
+    default_settings = get_env_default_settings()
     embedding_api_url = normalize_ollama_api_url(data["embedding"]["api_url"])
     default_assistant_memory = get_env_default_settings().assistant_memory
     assistant_memory_data = data.get("assistant_memory") if isinstance(data.get("assistant_memory"), dict) else {}
+    retrieval_data = data.get("retrieval") if isinstance(data.get("retrieval"), dict) else {}
+    retrieval_providers = _coerce_retrieval_providers(
+        retrieval_data.get("providers"),
+        _default_retrieval_providers(),
+    )
+    validate_retrieval_providers(retrieval_providers)
+    _set_current_retrieval_providers(retrieval_providers)
     return RuntimeSettings(
         query_chat=ChatConfig(
             provider=data["query_chat"]["provider"],
@@ -109,7 +191,11 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
             api_key=data["answer_chat"].get("api_key"),
         ),
         embedding=EmbeddingConfig(api_url=embedding_api_url, model=data["embedding"]["model"]),
-        retrieval=RetrievalConfig(**data["retrieval"]),
+        retrieval=RetrievalConfig(
+            top_k=int(retrieval_data.get("top_k", default_settings.retrieval.top_k)),
+            top_n=int(retrieval_data.get("top_n", default_settings.retrieval.top_n)),
+            request_timeout=int(retrieval_data.get("request_timeout", default_settings.retrieval.request_timeout)),
+        ),
         rerank=RerankConfig(**data["rerank"]),
         assistant_memory=AssistantMemoryConfig(
             enabled=coerce_bool(assistant_memory_data.get("enabled"), default_assistant_memory.enabled),
@@ -135,15 +221,24 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
 def load_runtime_settings() -> RuntimeSettings:
     ensure_config_file()
     data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    return storage_to_runtime_settings(data)
+    settings = storage_to_runtime_settings(data)
+    sync_retrieval_enabled_sources(current_retrieval_providers())
+    return settings
 
 
-def save_runtime_settings(settings: RuntimeSettings) -> RuntimeSettings:
+def save_runtime_settings(
+    settings: RuntimeSettings,
+    retrieval_providers: RetrievalProvidersModel | None = None,
+) -> RuntimeSettings:
     ensure_config_file()
+    providers = retrieval_providers or current_retrieval_providers()
+    validate_retrieval_providers(providers)
+    _set_current_retrieval_providers(providers)
     CONFIG_PATH.write_text(
-        json.dumps(runtime_settings_to_storage(settings), ensure_ascii=False, indent=2),
+        json.dumps(runtime_settings_to_storage(settings, providers), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    sync_retrieval_enabled_sources(providers)
     return settings
 
 
@@ -227,7 +322,11 @@ def merge_runtime_settings(
     )
 
 
-def runtime_settings_to_response(settings: RuntimeSettings) -> RuntimeSettingsResponse:
+def runtime_settings_to_response(
+    settings: RuntimeSettings,
+    retrieval_providers: RetrievalProvidersModel | None = None,
+) -> RuntimeSettingsResponse:
+    providers = retrieval_providers or current_retrieval_providers()
     return RuntimeSettingsResponse(
         query_chat=ChatConfigResponse(
             provider=settings.query_chat.provider,
@@ -249,6 +348,7 @@ def runtime_settings_to_response(settings: RuntimeSettings) -> RuntimeSettingsRe
             top_k=settings.retrieval.top_k,
             top_n=settings.retrieval.top_n,
             request_timeout=settings.retrieval.request_timeout,
+            providers=providers,
         ),
         rerank=RerankConfigResponse(
             base_url=settings.rerank.base_url,

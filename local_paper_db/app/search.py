@@ -83,6 +83,8 @@ def print_selected_papers(papers: list[RankedPaper]) -> None:
     print("\n[Rerank] Selected papers")
     for index, paper in enumerate(papers, start=1):
         meta_bits = []
+        if paper.source:
+            meta_bits.append(f"source={paper.source}")
         if paper.published_date:
             meta_bits.append(paper.published_date)
         if paper.primary_category:
@@ -99,7 +101,8 @@ def print_target_paper(target_paper: TargetPaper) -> None:
     print("\n[Target Paper]")
     print("=" * 60)
     print(f"Title: {target_paper.title}")
-    print(f"arXiv ID: {target_paper.arxiv_id}")
+    print(f"Source: {target_paper.source}")
+    print(f"arXiv ID: {target_paper.arxiv_id or 'Unknown'}")
     print(f"Published date: {target_paper.published_date or 'Unknown'}")
     print(f"Primary category: {target_paper.primary_category or 'Unknown'}")
     print(f"Authors: {', '.join(target_paper.authors) if target_paper.authors else 'Unknown'}")
