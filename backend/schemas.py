@@ -29,10 +29,24 @@ class EmbeddingConfigModel(BaseModel):
     model: str
 
 
+class RetrievalProvidersModel(BaseModel):
+    local: bool = True
+    arxiv: bool = True
+    wos: bool = False
+
+
+class RetrievalConfigRequest(BaseModel):
+    top_k: int = Field(ge=1)
+    top_n: int = Field(ge=1)
+    request_timeout: int = Field(ge=1)
+    providers: RetrievalProvidersModel | None = None
+
+
 class RetrievalConfigModel(BaseModel):
     top_k: int = Field(ge=1)
     top_n: int = Field(ge=1)
     request_timeout: int = Field(ge=1)
+    providers: RetrievalProvidersModel = Field(default_factory=RetrievalProvidersModel)
 
 
 class RerankConfigRequest(BaseModel):
@@ -52,7 +66,7 @@ class RuntimeSettingsRequest(BaseModel):
     query_chat: ChatConfigRequest
     answer_chat: ChatConfigRequest
     embedding: EmbeddingConfigModel
-    retrieval: RetrievalConfigModel
+    retrieval: RetrievalConfigRequest
     rerank: RerankConfigRequest
 
 
@@ -97,12 +111,17 @@ class QueryPlanModel(BaseModel):
 
 class TargetPaperModel(BaseModel):
     id: str
-    arxiv_id: str
+    source: str
+    source_id: str
+    canonical_id: str
     title: str
     summary: str
     authors: list[str] = Field(default_factory=list)
     published_date: str | None = None
     primary_category: str | None = None
+    arxiv_id: str | None = None
+    external_url: str | None = None
+    matched_sources: list[str] = Field(default_factory=list)
 
 
 class SearchPlanRequest(BaseModel):
@@ -126,6 +145,9 @@ class SearchExecuteRequest(BaseModel):
 
 class RankedPaperResponse(BaseModel):
     id: str
+    source: str
+    source_id: str
+    canonical_id: str
     title: str
     text: str
     method: str
@@ -134,6 +156,9 @@ class RankedPaperResponse(BaseModel):
     authors: list[str] = Field(default_factory=list)
     published_date: str | None = None
     primary_category: str | None = None
+    external_url: str | None = None
+    arxiv_id: str | None = None
+    matched_sources: list[str] = Field(default_factory=list)
 
 
 class SearchExecuteResponse(BaseModel):
@@ -144,6 +169,8 @@ class SearchExecuteResponse(BaseModel):
     warnings: list[str]
     applied_constraints: RetrievalConstraintsModel
     corpus_latest_date: str | None = None
+    retrieval_sources: list[str] = Field(default_factory=list)
+    source_freshness: dict[str, str | None] = Field(default_factory=dict)
 
 
 class TraceResolveRequest(BaseModel):
@@ -171,6 +198,8 @@ class TraceExecuteResponse(BaseModel):
     target_paper: TargetPaperModel
     papers: list[RankedPaperResponse]
     warnings: list[str]
+    retrieval_sources: list[str] = Field(default_factory=list)
+    source_freshness: dict[str, str | None] = Field(default_factory=dict)
 
 
 class IngestJobResponse(BaseModel):

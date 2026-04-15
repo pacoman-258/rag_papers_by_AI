@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from dataclasses import asdict
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from threading import RLock
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,10 +16,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config_store import (
+    current_retrieval_providers,
     load_runtime_settings,
     merge_runtime_settings,
+    merge_retrieval_providers,
+    retrieval_providers_to_source_list,
     runtime_settings_to_response,
     save_runtime_settings,
+    validate_retrieval_providers,
 )
 from backend.live2d_service import (
     generate_live2d_reply,
@@ -80,6 +87,49 @@ def sse_event(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+_RETRIEVAL_SOURCE_LOCK = RLock()
+
+
+def retrieval_sources_from_settings(settings: RuntimeSettingsRequest | None) -> list[str]:
+    base_providers = current_retrieval_providers()
+    incoming_providers = settings.retrieval.providers if settings is not None else None
+    providers = merge_retrieval_providers(base_providers, incoming_providers)
+    validate_retrieval_providers(providers)
+    return retrieval_providers_to_source_list(providers)
+
+
+@contextmanager
+def use_retrieval_sources(sources: list[str]):
+    with _RETRIEVAL_SOURCE_LOCK:
+        previous = os.environ.get("RETRIEVAL_ENABLED_SOURCES")
+        os.environ["RETRIEVAL_ENABLED_SOURCES"] = ",".join(sources)
+        try:
+            yield
+        finally:
+            if previous is None:
+                os.environ.pop("RETRIEVAL_ENABLED_SOURCES", None)
+            else:
+                os.environ["RETRIEVAL_ENABLED_SOURCES"] = previous
+
+
+def to_http_detail(exc: Exception) -> HTTPException:
+    message = str(exc) or exc.__class__.__name__
+    lowered = message.lower()
+    if "not found" in lowered or "no relevant papers" in lowered or "no prior paper candidates" in lowered:
+        return HTTPException(status_code=404, detail=message)
+    if isinstance(exc, (ValueError, RuntimeError)):
+        return HTTPException(status_code=400, detail=message)
+    return HTTPException(status_code=502, detail=message)
+
+
+@contextmanager
+def retrieval_runtime_scope(payload_settings: RuntimeSettingsRequest | None):
+    with _RETRIEVAL_SOURCE_LOCK:
+        settings, sources = prepare_runtime_settings(payload_settings)
+        with use_retrieval_sources(sources):
+            yield settings, sources
+
+
 app = FastAPI(title="arxiv-paper-rag")
 app.add_middleware(
     CORSMiddleware,
@@ -122,13 +172,26 @@ def query_plan_model_to_dataclass(model: QueryPlanModel | None) -> QueryPlan | N
 def target_paper_to_model(target: TargetPaper) -> TargetPaperModel:
     return TargetPaperModel(
         id=target.id,
+        source=target.source,
+        source_id=target.source_id,
+        canonical_id=target.canonical_id,
         arxiv_id=target.arxiv_id,
         title=target.title,
         summary=target.summary,
         authors=list(target.authors),
         published_date=target.published_date,
         primary_category=target.primary_category,
+        external_url=target.external_url,
+        matched_sources=list(target.matched_sources),
     )
+
+
+def prepare_runtime_settings(payload_settings: RuntimeSettingsRequest | None) -> tuple[Any, list[str]]:
+    base = load_runtime_settings()
+    settings = merge_runtime_settings(base, payload_settings)
+    sources = retrieval_sources_from_settings(payload_settings)
+    validate_runtime_settings(settings)
+    return settings, sources
 
 
 def resolve_saved_model_list_api_key(payload: ModelListRequest) -> str | None:
@@ -152,10 +215,17 @@ def get_config() -> RuntimeSettingsResponse:
 
 @app.put("/api/config", response_model=RuntimeSettingsResponse)
 def put_config(payload: RuntimeSettingsRequest) -> RuntimeSettingsResponse:
-    base = load_runtime_settings()
-    merged = merge_runtime_settings(base, payload)
-    validate_runtime_settings(merged)
-    saved = save_runtime_settings(merged)
+    try:
+        base = load_runtime_settings()
+        base_providers = current_retrieval_providers()
+        merged = merge_runtime_settings(base, payload)
+        merged_providers = merge_retrieval_providers(base_providers, payload.retrieval.providers)
+        validate_runtime_settings(merged)
+        validate_retrieval_providers(merged_providers)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    saved = save_runtime_settings(merged, retrieval_providers=merged_providers)
     return runtime_settings_to_response(saved)
 
 
@@ -177,83 +247,109 @@ def api_list_models(payload: ModelListRequest) -> ModelListResponse:
 
 @app.post("/api/search/plan", response_model=QueryPlanModel)
 def api_plan_query(payload: SearchPlanRequest) -> QueryPlanModel:
-    settings = merge_runtime_settings(load_runtime_settings(), payload.settings)
-    validate_runtime_settings(settings)
-    plan = plan_query(payload.question, settings)
-    return QueryPlanModel(**asdict(plan))
+    try:
+        with retrieval_runtime_scope(payload.settings) as (settings, _sources):
+            plan = plan_query(payload.question, settings)
+        return QueryPlanModel(**asdict(plan))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
 
 
 @app.post("/api/search/plan/refine", response_model=QueryPlanModel)
 def api_refine_query(payload: SearchRefineRequest) -> QueryPlanModel:
-    settings = merge_runtime_settings(load_runtime_settings(), payload.settings)
-    validate_runtime_settings(settings)
-    plan = revise_query_plan(
-        payload.question,
-        previous_plan=query_plan_model_to_dataclass(payload.previous_plan),
-        feedback=payload.feedback,
-        settings=settings,
-    )
-    return QueryPlanModel(**asdict(plan))
+    try:
+        with retrieval_runtime_scope(payload.settings) as (settings, _sources):
+            plan = revise_query_plan(
+                payload.question,
+                previous_plan=query_plan_model_to_dataclass(payload.previous_plan),
+                feedback=payload.feedback,
+                settings=settings,
+            )
+        return QueryPlanModel(**asdict(plan))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
 
 
 @app.post("/api/search/execute", response_model=SearchExecuteResponse)
 def api_execute_search(payload: SearchExecuteRequest) -> SearchExecuteResponse:
-    settings = merge_runtime_settings(load_runtime_settings(), payload.settings)
-    validate_runtime_settings(settings)
-    execution = execute_search(
-        original_query=payload.question,
-        retrieval_text=payload.retrieval_text,
-        query_plan=query_plan_model_to_dataclass(payload.query_plan),
-        settings=settings,
-    )
-    search_id = uuid.uuid4().hex
-    search_sessions[search_id] = (execution, settings)
-    return SearchExecuteResponse(
-        search_id=search_id,
-        answer_language=execution.answer_language,
-        retrieval_text=execution.retrieval_text,
-        papers=[RankedPaperResponse(**asdict(paper)) for paper in execution.papers],
-        warnings=execution.warnings,
-        applied_constraints=RetrievalConstraintsModel(**asdict(execution.applied_constraints)),
-        corpus_latest_date=execution.corpus_latest_date,
-    )
+    try:
+        with retrieval_runtime_scope(payload.settings) as (settings, _sources):
+            execution = execute_search(
+                original_query=payload.question,
+                retrieval_text=payload.retrieval_text,
+                query_plan=query_plan_model_to_dataclass(payload.query_plan),
+                settings=settings,
+            )
+        search_id = uuid.uuid4().hex
+        search_sessions[search_id] = (execution, settings)
+        return SearchExecuteResponse(
+            search_id=search_id,
+            answer_language=execution.answer_language,
+            retrieval_text=execution.retrieval_text,
+            papers=[RankedPaperResponse(**asdict(paper)) for paper in execution.papers],
+            warnings=execution.warnings,
+            applied_constraints=RetrievalConstraintsModel(**asdict(execution.applied_constraints)),
+            corpus_latest_date=execution.corpus_latest_date,
+            retrieval_sources=list(execution.retrieval_sources),
+            source_freshness=dict(execution.source_freshness),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
 
 
 @app.post("/api/trace/resolve-target", response_model=TraceResolveResponse)
 def api_trace_resolve_target(payload: TraceResolveRequest) -> TraceResolveResponse:
-    status, resolved_target, candidates, message = resolve_target_paper(payload.query)
-    return TraceResolveResponse(
-        status=status,
-        query=payload.query,
-        resolved_target=target_paper_to_model(resolved_target) if resolved_target else None,
-        candidates=[target_paper_to_model(candidate) for candidate in candidates],
-        message=message,
-    )
+    try:
+        with retrieval_runtime_scope(None):
+            status, resolved_target, candidates, message = resolve_target_paper(payload.query)
+        return TraceResolveResponse(
+            status=status,
+            query=payload.query,
+            resolved_target=target_paper_to_model(resolved_target) if resolved_target else None,
+            candidates=[target_paper_to_model(candidate) for candidate in candidates],
+            message=message,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
 
 
 @app.post("/api/trace/execute", response_model=TraceExecuteResponse)
 def api_trace_execute(payload: TraceExecuteRequest) -> TraceExecuteResponse:
-    settings = merge_runtime_settings(load_runtime_settings(), payload.settings)
-    validate_runtime_settings(settings)
-    target_paper = fetch_target_paper_by_id(payload.target_id)
-    if target_paper is None:
-        raise HTTPException(status_code=404, detail="Target paper not found.")
-    answer_language = payload.answer_language or infer_user_language(target_paper.title)
-    execution = execute_trace(
-        target_paper=target_paper,
-        settings=settings,
-        answer_language=answer_language,
-    )
-    trace_id = uuid.uuid4().hex
-    trace_sessions[trace_id] = (execution, settings)
-    return TraceExecuteResponse(
-        trace_id=trace_id,
-        answer_language=execution.answer_language,
-        retrieval_text=execution.retrieval_text,
-        target_paper=target_paper_to_model(execution.target_paper),
-        papers=[RankedPaperResponse(**asdict(paper)) for paper in execution.papers],
-        warnings=execution.warnings,
-    )
+    try:
+        with retrieval_runtime_scope(payload.settings) as (settings, _sources):
+            target_paper = fetch_target_paper_by_id(payload.target_id)
+            if target_paper is None:
+                raise HTTPException(status_code=404, detail="Target paper not found.")
+            answer_language = payload.answer_language or infer_user_language(target_paper.title)
+            execution = execute_trace(
+                target_paper=target_paper,
+                settings=settings,
+                answer_language=answer_language,
+            )
+        trace_id = uuid.uuid4().hex
+        trace_sessions[trace_id] = (execution, settings)
+        return TraceExecuteResponse(
+            trace_id=trace_id,
+            answer_language=execution.answer_language,
+            retrieval_text=execution.retrieval_text,
+            target_paper=target_paper_to_model(execution.target_paper),
+            papers=[RankedPaperResponse(**asdict(paper)) for paper in execution.papers],
+            warnings=execution.warnings,
+            retrieval_sources=list(execution.retrieval_sources),
+            source_freshness=dict(execution.source_freshness),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
 
 
 @app.get("/api/search/{search_id}/answer/stream")

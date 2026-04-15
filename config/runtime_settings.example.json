@@ -18,7 +18,12 @@
   "retrieval": {
     "top_k": 50,
     "top_n": 10,
-    "request_timeout": 120
+    "request_timeout": 120,
+    "providers": {
+      "local": true,
+      "arxiv": true,
+      "wos": false
+    }
   },
   "rerank": {
     "base_url": "https://api.siliconflow.cn/v1",

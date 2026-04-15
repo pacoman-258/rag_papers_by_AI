@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from calendar import monthrange
 from dataclasses import asdict, dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Any, Iterator
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg2
 import requests
+
+from local_paper_db.app.external_sources import (
+    ExternalPaperRecord,
+    fetch_arxiv_record,
+    fetch_wos_record,
+    resolve_arxiv_candidates,
+    resolve_wos_candidates,
+    search_arxiv_records,
+    search_wos_records,
+    source_freshness as external_source_freshness,
+)
 
 try:
     from dotenv import load_dotenv
@@ -31,6 +43,7 @@ DEFAULT_DB_CONFIG = {
 }
 
 _PRIMARY_CATEGORY_COLUMN_CACHE: dict[str, bool] = {}
+_PAPER_REF_CACHE: dict[str, TargetPaper] = {}
 
 
 @dataclass(slots=True)
@@ -52,6 +65,7 @@ class RetrievalConfig:
     top_k: int
     top_n: int
     request_timeout: int
+    providers: dict[str, bool] = field(default_factory=lambda: {"local": True, "arxiv": True, "wos": False})
 
 
 @dataclass(slots=True)
@@ -93,6 +107,9 @@ class QueryPlan:
 @dataclass(slots=True)
 class RetrievedPaper:
     id: str
+    source: str
+    source_id: str
+    canonical_id: str
     title: str
     text: str
     method: str
@@ -100,6 +117,9 @@ class RetrievedPaper:
     authors: list[str] = field(default_factory=list)
     published_date: str | None = None
     primary_category: str | None = None
+    external_url: str | None = None
+    arxiv_id: str | None = None
+    matched_sources: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -118,17 +138,24 @@ class SearchExecution:
     warnings: list[str]
     applied_constraints: RetrievalConstraints
     corpus_latest_date: str | None = None
+    retrieval_sources: list[str] = field(default_factory=list)
+    source_freshness: dict[str, str | None] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class TargetPaper:
     id: str
-    arxiv_id: str
+    source: str
+    source_id: str
+    canonical_id: str
     title: str
     summary: str
     authors: list[str] = field(default_factory=list)
     published_date: str | None = None
     primary_category: str | None = None
+    arxiv_id: str | None = None
+    external_url: str | None = None
+    matched_sources: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -139,6 +166,16 @@ class TraceExecution:
     papers: list[RankedPaper]
     answer_prompt: str
     warnings: list[str]
+    retrieval_sources: list[str] = field(default_factory=list)
+    source_freshness: dict[str, str | None] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class RetrievalBatch:
+    papers: list[RetrievedPaper] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    retrieval_sources: list[str] = field(default_factory=list)
+    source_freshness: dict[str, str | None] = field(default_factory=dict)
 
 
 def normalize_provider(value: str) -> str:
@@ -268,6 +305,11 @@ def get_env_default_settings() -> RuntimeSettings:
             top_k=int(os.getenv("TOP_K_RETRIEVAL", "50")),
             top_n=int(os.getenv("TOP_N_RERANK", "10")),
             request_timeout=int(os.getenv("SEARCH_REQUEST_TIMEOUT", "120")),
+            providers={
+                "local": os.getenv("RETRIEVAL_PROVIDER_LOCAL", "true").strip().lower() not in {"0", "false", "no", "off"},
+                "arxiv": os.getenv("RETRIEVAL_PROVIDER_ARXIV", "true").strip().lower() not in {"0", "false", "no", "off"},
+                "wos": os.getenv("RETRIEVAL_PROVIDER_WOS", "false").strip().lower() not in {"0", "false", "no", "off"},
+            },
         ),
         rerank=RerankConfig(
             base_url=os.getenv("RERANK_BASE_URL", "https://api.siliconflow.cn/v1").rstrip("/"),
@@ -300,6 +342,16 @@ def validate_runtime_settings(settings: RuntimeSettings) -> None:
         raise RuntimeError("Missing embedding.model")
     if settings.retrieval.top_k <= 0 or settings.retrieval.top_n <= 0:
         raise RuntimeError("Retrieval top_k and top_n must be positive.")
+    if not any(bool(settings.retrieval.providers.get(name)) for name in ("local", "arxiv", "wos")):
+        raise RuntimeError("At least one retrieval provider must be enabled.")
+    if settings.assistant_memory.summary_interval_turns <= 0:
+        raise RuntimeError("assistant_memory.summary_interval_turns must be positive.")
+    if settings.assistant_memory.major_summary_group_size <= 0:
+        raise RuntimeError("assistant_memory.major_summary_group_size must be positive.")
+    if settings.assistant_memory.max_recall_items <= 0:
+        raise RuntimeError("assistant_memory.max_recall_items must be positive.")
+    if settings.assistant_memory.recall_threshold < 0 or settings.assistant_memory.recall_threshold > 1:
+        raise RuntimeError("assistant_memory.recall_threshold must be between 0 and 1.")
 
 
 def serialize_runtime_settings(settings: RuntimeSettings) -> dict[str, Any]:
@@ -707,13 +759,6 @@ def safe_get_corpus_latest_date(db_config: dict[str, str] | None = None) -> str 
 ARXIV_QUERY_PATTERN = re.compile(r"^(?:arxiv:)?(?P<base>\d{4}\.\d{4,5})(?:v(?P<version>\d+))?$", re.IGNORECASE)
 
 
-def has_recent_intent(text: str) -> bool:
-    lowered = text.lower()
-    english_patterns = ("latest", "recent", "newest", "most recent", "current", "up-to-date")
-    chinese_patterns = ("最新", "最近", "近期", "近一年", "近两年", "近三年", "近半年")
-    return any(pattern in lowered for pattern in english_patterns) or any(pattern in text for pattern in chinese_patterns)
-
-
 def normalize_whitespace(text: str) -> str:
     return " ".join(text.split()).strip()
 
@@ -733,6 +778,260 @@ def extract_arxiv_base_id(arxiv_id: str | None) -> str | None:
     if parsed is not None:
         return parsed[0]
     return arxiv_id.strip().split("v", 1)[0]
+
+
+def normalize_source_list(
+    raw_value: str | None = None,
+    provider_map: dict[str, bool] | None = None,
+) -> list[str]:
+    allowed = ("local", "arxiv", "wos")
+    if provider_map is not None:
+        sources = [name for name in allowed if bool(provider_map.get(name))]
+        return sources or ["local"]
+
+    raw = raw_value if raw_value is not None else os.getenv("RETRIEVAL_ENABLED_SOURCES", "local,arxiv")
+    seen: set[str] = set()
+    sources: list[str] = []
+    for item in re.split(r"[,\s]+", raw):
+        value = item.strip().lower()
+        if not value or value not in allowed or value in seen:
+            continue
+        seen.add(value)
+        sources.append(value)
+    return sources or ["local"]
+
+
+def get_retrieval_source_freshness(
+    db_config: dict[str, str] | None = None,
+    provider_map: dict[str, bool] | None = None,
+) -> dict[str, str | None]:
+    sources = normalize_source_list(provider_map=provider_map)
+    freshness: dict[str, str | None] = {}
+    if "local" in sources:
+        freshness["local"] = safe_get_corpus_latest_date(db_config)
+    for source_name, source_date in external_source_freshness().items():
+        if source_name in sources:
+            freshness[source_name] = source_date
+    return freshness
+
+
+def get_retrieval_freshness_anchor(
+    db_config: dict[str, str] | None = None,
+    provider_map: dict[str, bool] | None = None,
+) -> str | None:
+    freshness = get_retrieval_source_freshness(db_config, provider_map=provider_map)
+    if any(source in freshness for source in ("arxiv", "wos")):
+        return datetime.now(timezone.utc).date().isoformat()
+    return freshness.get("local")
+
+
+def make_paper_ref(source: str, source_id: str) -> str:
+    return f"{source}:{source_id}"
+
+
+def split_paper_ref(paper_ref: str) -> tuple[str, str]:
+    value = str(paper_ref or "").strip()
+    if ":" not in value:
+        return "local", value
+    source, source_id = value.split(":", 1)
+    return source.strip().lower(), source_id.strip()
+
+
+def build_arxiv_abs_url(arxiv_id: str | None) -> str | None:
+    base_id = extract_arxiv_base_id(arxiv_id)
+    if not base_id:
+        return None
+    return f"https://arxiv.org/abs/{base_id}"
+
+
+def normalize_identifier(text: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", normalize_whitespace(str(text or "")).casefold()).strip("-")
+
+
+def build_canonical_paper_id(
+    *,
+    title: str,
+    authors: list[str] | None = None,
+    published_date: str | None = None,
+    arxiv_id: str | None = None,
+    doi: str | None = None,
+) -> str:
+    if doi:
+        return f"doi:{normalize_whitespace(doi).casefold()}"
+    arxiv_base = extract_arxiv_base_id(arxiv_id)
+    if arxiv_base:
+        return f"arxiv:{arxiv_base.casefold()}"
+    year = str(published_date or "")[:4] or "unknown"
+    first_author = normalize_identifier((authors or ["unknown"])[0] if authors else "unknown")
+    normalized_title = normalize_identifier(title)[:120] or "untitled"
+    return f"title:{normalized_title}|author:{first_author}|year:{year}"
+
+
+def cache_target_paper(target_paper: TargetPaper) -> TargetPaper:
+    _PAPER_REF_CACHE[target_paper.id] = target_paper
+    return target_paper
+
+
+def source_priority(source: str) -> int:
+    priority = {"local": 3, "wos": 2, "arxiv": 1}
+    return priority.get(source, 0)
+
+
+def cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    numerator = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return numerator / (left_norm * right_norm)
+
+
+def build_external_embedding_text(record: ExternalPaperRecord) -> str:
+    summary = normalize_whitespace(record.summary)
+    title = normalize_whitespace(record.title)
+    if summary:
+        return f"{title}. {summary}"
+    return title
+
+
+def build_method_text(summary: str) -> str:
+    normalized = normalize_whitespace(summary)
+    return normalized or "Not provided."
+
+
+def target_paper_from_external_record(record: ExternalPaperRecord) -> TargetPaper:
+    return cache_target_paper(
+        TargetPaper(
+            id=make_paper_ref(record.source, record.source_id),
+            source=record.source,
+            source_id=record.source_id,
+            canonical_id=build_canonical_paper_id(
+                title=record.title,
+                authors=record.authors,
+                published_date=record.published_date,
+                arxiv_id=record.arxiv_id,
+                doi=record.doi,
+            ),
+            title=record.title,
+            summary=record.summary or record.title,
+            authors=list(record.authors),
+            published_date=record.published_date,
+            primary_category=record.primary_category,
+            arxiv_id=record.arxiv_id,
+            external_url=record.external_url or build_arxiv_abs_url(record.arxiv_id),
+            matched_sources=[record.source],
+        )
+    )
+
+
+def retrieved_paper_from_external_record(
+    record: ExternalPaperRecord,
+    query_vec: list[float],
+    settings: RuntimeSettings,
+) -> RetrievedPaper:
+    candidate_text = build_external_embedding_text(record)
+    candidate_vec = get_embedding(candidate_text, settings)
+    return RetrievedPaper(
+        id=make_paper_ref(record.source, record.source_id),
+        source=record.source,
+        source_id=record.source_id,
+        canonical_id=build_canonical_paper_id(
+            title=record.title,
+            authors=record.authors,
+            published_date=record.published_date,
+            arxiv_id=record.arxiv_id,
+            doi=record.doi,
+        ),
+        title=record.title,
+        text=record.summary or record.title or "No summary available.",
+        method=build_method_text(record.summary),
+        initial_score=float(cosine_similarity(query_vec, candidate_vec)),
+        authors=list(record.authors),
+        published_date=record.published_date,
+        primary_category=record.primary_category,
+        external_url=record.external_url or build_arxiv_abs_url(record.arxiv_id),
+        arxiv_id=record.arxiv_id,
+        matched_sources=[record.source],
+    )
+
+
+def merge_retrieved_papers(existing: RetrievedPaper, candidate: RetrievedPaper) -> RetrievedPaper:
+    merged_sources = sorted(set(existing.matched_sources + candidate.matched_sources), key=str.casefold)
+    better = candidate
+    worse = existing
+    if source_priority(existing.source) > source_priority(candidate.source):
+        better = existing
+        worse = candidate
+    elif source_priority(existing.source) == source_priority(candidate.source):
+        if len(existing.text or "") >= len(candidate.text or ""):
+            better = existing
+            worse = candidate
+    return RetrievedPaper(
+        id=better.id,
+        source=better.source,
+        source_id=better.source_id,
+        canonical_id=better.canonical_id,
+        title=better.title or worse.title,
+        text=better.text if len(better.text or "") >= len(worse.text or "") else worse.text,
+        method=better.method if len(better.method or "") >= len(worse.method or "") else worse.method,
+        initial_score=max(existing.initial_score, candidate.initial_score),
+        authors=list(better.authors or worse.authors),
+        published_date=better.published_date or worse.published_date,
+        primary_category=better.primary_category or worse.primary_category,
+        external_url=better.external_url or worse.external_url,
+        arxiv_id=better.arxiv_id or worse.arxiv_id,
+        matched_sources=merged_sources,
+    )
+
+
+def dedupe_retrieved_papers(papers: list[RetrievedPaper]) -> list[RetrievedPaper]:
+    merged: dict[str, RetrievedPaper] = {}
+    for paper in papers:
+        key = paper.canonical_id or paper.id
+        if key in merged:
+            merged[key] = merge_retrieved_papers(merged[key], paper)
+        else:
+            merged[key] = paper
+    return list(merged.values())
+
+
+def sort_retrieved_papers(papers: list[RetrievedPaper], constraints: RetrievalConstraints | None) -> list[RetrievedPaper]:
+    sort_hint = (constraints.sort_hint if constraints is not None else "relevance").lower()
+    if sort_hint == "latest":
+        return sorted(
+            papers,
+            key=lambda paper: (paper.published_date or "", paper.initial_score),
+            reverse=True,
+        )
+    return sorted(papers, key=lambda paper: paper.initial_score, reverse=True)
+
+
+def dedupe_target_papers(candidates: list[TargetPaper]) -> list[TargetPaper]:
+    merged: dict[str, TargetPaper] = {}
+    for candidate in candidates:
+        key = candidate.canonical_id or candidate.id
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = candidate
+            continue
+        preferred = candidate if source_priority(candidate.source) > source_priority(existing.source) else existing
+        merged[key] = TargetPaper(
+            id=preferred.id,
+            source=preferred.source,
+            source_id=preferred.source_id,
+            canonical_id=preferred.canonical_id or existing.canonical_id,
+            title=preferred.title or existing.title,
+            summary=preferred.summary if len(preferred.summary or "") >= len(existing.summary or "") else existing.summary,
+            authors=list(preferred.authors or existing.authors),
+            published_date=preferred.published_date or existing.published_date,
+            primary_category=preferred.primary_category or existing.primary_category,
+            arxiv_id=preferred.arxiv_id or existing.arxiv_id,
+            external_url=preferred.external_url or existing.external_url,
+            matched_sources=sorted(set(existing.matched_sources + candidate.matched_sources), key=str.casefold),
+        )
+    return [cache_target_paper(candidate) for candidate in merged.values()]
 
 
 def build_target_paper_select_sql(db_config: dict[str, str] | None = None) -> str:
@@ -755,14 +1054,28 @@ def build_target_paper_select_sql(db_config: dict[str, str] | None = None) -> st
 
 
 def target_paper_from_row(row: tuple[Any, ...]) -> TargetPaper:
-    return TargetPaper(
-        id=str(row[0]),
-        arxiv_id=row[1],
-        title=row[2],
-        summary=row[3] or row[2] or "",
-        authors=list(row[4] or []),
-        published_date=row[5].isoformat() if row[5] else None,
-        primary_category=row[6] or None,
+    local_uuid = str(row[0])
+    arxiv_id = row[1]
+    return cache_target_paper(
+        TargetPaper(
+            id=make_paper_ref("local", local_uuid),
+            source="local",
+            source_id=local_uuid,
+            canonical_id=build_canonical_paper_id(
+                title=row[2],
+                authors=list(row[4] or []),
+                published_date=row[5].isoformat() if row[5] else None,
+                arxiv_id=arxiv_id,
+            ),
+            title=row[2],
+            summary=row[3] or row[2] or "",
+            authors=list(row[4] or []),
+            published_date=row[5].isoformat() if row[5] else None,
+            primary_category=row[6] or None,
+            arxiv_id=arxiv_id,
+            external_url=build_arxiv_abs_url(arxiv_id),
+            matched_sources=["local"],
+        )
     )
 
 
@@ -778,8 +1091,21 @@ def fetch_target_papers(sql_suffix: str, params: tuple[Any, ...], db_config: dic
 
 
 def fetch_target_paper_by_id(paper_id: str, db_config: dict[str, str] | None = None) -> TargetPaper | None:
-    papers = fetch_target_papers("WHERE m.id = %s::uuid LIMIT 1", (paper_id,), db_config=db_config)
-    return papers[0] if papers else None
+    cached = _PAPER_REF_CACHE.get(paper_id)
+    if cached is not None:
+        return cached
+
+    source, source_id = split_paper_ref(paper_id)
+    if source == "local":
+        papers = fetch_target_papers("WHERE m.id = %s::uuid LIMIT 1", (source_id,), db_config=db_config)
+        return papers[0] if papers else None
+    if source == "arxiv":
+        record = fetch_arxiv_record(source_id)
+        return target_paper_from_external_record(record) if record is not None else None
+    if source == "wos":
+        record = fetch_wos_record(source_id)
+        return target_paper_from_external_record(record) if record is not None else None
+    return None
 
 
 def find_target_candidates(query: str, limit: int = 5, db_config: dict[str, str] | None = None) -> list[TargetPaper]:
@@ -840,7 +1166,7 @@ def find_target_candidates(query: str, limit: int = 5, db_config: dict[str, str]
     )
 
 
-def resolve_target_paper(
+def resolve_target_paper_local(
     query: str,
     db_config: dict[str, str] | None = None,
 ) -> tuple[str, TargetPaper | None, list[TargetPaper], str | None]:
@@ -865,57 +1191,67 @@ def resolve_target_paper(
     return "ambiguous", None, candidates[:5], "Multiple similar titles were found. Please choose the target paper."
 
 
-def build_planning_messages(
-    original_query: str,
-    corpus_latest_date: str | None,
-    previous_plan: QueryPlan | None = None,
-    user_feedback: str | None = None,
-) -> list[dict[str, str]]:
-    system_prompt = f"""
-You optimize user questions for semantic retrieval over an English arXiv paper database about Retrieval-Augmented Generation.
-Return only one JSON object with this exact shape:
-{{
-  "answer_language": "zh" or "en",
-  "intent_summary": "brief summary",
-  "retrieval_query_en": "one concise English retrieval sentence",
-  "keywords_en": ["keyword 1", "keyword 2"],
-  "constraints": {{
-    "published_after": "YYYY-MM-DD or null",
-    "published_before": "YYYY-MM-DD or null",
-    "authors": ["full author name"],
-    "primary_categories": ["cs.CL"],
-    "sort_hint": "relevance" or "latest",
-    "is_implicit_latest": true or false
-  }}
-}}
+def resolve_target_paper(
+    query: str,
+    db_config: dict[str, str] | None = None,
+) -> tuple[str, TargetPaper | None, list[TargetPaper], str | None]:
+    normalized_query = normalize_whitespace(query)
+    if not normalized_query:
+        return "not_found", None, [], "Target paper query is empty."
 
-Rules:
-- The paper database is English. retrieval_query_en and keywords_en must be English.
-- Preserve the user's technical meaning.
-- Only add author filters if the user explicitly names an author.
-- Only add category filters if the user explicitly names arXiv categories or clearly implies a primary category.
-- If the user gives an absolute date or year range, convert it to absolute ISO dates.
-- If the user gives a relative time like "last 6 months" or "近一年", convert it to absolute ISO dates relative to the corpus latest date.
-- If the user asks for "latest" or "recent" without a concrete window, use a 12-month window ending at the corpus latest date, set sort_hint to "latest", and set is_implicit_latest to true.
-- If you cannot determine a time range, keep the published_* fields null.
-- If corpus latest date is unknown, keep time fields null unless the user gave absolute dates.
-- Do not output markdown, explanations, or code fences.
+    candidates: list[TargetPaper] = []
+    warnings: list[str] = []
+    sources = normalize_source_list(provider_map=getattr(getattr(settings, "retrieval", None), "providers", None))
 
-Corpus latest indexed publication date: {corpus_latest_date or "unknown"}
-""".strip()
+    if "local" in sources:
+        try:
+            _, local_resolved, local_candidates, _ = resolve_target_paper_local(normalized_query, db_config=db_config)
+            if local_resolved is not None:
+                candidates.append(local_resolved)
+            candidates.extend(local_candidates)
+        except Exception as exc:
+            warnings.append(f"local: {exc}")
 
-    user_sections = [f"Original user question:\n{original_query}"]
-    if previous_plan is not None:
-        user_sections.append(
-            "Previous query plan JSON:\n" + json.dumps(asdict(previous_plan), ensure_ascii=False, indent=2)
-        )
-    if user_feedback:
-        user_sections.append(f"User feedback for improvement:\n{user_feedback}")
-    user_sections.append("Return only the JSON object.")
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "\n\n".join(user_sections)},
-    ]
+    if "arxiv" in sources:
+        try:
+            candidates.extend(target_paper_from_external_record(item) for item in resolve_arxiv_candidates(normalized_query, limit=5))
+        except Exception as exc:
+            warnings.append(f"arxiv: {exc}")
+
+    if "wos" in sources:
+        try:
+            candidates.extend(target_paper_from_external_record(item) for item in resolve_wos_candidates(normalized_query, limit=5))
+        except Exception as exc:
+            warnings.append(f"wos: {exc}")
+
+    deduped_candidates = dedupe_target_papers(candidates)
+    if not deduped_candidates:
+        message = "No target paper was found for the given arXiv ID or title."
+        if warnings:
+            message += " Source warnings: " + "; ".join(warnings)
+        return "not_found", None, [], message
+
+    arxiv_parts = parse_arxiv_query(normalized_query)
+    if arxiv_parts is not None:
+        preferred = sorted(
+            deduped_candidates,
+            key=lambda paper: (paper.arxiv_id is not None, source_priority(paper.source), paper.published_date or ""),
+            reverse=True,
+        )[0]
+        return "resolved", preferred, deduped_candidates[:5], None
+
+    exact_matches = [paper for paper in deduped_candidates if paper.title.casefold() == normalized_query.casefold()]
+    if len(exact_matches) == 1:
+        return "resolved", exact_matches[0], exact_matches, None
+    if len(exact_matches) > 1:
+        return "ambiguous", None, exact_matches[:5], "Multiple papers share this title. Please choose the target paper."
+    if len(deduped_candidates) == 1:
+        return "resolved", deduped_candidates[0], deduped_candidates, None
+
+    message = "Multiple similar titles were found. Please choose the target paper."
+    if warnings:
+        message += " Source warnings: " + "; ".join(warnings)
+    return "ambiguous", None, deduped_candidates[:5], message
 
 
 def build_planning_messages(
@@ -948,13 +1284,13 @@ Rules:
 - Only add author filters if the user explicitly names an author.
 - Only add category filters if the user explicitly names arXiv categories or clearly implies a primary category.
 - If the user gives an absolute date or year range, convert it to absolute ISO dates.
-- If the user gives a relative time like "last 6 months" or "近一年", convert it to absolute ISO dates relative to the corpus latest date.
-- If the user asks for "latest" or "recent" without a concrete window, use a 12-month window ending at the corpus latest date, set sort_hint to "latest", and set is_implicit_latest to true.
+- If the user gives a relative time like "last 6 months" or "近一年", convert it to absolute ISO dates relative to the retrieval freshness anchor date.
+- If the user asks for "latest" or "recent" without a concrete window, use a 12-month window ending at the retrieval freshness anchor date, set sort_hint to "latest", and set is_implicit_latest to true.
 - If you cannot determine a time range, keep the published_* fields null.
-- If corpus latest date is unknown, keep time fields null unless the user gave absolute dates.
+- If the retrieval freshness anchor date is unknown, keep time fields null unless the user gave absolute dates.
 - Do not output markdown, explanations, or code fences.
 
-Corpus latest indexed publication date: {corpus_latest_date or "unknown"}
+Retrieval freshness anchor date: {corpus_latest_date or "unknown"}
 """.strip()
 
     user_sections = [f"Original user question:\n{original_query}"]
@@ -976,7 +1312,7 @@ def plan_query(
     settings: RuntimeSettings,
     db_config: dict[str, str] | None = None,
 ) -> QueryPlan:
-    corpus_latest_date = safe_get_corpus_latest_date(db_config)
+    corpus_latest_date = get_retrieval_freshness_anchor(db_config, settings.retrieval.providers)
     content = chat_completion(
         build_planning_messages(original_query, corpus_latest_date),
         settings.query_chat,
@@ -992,7 +1328,9 @@ def revise_query_plan(
     settings: RuntimeSettings,
     db_config: dict[str, str] | None = None,
 ) -> QueryPlan:
-    corpus_latest_date = previous_plan.corpus_latest_date or safe_get_corpus_latest_date(db_config)
+    corpus_latest_date = previous_plan.corpus_latest_date or get_retrieval_freshness_anchor(
+        db_config, settings.retrieval.providers
+    )
     content = chat_completion(
         build_planning_messages(
             original_query,
@@ -1088,7 +1426,8 @@ def vector_search_top_k(
             1 - (e.embedding <=> %s::vector) AS similarity,
             COALESCE(m.authors, ARRAY[]::text[]),
             m.published_date,
-            {category_sql} AS primary_category
+            {category_sql} AS primary_category,
+            m.arxiv_id
         FROM papers_embeddings AS e
         JOIN papers_meta AS m ON e.paper_id = m.id
         {where_sql}
@@ -1107,9 +1446,19 @@ def vector_search_top_k(
 
     papers: list[RetrievedPaper] = []
     for row in rows:
+        local_uuid = str(row[0])
+        arxiv_id = row[8]
         papers.append(
             RetrievedPaper(
-                id=str(row[0]),
+                id=make_paper_ref("local", local_uuid),
+                source="local",
+                source_id=local_uuid,
+                canonical_id=build_canonical_paper_id(
+                    title=row[1],
+                    authors=list(row[5] or []),
+                    published_date=row[6].isoformat() if row[6] else None,
+                    arxiv_id=arxiv_id,
+                ),
                 title=row[1],
                 text=row[2] or row[1] or "No summary available.",
                 method=row[3] or "Not provided.",
@@ -1117,6 +1466,9 @@ def vector_search_top_k(
                 authors=list(row[5] or []),
                 published_date=row[6].isoformat() if row[6] else None,
                 primary_category=row[7] or None,
+                external_url=build_arxiv_abs_url(arxiv_id),
+                arxiv_id=arxiv_id,
+                matched_sources=["local"],
             )
         )
     return papers
@@ -1133,7 +1485,13 @@ def vector_search_prior_work_top_k(
         raise RuntimeError("Target paper is missing a valid published_date.")
 
     target_base_id = extract_arxiv_base_id(target_paper.arxiv_id)
+    target_source, target_source_id = split_paper_ref(target_paper.id)
     category_sql = get_primary_category_sql(db_config)
+    exclusion_sql = "TRUE"
+    params: list[Any] = [embedding_to_vector_literal(query_vec)]
+    if target_source == "local":
+        exclusion_sql = "m.id <> %s::uuid"
+        params.append(target_source_id)
     sql = f"""
         SELECT
             m.id,
@@ -1151,36 +1509,45 @@ def vector_search_prior_work_top_k(
             1 - (e.embedding <=> %s::vector) AS similarity,
             COALESCE(m.authors, ARRAY[]::text[]),
             m.published_date,
-            {category_sql} AS primary_category
+            {category_sql} AS primary_category,
+            m.arxiv_id
         FROM papers_embeddings AS e
         JOIN papers_meta AS m ON e.paper_id = m.id
         WHERE
-            m.id <> %s::uuid
+            {exclusion_sql}
             AND m.published_date < %s
             AND lower(split_part(m.arxiv_id, 'v', 1)) <> lower(%s)
         ORDER BY e.embedding <=> %s::vector
         LIMIT %s;
     """
-    params = (
-        embedding_to_vector_literal(query_vec),
-        target_paper.id,
-        target_date.isoformat(),
-        target_base_id or "",
-        embedding_to_vector_literal(query_vec),
-        limit,
+    params.extend(
+        [
+            target_date.isoformat(),
+            target_base_id or "",
+            embedding_to_vector_literal(query_vec),
+            limit,
+        ]
     )
 
     conn = psycopg2.connect(**(db_config or DEFAULT_DB_CONFIG))
     try:
         with conn.cursor() as cursor:
-            cursor.execute(sql, params)
+            cursor.execute(sql, tuple(params))
             rows = cursor.fetchall()
     finally:
         conn.close()
 
     return [
         RetrievedPaper(
-            id=str(row[0]),
+            id=make_paper_ref("local", str(row[0])),
+            source="local",
+            source_id=str(row[0]),
+            canonical_id=build_canonical_paper_id(
+                title=row[1],
+                authors=list(row[5] or []),
+                published_date=row[6].isoformat() if row[6] else None,
+                arxiv_id=row[8],
+            ),
             title=row[1],
             text=row[2] or row[1] or "No summary available.",
             method=row[3] or "Not provided.",
@@ -1188,6 +1555,9 @@ def vector_search_prior_work_top_k(
             authors=list(row[5] or []),
             published_date=row[6].isoformat() if row[6] else None,
             primary_category=row[7] or None,
+            external_url=build_arxiv_abs_url(row[8]),
+            arxiv_id=row[8],
+            matched_sources=["local"],
         )
         for row in rows
     ]
@@ -1197,6 +1567,7 @@ def build_rerank_document(paper: RetrievedPaper) -> str:
     authors_text = ", ".join(paper.authors) if paper.authors else "Unknown"
     return "\n".join(
         [
+            f"Source: {paper.source}",
             f"Title: {paper.title}",
             f"Published date: {paper.published_date or 'Unknown'}",
             f"Primary category: {paper.primary_category or 'Unknown'}",
@@ -1244,6 +1615,9 @@ def rerank_with_api(query: str, docs: list[RetrievedPaper], settings: RuntimeSet
         ranked_docs.append(
             RankedPaper(
                 id=source.id,
+                source=source.source,
+                source_id=source.source_id,
+                canonical_id=source.canonical_id,
                 title=source.title,
                 text=source.text,
                 method=source.method,
@@ -1251,6 +1625,9 @@ def rerank_with_api(query: str, docs: list[RetrievedPaper], settings: RuntimeSet
                 authors=list(source.authors),
                 published_date=source.published_date,
                 primary_category=source.primary_category,
+                external_url=source.external_url,
+                arxiv_id=source.arxiv_id,
+                matched_sources=list(source.matched_sources),
                 rerank_score=float(item.get("relevance_score", 0.0)),
             )
         )
@@ -1285,6 +1662,154 @@ def widen_implicit_latest_constraints(
     return widened
 
 
+def build_prior_constraints(target_paper: TargetPaper) -> RetrievalConstraints:
+    categories = [target_paper.primary_category] if target_paper.primary_category else []
+    return RetrievalConstraints(
+        published_before=target_paper.published_date,
+        primary_categories=categories,
+        sort_hint="relevance",
+    )
+
+
+def build_ranked_paper_fallback(doc: RetrievedPaper) -> RankedPaper:
+    return RankedPaper(
+        id=doc.id,
+        source=doc.source,
+        source_id=doc.source_id,
+        canonical_id=doc.canonical_id,
+        title=doc.title,
+        text=doc.text,
+        method=doc.method,
+        initial_score=doc.initial_score,
+        authors=list(doc.authors),
+        published_date=doc.published_date,
+        primary_category=doc.primary_category,
+        external_url=doc.external_url,
+        arxiv_id=doc.arxiv_id,
+        matched_sources=list(doc.matched_sources),
+        rerank_score=doc.initial_score,
+    )
+
+
+def collect_search_candidates(
+    query_vec: list[float],
+    retrieval_text: str,
+    constraints: RetrievalConstraints,
+    settings: RuntimeSettings,
+    *,
+    db_config: dict[str, str] | None = None,
+) -> RetrievalBatch:
+    warnings: list[str] = []
+    papers: list[RetrievedPaper] = []
+    used_sources: list[str] = []
+    sources = normalize_source_list(provider_map=settings.retrieval.providers)
+    freshness = get_retrieval_source_freshness(db_config, settings.retrieval.providers)
+
+    if "local" in sources:
+        try:
+            local_results = vector_search_top_k(
+                query_vec,
+                settings.retrieval.top_k,
+                constraints=constraints,
+                db_config=db_config,
+            )
+            if local_results:
+                papers.extend(local_results)
+                used_sources.append("local")
+        except Exception as exc:
+            warnings.append(f"Local retrieval unavailable: {exc}")
+
+    external_limit = min(settings.retrieval.top_k, 12)
+    if "arxiv" in sources:
+        try:
+            arxiv_records = search_arxiv_records(retrieval_text, constraints, limit=external_limit)
+            papers.extend(retrieved_paper_from_external_record(record, query_vec, settings) for record in arxiv_records)
+            if arxiv_records:
+                used_sources.append("arxiv")
+        except Exception as exc:
+            warnings.append(f"arXiv retrieval unavailable: {exc}")
+
+    if "wos" in sources:
+        try:
+            wos_records = search_wos_records(retrieval_text, constraints, limit=min(settings.retrieval.top_k, 8))
+            papers.extend(retrieved_paper_from_external_record(record, query_vec, settings) for record in wos_records)
+            if wos_records:
+                used_sources.append("wos")
+        except Exception as exc:
+            warnings.append(f"Web of Science retrieval unavailable: {exc}")
+
+    deduped = sort_retrieved_papers(dedupe_retrieved_papers(papers), constraints)[: settings.retrieval.top_k]
+    return RetrievalBatch(
+        papers=deduped,
+        warnings=warnings,
+        retrieval_sources=used_sources,
+        source_freshness=freshness,
+    )
+
+
+def collect_prior_work_candidates(
+    query_vec: list[float],
+    target_paper: TargetPaper,
+    settings: RuntimeSettings,
+    *,
+    db_config: dict[str, str] | None = None,
+) -> RetrievalBatch:
+    warnings: list[str] = []
+    papers: list[RetrievedPaper] = []
+    used_sources: list[str] = []
+    sources = normalize_source_list(provider_map=settings.retrieval.providers)
+    freshness = get_retrieval_source_freshness(db_config, settings.retrieval.providers)
+    prior_constraints = build_prior_constraints(target_paper)
+
+    if "local" in sources:
+        try:
+            local_results = vector_search_prior_work_top_k(
+                query_vec,
+                target_paper=target_paper,
+                limit=settings.retrieval.top_k,
+                db_config=db_config,
+            )
+            if local_results:
+                papers.extend(local_results)
+                used_sources.append("local")
+        except Exception as exc:
+            warnings.append(f"Local prior-work retrieval unavailable: {exc}")
+
+    if "arxiv" in sources:
+        try:
+            arxiv_records = search_arxiv_records(build_trace_retrieval_text(target_paper), prior_constraints, limit=min(settings.retrieval.top_k, 12))
+            papers.extend(retrieved_paper_from_external_record(record, query_vec, settings) for record in arxiv_records)
+            if arxiv_records:
+                used_sources.append("arxiv")
+        except Exception as exc:
+            warnings.append(f"arXiv prior-work retrieval unavailable: {exc}")
+
+    if "wos" in sources:
+        try:
+            wos_records = search_wos_records(build_trace_retrieval_text(target_paper), prior_constraints, limit=min(settings.retrieval.top_k, 8))
+            papers.extend(retrieved_paper_from_external_record(record, query_vec, settings) for record in wos_records)
+            if wos_records:
+                used_sources.append("wos")
+        except Exception as exc:
+            warnings.append(f"Web of Science prior-work retrieval unavailable: {exc}")
+
+    target_date = parse_iso_date(target_paper.published_date)
+    filtered: list[RetrievedPaper] = []
+    for paper in dedupe_retrieved_papers(papers):
+        if paper.canonical_id == target_paper.canonical_id:
+            continue
+        paper_date = parse_iso_date(paper.published_date)
+        if target_date is not None and paper_date is not None and paper_date >= target_date:
+            continue
+        filtered.append(paper)
+    return RetrievalBatch(
+        papers=sort_retrieved_papers(filtered, prior_constraints)[: settings.retrieval.top_k],
+        warnings=warnings,
+        retrieval_sources=used_sources,
+        source_freshness=freshness,
+    )
+
+
 def build_generation_prompt(
     user_query: str,
     answer_language: str,
@@ -1292,15 +1817,19 @@ def build_generation_prompt(
     query_plan: QueryPlan | None,
     applied_constraints: RetrievalConstraints,
     corpus_latest_date: str | None,
+    retrieval_sources: list[str],
 ) -> str:
     constraint_summary = format_constraints_summary(applied_constraints, empty_text="none")
     paper_blocks: list[str] = []
     for index, paper in enumerate(papers, start=1):
         authors_text = ", ".join(paper.authors) if paper.authors else "Unknown"
+        matched_sources = ", ".join(paper.matched_sources) if paper.matched_sources else paper.source
         paper_blocks.append(
             "\n".join(
                 [
                     f"[Paper {index}]",
+                    f"Source: {paper.source}",
+                    f"Matched sources: {matched_sources}",
                     f"Title: {paper.title}",
                     f"Published date: {paper.published_date or 'Unknown'}",
                     f"Primary category: {paper.primary_category or 'Unknown'}",
@@ -1331,6 +1860,7 @@ Cite evidence using labels like [Paper 1].
 - authors: {constraint_summary['authors']}
 - primary categories: {constraint_summary['categories']}
 - sort hint: {constraint_summary['sort_hint']}
+- retrieval sources: {", ".join(retrieval_sources) if retrieval_sources else "unknown"}
 - corpus latest indexed publication date: {corpus_latest_date or 'unknown'}
 
 User question:
@@ -1349,15 +1879,19 @@ def build_trace_generation_prompt(
     target_paper: TargetPaper,
     answer_language: str,
     papers: list[RankedPaper],
+    retrieval_sources: list[str],
 ) -> str:
     language_instruction = "Reply in Chinese." if answer_language == "zh" else "Reply in English."
     candidate_blocks: list[str] = []
     for index, paper in enumerate(papers, start=1):
         authors_text = ", ".join(paper.authors) if paper.authors else "Unknown"
+        matched_sources = ", ".join(paper.matched_sources) if paper.matched_sources else paper.source
         candidate_blocks.append(
             "\n".join(
                 [
                     f"[Paper {index}]",
+                    f"Source: {paper.source}",
+                    f"Matched sources: {matched_sources}",
                     f"Title: {paper.title}",
                     f"Published date: {paper.published_date or 'Unknown'}",
                     f"Primary category: {paper.primary_category or 'Unknown'}",
@@ -1378,11 +1912,13 @@ Use labels like [Paper 1].
 
 Target paper:
 Title: {target_paper.title}
-arXiv ID: {target_paper.arxiv_id}
+arXiv ID: {target_paper.arxiv_id or 'Unknown'}
+Source: {target_paper.source}
 Published date: {target_paper.published_date or 'Unknown'}
 Primary category: {target_paper.primary_category or 'Unknown'}
 Authors: {", ".join(target_paper.authors) if target_paper.authors else 'Unknown'}
 Summary: {target_paper.summary}
+Candidate retrieval sources: {", ".join(retrieval_sources) if retrieval_sources else 'unknown'}
 
 Candidate prior papers:
 
@@ -1398,37 +1934,28 @@ def execute_trace(
 ) -> TraceExecution:
     retrieval_text = build_trace_retrieval_text(target_paper)
     query_vec = get_embedding(retrieval_text, settings)
-    coarse_results = vector_search_prior_work_top_k(
+    batch = collect_prior_work_candidates(
         query_vec,
         target_paper=target_paper,
-        limit=settings.retrieval.top_k,
+        settings=settings,
         db_config=db_config,
     )
+    coarse_results = batch.papers
+    warnings = list(batch.warnings)
     if not coarse_results:
-        raise RuntimeError("No prior paper candidates were found before the target paper's publication date.")
+        message = "No prior paper candidates were found before the target paper's publication date."
+        if warnings:
+            message += " Provider warnings: " + "; ".join(warnings)
+        raise RuntimeError(message)
 
-    warnings: list[str] = []
     rerank_query = build_trace_rerank_query(target_paper)
     try:
         papers = rerank_with_api(rerank_query, coarse_results, settings)
     except Exception as exc:
         warnings.append(f"Rerank fallback used: {exc}")
-        papers = [
-            RankedPaper(
-                id=doc.id,
-                title=doc.title,
-                text=doc.text,
-                method=doc.method,
-                initial_score=doc.initial_score,
-                authors=list(doc.authors),
-                published_date=doc.published_date,
-                primary_category=doc.primary_category,
-                rerank_score=doc.initial_score,
-            )
-            for doc in coarse_results[: settings.retrieval.top_n]
-        ]
+        papers = [build_ranked_paper_fallback(doc) for doc in coarse_results[: settings.retrieval.top_n]]
 
-    prompt = build_trace_generation_prompt(target_paper, answer_language, papers)
+    prompt = build_trace_generation_prompt(target_paper, answer_language, papers, batch.retrieval_sources)
     return TraceExecution(
         target_paper=target_paper,
         retrieval_text=retrieval_text,
@@ -1436,6 +1963,8 @@ def execute_trace(
         papers=papers,
         answer_prompt=prompt,
         warnings=warnings,
+        retrieval_sources=batch.retrieval_sources,
+        source_freshness=batch.source_freshness,
     )
 
 
@@ -1448,56 +1977,52 @@ def execute_search(
 ) -> SearchExecution:
     answer_language = query_plan.answer_language if query_plan is not None else infer_user_language(original_query)
     corpus_latest_date = (
-        query_plan.corpus_latest_date if query_plan and query_plan.corpus_latest_date else safe_get_corpus_latest_date(db_config)
+        query_plan.corpus_latest_date if query_plan and query_plan.corpus_latest_date else get_retrieval_freshness_anchor(db_config)
     )
     applied_constraints = ensure_constraints_for_execution(query_plan, original_query, corpus_latest_date)
     query_vec = get_embedding(retrieval_text, settings)
 
-    warnings: list[str] = []
-    coarse_results = vector_search_top_k(
+    batch = collect_search_candidates(
         query_vec,
-        settings.retrieval.top_k,
-        constraints=applied_constraints,
+        retrieval_text,
+        applied_constraints,
+        settings,
         db_config=db_config,
     )
+    warnings = list(batch.warnings)
+    coarse_results = batch.papers
 
     if len(coarse_results) < settings.retrieval.top_n and applied_constraints.is_implicit_latest:
         widened_constraints = widen_implicit_latest_constraints(applied_constraints, corpus_latest_date, months=24)
         if widened_constraints is not None:
-            widened_results = vector_search_top_k(
+            widened_batch = collect_search_candidates(
                 query_vec,
-                settings.retrieval.top_k,
-                constraints=widened_constraints,
+                retrieval_text,
+                widened_constraints,
+                settings,
                 db_config=db_config,
             )
+            widened_results = widened_batch.papers
             if len(widened_results) > len(coarse_results):
                 warnings.append(
                     "Too few papers matched the implicit latest window, so the time range was widened from 12 months to 24 months."
                 )
                 coarse_results = widened_results
                 applied_constraints = widened_constraints
+                batch = widened_batch
+                warnings = list(dict.fromkeys(warnings + widened_batch.warnings))
 
     if not coarse_results:
-        raise RuntimeError("No relevant papers found after applying the current constraints.")
+        message = "No relevant papers found after applying the current constraints."
+        if warnings:
+            message += " Provider warnings: " + "; ".join(warnings)
+        raise RuntimeError(message)
 
     try:
         papers = rerank_with_api(retrieval_text, coarse_results, settings)
     except Exception as exc:
         warnings.append(f"Rerank fallback used: {exc}")
-        papers = [
-            RankedPaper(
-                id=doc.id,
-                title=doc.title,
-                text=doc.text,
-                method=doc.method,
-                initial_score=doc.initial_score,
-                authors=list(doc.authors),
-                published_date=doc.published_date,
-                primary_category=doc.primary_category,
-                rerank_score=doc.initial_score,
-            )
-            for doc in coarse_results[: settings.retrieval.top_n]
-        ]
+        papers = [build_ranked_paper_fallback(doc) for doc in coarse_results[: settings.retrieval.top_n]]
 
     prompt = build_generation_prompt(
         original_query,
@@ -1506,6 +2031,7 @@ def execute_search(
         query_plan,
         applied_constraints,
         corpus_latest_date,
+        batch.retrieval_sources,
     )
     return SearchExecution(
         original_query=original_query,
@@ -1517,6 +2043,8 @@ def execute_search(
         warnings=warnings,
         applied_constraints=applied_constraints,
         corpus_latest_date=corpus_latest_date,
+        retrieval_sources=batch.retrieval_sources,
+        source_freshness=batch.source_freshness,
     )
 
 

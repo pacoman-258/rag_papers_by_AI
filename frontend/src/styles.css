@@ -107,6 +107,38 @@ button:disabled {
   gap: 18px;
 }
 
+.provider-toggle-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.provider-toggle-item {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+
+.provider-toggle-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.provider-toggle-item input[type="checkbox"] {
+  width: auto;
+  margin-top: 0;
+  accent-color: var(--accent);
+}
+
+.provider-toggle-title {
+  font-weight: 600;
+}
+
 .config-section,
 .workspace section,
 .question-box,
