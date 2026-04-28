@@ -28,6 +28,7 @@ from local_paper_db.app.search_service import (
     RuntimeSettings,
     chat_completion,
     extract_first_json_object,
+    infer_user_language,
 )
 
 
@@ -62,6 +63,35 @@ def trim_answer_context(text: str | None, max_length: int = DEFAULT_CONTEXT_LIMI
     if len(value) <= max_length:
         return value
     return value[:max_length].rstrip() + "..."
+
+
+def _safe_text(value: Any, max_length: int = DEFAULT_CONTEXT_LIMIT) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return ""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length].rstrip() + "..."
+
+
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def _coerce_string_list(value: Any, *, limit: int = 8, max_length: int = 120) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    items: list[str] = []
+    for item in value[:limit]:
+        text = _safe_text(item, max_length=max_length)
+        if text:
+            items.append(text)
+    return items
 
 
 def ensure_audio_cache_dir() -> None:
@@ -173,6 +203,130 @@ def _pick_default_expression(expressions: list[str]) -> str | None:
     return expressions[0]
 
 
+def _normalize_workflow_kind(workflow_context: dict[str, Any] | None) -> str:
+    if not isinstance(workflow_context, dict):
+        return ""
+    return _safe_text(workflow_context.get("kind"), max_length=64).casefold()
+
+
+def _normalize_reply_language(
+    language: str | None,
+    workflow_context: dict[str, Any] | None,
+    answer_context: str | None,
+    message: str | None,
+) -> str:
+    explicit = _safe_text(language, max_length=16).casefold()
+    if explicit in {"zh", "en"}:
+        return explicit
+    if isinstance(workflow_context, dict):
+        for key in ("answer_language", "page_language", "language"):
+            workflow_language = _safe_text(workflow_context.get(key), max_length=16).casefold()
+            if workflow_language in {"zh", "en"}:
+                return workflow_language
+    sample = "\n".join(
+        part
+        for part in (
+            _safe_text(message, max_length=400),
+            _safe_text(answer_context, max_length=600),
+            _safe_text((workflow_context or {}).get("query") if isinstance(workflow_context, dict) else "", max_length=200),
+            _safe_text((workflow_context or {}).get("paper_title") if isinstance(workflow_context, dict) else "", max_length=200),
+        )
+        if part
+    )
+    inferred = infer_user_language(sample)
+    return "zh" if inferred == "zh" else "en"
+
+
+def _reply_language_name(reply_language: str) -> str:
+    return "Simplified Chinese" if reply_language == "zh" else "English"
+
+
+def _fallback_live2d_reply(source: str, workflow_kind: str, reply_language: str) -> str:
+    if reply_language == "en":
+        if source == "user" and workflow_kind == "paper_reader":
+            return "I can keep unpacking this page with you. If you want, I can explain the method, point out the key evidence, or guide you into the next section."
+        if source == "user":
+            return "I'm here. We can keep talking through your question, or you can run QA / PST first and I'll help you interpret the result."
+        if workflow_kind == "paper_reader":
+            return "I've caught up with this page. If you want, I can highlight the key point, explain the method, or suggest what to read next."
+        return "I've read the latest result. If you want, I can break the key point down more clearly."
+    if source == "user" and workflow_kind == "paper_reader":
+        return "我可以继续陪你拆解这一页。如果你愿意，我可以解释方法、指出关键证据，或者带你进入下一部分。"
+    if source == "user":
+        return "我在呢，可以继续和我聊你的问题，或者先运行一次 QA / PST，我再帮你解读结果。"
+    if workflow_kind == "paper_reader":
+        return "这一页我已经接上了。如果你愿意，我可以继续帮你解释方法、提醒关键点，或者带你看下一部分。"
+    return "我看完最新结果了。如果你愿意，我可以继续帮你把关键点拆得更清楚。"
+
+
+def _render_paper_reader_context_lines(workflow_context: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    paper_title = _safe_text(workflow_context.get("paper_title"), max_length=240)
+    page_index = _coerce_int(workflow_context.get("page_index"))
+    page_title = _safe_text(workflow_context.get("page_title"), max_length=240)
+    section_titles = _coerce_string_list(workflow_context.get("section_titles"), limit=8, max_length=100)
+    latest_page_summary = _safe_text(workflow_context.get("latest_page_summary"), max_length=1800)
+    latest_answer_text = _safe_text(workflow_context.get("latest_answer_text"), max_length=1800)
+    source = _safe_text(workflow_context.get("source"), max_length=48)
+    page_count = _coerce_int(workflow_context.get("page_count"))
+    answer_language = _safe_text(workflow_context.get("answer_language"), max_length=16).casefold()
+
+    if paper_title:
+        lines.append(f"- paper_title: {paper_title}")
+    if page_index is not None:
+        lines.append(f"- page_index: {page_index}")
+        if page_index >= 0:
+            page_label = f"第{page_index + 1}页" if answer_language == "zh" else f"Page {page_index + 1}"
+            lines.append(f"- page_label: {page_label}")
+    if page_title:
+        lines.append(f"- page_title: {page_title}")
+    if page_count is not None and page_count > 0:
+        lines.append(f"- page_count: {page_count}")
+    if answer_language in {"zh", "en"}:
+        lines.append(f"- answer_language: {answer_language}")
+    if section_titles:
+        lines.append("- section_titles: " + ", ".join(section_titles))
+    if source:
+        lines.append(f"- source: {source}")
+    if latest_page_summary:
+        lines.append(f"- latest_page_summary: {latest_page_summary}")
+    if latest_answer_text:
+        lines.append(f"- latest_answer_text: {latest_answer_text}")
+    lines.append(
+        "- guidance: focus on the current page, explain what matters, suggest the next reading step, and do not invent citations or paper-wide claims."
+    )
+    return lines
+
+
+def _render_workflow_context_lines(workflow_context: dict[str, Any] | None) -> list[str]:
+    if not workflow_context:
+        return []
+    kind = _normalize_workflow_kind(workflow_context)
+    if kind == "paper_reader":
+        return _render_paper_reader_context_lines(workflow_context)
+
+    lines: list[str] = []
+    query = _safe_text(workflow_context.get("query"), max_length=900)
+    answer_text = _safe_text(workflow_context.get("answer_text"), max_length=1800)
+    paper_titles = workflow_context.get("paper_titles")
+    paper_ids = workflow_context.get("paper_ids")
+    constraints = workflow_context.get("applied_constraints")
+
+    if kind:
+        lines.append(f"- kind: {kind}")
+    if query:
+        lines.append(f"- query: {query}")
+    if answer_text:
+        lines.append(f"- answer: {answer_text}")
+    if isinstance(paper_titles, list) and paper_titles:
+        lines.append("- paper_titles: " + ", ".join(_safe_text(item, 120) for item in paper_titles[:6]))
+    if isinstance(paper_ids, list) and paper_ids:
+        lines.append("- paper_ids: " + ", ".join(_safe_text(item, 64) for item in paper_ids[:8]))
+    if constraints:
+        lines.append("- constraints: " + _safe_text(json.dumps(constraints, ensure_ascii=False), 600))
+    return lines
+
+
 def get_live2d_bootstrap_payload() -> dict[str, Any]:
     try:
         model_path = _find_model_path()
@@ -248,14 +402,32 @@ def coerce_expression_name(expression: str | None, available_expressions: list[s
     return None
 
 
-def _build_live2d_system_prompt(available_expressions: list[str]) -> str:
+def _build_live2d_system_prompt(
+    available_expressions: list[str],
+    workflow_context: dict[str, Any] | None = None,
+    reply_language: str = "zh",
+) -> str:
     expression_text = ", ".join(available_expressions) if available_expressions else "(none)"
+    workflow_kind = _normalize_workflow_kind(workflow_context)
+    reply_language_name = _reply_language_name(reply_language)
+    paper_reader_rules = ""
+    if workflow_kind == "paper_reader":
+        page_ref_hint = 'Prefer "这一页" / "这一部分"' if reply_language == "zh" else 'Prefer "this page" / "this section"'
+        paper_reader_rules = """
+- When the workflow context is paper_reader, treat it as a page-local paper reading assistant.
+- Explain the current page in plain language, point out what matters, and suggest the next sensible reading step.
+- Use cautious language. Do not invent citations, experiments, formulas, or paper-wide conclusions beyond the provided page context.
+- {page_ref_hint} language when the user is reading a paper.
+- If the user asks for a broader summary, explain that you can only ground the reply in the current page context and can help continue page by page.
+""".strip().format(page_ref_hint=page_ref_hint)
     return f"""
 You are a warm and concise Live2D assistant inside an arXiv paper RAG workbench.
 You can chat casually, explain answers, and suggest practical next steps.
 
 Behavior rules:
 - Be helpful, upbeat, and brief.
+- Reply strictly in {reply_language_name}.
+- Keep both reply_text and speak_text in {reply_language_name}.
 - Never invent papers, experiments, citations, or retrieval results.
 - If linked workflow answer context exists, treat it as the only workflow context you know.
 - If long-term memory hints are provided, use them as soft personalization signals.
@@ -263,7 +435,8 @@ Behavior rules:
 - If no workflow answer context exists, behave like a normal chatbot.
 - For automatic QA/PST follow-ups, do not wait for user input. Send one concise suggestion or clarification.
 - Avoid markdown tables and long lists.
-- Speak naturally in Chinese when the user or context is Chinese, otherwise speak in English.
+- Only keep a very short English paper phrase when you are directly quoting the original wording; all explanation around it must stay in {reply_language_name}.
+{paper_reader_rules}
 
 Return only one JSON object in this exact shape:
 {{
@@ -280,6 +453,9 @@ If no expression fits, use an empty string.
 def _format_workflow_context_for_prompt(workflow_context: dict[str, Any] | None) -> str | None:
     if not workflow_context:
         return None
+    lines = _render_workflow_context_lines(workflow_context)
+    if lines:
+        return "\n".join(lines)
     try:
         text = json.dumps(workflow_context, ensure_ascii=False, indent=2)
     except Exception:
@@ -294,14 +470,23 @@ def _build_live2d_messages(
     *,
     source: str,
     message: str,
+    reply_language: str,
     history: list[dict[str, str]],
     answer_context: str | None,
     workflow_context: dict[str, Any] | None,
     memory_prompt_block: str | None,
     available_expressions: list[str],
 ) -> list[dict[str, str]]:
+    workflow_kind = _normalize_workflow_kind(workflow_context)
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": _build_live2d_system_prompt(available_expressions)}
+        {
+            "role": "system",
+            "content": _build_live2d_system_prompt(
+                available_expressions,
+                workflow_context,
+                reply_language=reply_language,
+            ),
+        }
     ]
 
     workflow_context_text = _format_workflow_context_for_prompt(workflow_context)
@@ -331,23 +516,39 @@ def _build_live2d_messages(
         messages.append({"role": item["role"], "content": item["text"]})
 
     if source == "user":
+        user_prompt = (
+            "User message:\n"
+            f"{message}\n\n"
+            "Reply naturally and keep it concise. Return JSON only."
+        )
+        if workflow_kind == "paper_reader":
+            user_prompt += (
+                "\n\nThis is a paper reading page. Ground the reply in the current page context, "
+                "help the user understand what matters, and suggest what to inspect next. "
+                "Do not invent citations or paper-wide conclusions."
+            )
         messages.append(
             {
                 "role": "user",
-                "content": (
-                    "User message:\n"
-                    f"{message}\n\n"
-                    "Reply naturally and keep it concise. Return JSON only."
-                ),
+                "content": user_prompt,
             }
         )
     else:
-        workflow_label = "QA" if source == "qa_auto" else "PST"
-        auto_prompt = (
-            f"The {workflow_label} workflow just finished."
-            " Without waiting for user input, send one concise proactive follow-up based on the linked workflow answer."
-            " Return JSON only."
-        )
+        if workflow_kind == "paper_reader":
+            auto_prompt = (
+                "The paper_reader workflow just updated the current paper page."
+                " Without waiting for user input, send one concise follow-up that helps the user understand"
+                " the current page, notice the key point, or know what to read next."
+                " Ground the reply in the current page context and do not invent citations or paper-wide claims."
+                " Return JSON only."
+            )
+        else:
+            workflow_label = "QA" if source == "qa_auto" else "PST"
+            auto_prompt = (
+                f"The {workflow_label} workflow just finished."
+                " Without waiting for user input, send one concise proactive follow-up based on the linked workflow answer."
+                " Return JSON only."
+            )
         if answer_context:
             auto_prompt += "\n\nFocus on what the user can understand or do next."
         messages.append({"role": "user", "content": auto_prompt})
@@ -359,6 +560,7 @@ def generate_live2d_reply(
     *,
     source: str,
     message: str,
+    language: str | None,
     history: list[dict[str, Any]] | None,
     answer_context: str | None,
     workflow_context: dict[str, Any] | None = None,
@@ -371,6 +573,12 @@ def generate_live2d_reply(
     trimmed_context = trim_answer_context(answer_context)
     trimmed_message = str(message or "").strip()
     resolved_workflow_context = workflow_context if isinstance(workflow_context, dict) else None
+    reply_language = _normalize_reply_language(language, resolved_workflow_context, trimmed_context, trimmed_message)
+    if resolved_workflow_context is not None and str(resolved_workflow_context.get("answer_language") or "").strip().lower() not in {"zh", "en"}:
+        resolved_workflow_context = {
+            **resolved_workflow_context,
+            "answer_language": reply_language,
+        }
 
     if source == "user" and not trimmed_message:
         raise HTTPException(status_code=400, detail="User message is empty.")
@@ -397,9 +605,17 @@ def generate_live2d_reply(
     except Exception as exc:
         LOGGER.warning("live2d memory prepare failed, fallback to stateless chat: %s", exc)
 
+    memory_workflow_context = memory_context.get("workflow_context")
+    if isinstance(memory_workflow_context, dict) and str(memory_workflow_context.get("answer_language") or "").strip().lower() not in {"zh", "en"}:
+        memory_context["workflow_context"] = {
+            **memory_workflow_context,
+            "answer_language": reply_language,
+        }
+
     messages = _build_live2d_messages(
         source=source,
         message=trimmed_message,
+        reply_language=reply_language,
         history=normalized_history,
         answer_context=trimmed_context,
         workflow_context=memory_context.get("workflow_context"),
@@ -422,10 +638,8 @@ def generate_live2d_reply(
     expression = coerce_expression_name(payload.get("expression"), available_expressions)
 
     if not reply_text:
-        if source == "user":
-            reply_text = "我在呢，可以继续和我聊你的问题，或者先运行一次 QA / PST，我再帮你补充建议。"
-        else:
-            reply_text = "我看完这段回答啦。如果你愿意，我可以继续帮你把关键点拆得更清楚。"
+        workflow_kind = _normalize_workflow_kind(memory_context.get("workflow_context"))
+        reply_text = _fallback_live2d_reply(source, workflow_kind, reply_language)
     if not speak_text:
         speak_text = reply_text
 

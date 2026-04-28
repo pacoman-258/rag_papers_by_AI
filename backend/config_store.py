@@ -12,6 +12,8 @@ from backend.schemas import (
     EmbeddingConfigModel,
     RerankConfigRequest,
     RerankConfigResponse,
+    PaperReaderChatConfigRequest,
+    PaperReaderChatConfigResponse,
     RetrievalConfigModel,
     RetrievalProvidersModel,
     RuntimeSettingsRequest,
@@ -22,6 +24,7 @@ from local_paper_db.app.search_service import (
     ChatConfig,
     EmbeddingConfig,
     RerankConfig,
+    PaperReaderChatConfig,
     RetrievalConfig,
     RuntimeSettings,
     get_env_default_settings,
@@ -135,6 +138,13 @@ def runtime_settings_to_storage(
             "base_url": settings.answer_chat.base_url,
             "api_key": settings.answer_chat.api_key,
         },
+        "paper_reader_chat": {
+            "provider": settings.paper_reader_chat.provider,
+            "model": settings.paper_reader_chat.model,
+            "base_url": settings.paper_reader_chat.base_url,
+            "api_key": settings.paper_reader_chat.api_key,
+            "max_context_tokens": settings.paper_reader_chat.max_context_tokens,
+        },
         "embedding": {
             "api_url": settings.embedding.api_url,
             "model": settings.embedding.model,
@@ -169,7 +179,11 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
     default_settings = get_env_default_settings()
     embedding_api_url = normalize_ollama_api_url(data["embedding"]["api_url"])
     default_assistant_memory = get_env_default_settings().assistant_memory
+    default_paper_reader_chat = default_settings.paper_reader_chat
     assistant_memory_data = data.get("assistant_memory") if isinstance(data.get("assistant_memory"), dict) else {}
+    paper_reader_chat_data = (
+        data.get("paper_reader_chat") if isinstance(data.get("paper_reader_chat"), dict) else {}
+    )
     retrieval_data = data.get("retrieval") if isinstance(data.get("retrieval"), dict) else {}
     retrieval_providers = _coerce_retrieval_providers(
         retrieval_data.get("providers"),
@@ -189,6 +203,17 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
             model=data["answer_chat"]["model"],
             base_url=data["answer_chat"].get("base_url") or embedding_api_url,
             api_key=data["answer_chat"].get("api_key"),
+        ),
+        paper_reader_chat=PaperReaderChatConfig(
+            provider=paper_reader_chat_data.get("provider", default_paper_reader_chat.provider),
+            model=paper_reader_chat_data.get("model", default_paper_reader_chat.model),
+            base_url=paper_reader_chat_data.get("base_url") or default_paper_reader_chat.base_url,
+            api_key=paper_reader_chat_data.get("api_key", default_paper_reader_chat.api_key),
+            max_context_tokens=int(
+                paper_reader_chat_data.get(
+                    "max_context_tokens", default_paper_reader_chat.max_context_tokens
+                )
+            ),
         ),
         embedding=EmbeddingConfig(api_url=embedding_api_url, model=data["embedding"]["model"]),
         retrieval=RetrievalConfig(
@@ -267,6 +292,33 @@ def merge_rerank(base: RerankConfig, incoming: RerankConfigRequest) -> RerankCon
     return RerankConfig(base_url=incoming.base_url, model=incoming.model, api_key=api_key)
 
 
+def merge_paper_reader_chat(
+    base: PaperReaderChatConfig,
+    incoming: PaperReaderChatConfigRequest | None,
+    embedding_api_url: str,
+) -> PaperReaderChatConfig:
+    if incoming is None:
+        return base
+
+    api_key = base.api_key
+    if incoming.clear_api_key:
+        api_key = None
+    elif incoming.api_key not in (None, ""):
+        api_key = incoming.api_key
+
+    base_url = incoming.base_url
+    if incoming.provider == "ollama" and not base_url:
+        base_url = embedding_api_url
+
+    return PaperReaderChatConfig(
+        provider=incoming.provider,
+        model=incoming.model,
+        base_url=base_url,
+        api_key=api_key,
+        max_context_tokens=incoming.max_context_tokens,
+    )
+
+
 def merge_runtime_settings(
     base: RuntimeSettings,
     incoming: RuntimeSettingsRequest | None,
@@ -277,6 +329,11 @@ def merge_runtime_settings(
     embedding_api_url = normalize_ollama_api_url(incoming.embedding.api_url)
     query_chat = merge_chat(base.query_chat, incoming.query_chat)
     answer_chat = merge_chat(base.answer_chat, incoming.answer_chat)
+    paper_reader_chat = merge_paper_reader_chat(
+        base.paper_reader_chat,
+        incoming.paper_reader_chat,
+        embedding_api_url,
+    )
 
     if query_chat.provider == "ollama" and not query_chat.base_url:
         query_chat = ChatConfig(
@@ -308,6 +365,7 @@ def merge_runtime_settings(
     return RuntimeSettings(
         query_chat=query_chat,
         answer_chat=answer_chat,
+        paper_reader_chat=paper_reader_chat,
         embedding=EmbeddingConfig(
             api_url=incoming.embedding.api_url,
             model=incoming.embedding.model,
@@ -339,6 +397,13 @@ def runtime_settings_to_response(
             model=settings.answer_chat.model,
             base_url=settings.answer_chat.base_url,
             has_api_key=bool(settings.answer_chat.api_key),
+        ),
+        paper_reader_chat=PaperReaderChatConfigResponse(
+            provider=settings.paper_reader_chat.provider,
+            model=settings.paper_reader_chat.model,
+            base_url=settings.paper_reader_chat.base_url,
+            has_api_key=bool(settings.paper_reader_chat.api_key),
+            max_context_tokens=settings.paper_reader_chat.max_context_tokens,
         ),
         embedding=EmbeddingConfigModel(
             api_url=settings.embedding.api_url,

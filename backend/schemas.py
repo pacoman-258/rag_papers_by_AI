@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 Provider = Literal["ollama", "openai_compatible"]
 ModelListKind = Literal["chat", "embedding"]
+AnswerLanguage = Literal["zh", "en"]
 
 
 class ChatConfigRequest(BaseModel):
@@ -22,6 +23,14 @@ class ChatConfigResponse(BaseModel):
     model: str
     base_url: str | None = None
     has_api_key: bool
+
+
+class PaperReaderChatConfigRequest(ChatConfigRequest):
+    max_context_tokens: int = Field(default=8192, ge=1)
+
+
+class PaperReaderChatConfigResponse(ChatConfigResponse):
+    max_context_tokens: int = Field(default=8192, ge=1)
 
 
 class EmbeddingConfigModel(BaseModel):
@@ -74,6 +83,7 @@ class AssistantMemoryConfigModel(BaseModel):
 class RuntimeSettingsRequest(BaseModel):
     query_chat: ChatConfigRequest
     answer_chat: ChatConfigRequest
+    paper_reader_chat: PaperReaderChatConfigRequest | None = None
     embedding: EmbeddingConfigModel
     retrieval: RetrievalConfigRequest
     rerank: RerankConfigRequest
@@ -83,10 +93,152 @@ class RuntimeSettingsRequest(BaseModel):
 class RuntimeSettingsResponse(BaseModel):
     query_chat: ChatConfigResponse
     answer_chat: ChatConfigResponse
+    paper_reader_chat: PaperReaderChatConfigResponse
     embedding: EmbeddingConfigModel
     retrieval: RetrievalConfigModel
     rerank: RerankConfigResponse
     assistant_memory: AssistantMemoryConfigModel
+
+
+class PaperReaderSessionFromArxivRequest(BaseModel):
+    url: str
+    answer_language: AnswerLanguage | None = None
+    settings: RuntimeSettingsRequest | None = None
+
+
+class PaperReaderHistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str
+
+
+class PaperReaderCitationModel(BaseModel):
+    chunk_id: str
+    section_title: str
+    subsection_title: str | None = None
+    page_start: int
+    page_end: int
+    excerpt: str | None = None
+    score: float | None = None
+
+
+class PaperReaderChunkModel(BaseModel):
+    chunk_id: str
+    section_title: str
+    subsection_title: str | None = None
+    page_start: int
+    page_end: int
+    text: str
+    token_estimate: int
+    score: float | None = None
+
+
+class PaperReaderUsedChunkModel(PaperReaderChunkModel):
+    pass
+
+
+class PaperReaderPageManifestModel(BaseModel):
+    page_index: int
+    title: str
+    status: Literal["queued", "generating", "ready", "error"]
+    estimated_tokens: int
+    chunk_count: int
+    page_start: int
+    page_end: int
+
+
+class PaperReaderSectionModel(BaseModel):
+    title: str
+    text: str | None = None
+    bullets: list[str] = Field(default_factory=list)
+
+
+class PaperReaderStructuredTextModel(BaseModel):
+    original_en: str | None = None
+    explanation: str | None = None
+    display_text: str | None = None
+
+
+class PaperReaderSourceSectionModel(BaseModel):
+    title: str
+    subsection_title: str | None = None
+    label: str
+    page_start: int
+    page_end: int
+    chunk_ids: list[str] = Field(default_factory=list)
+
+
+class PaperReaderStructuredStatusModel(BaseModel):
+    state: Literal["pending", "ready", "repaired", "failed"] = "pending"
+    format: str = "insight_cards_v1"
+    message: str | None = None
+    repair_attempted: bool = False
+
+
+class PaperReaderInsightModel(BaseModel):
+    insight_id: str
+    title: str
+    kind: str = "insight"
+    summary: PaperReaderStructuredTextModel | None = None
+    evidence: list[PaperReaderStructuredTextModel] = Field(default_factory=list)
+    source_chunk_ids: list[str] = Field(default_factory=list)
+    source_section_labels: list[str] = Field(default_factory=list)
+    citations: list[PaperReaderCitationModel] = Field(default_factory=list)
+
+
+class PaperReaderPageContentModel(BaseModel):
+    page_index: int
+    title: str
+    status: Literal["queued", "generating", "ready", "error"]
+    coverage: str | None = None
+    page_overview: PaperReaderStructuredTextModel | None = None
+    insights: list[PaperReaderInsightModel] = Field(default_factory=list)
+    structured_status: PaperReaderStructuredStatusModel = Field(default_factory=PaperReaderStructuredStatusModel)
+    source_sections: list[PaperReaderSourceSectionModel] = Field(default_factory=list)
+    summary: str | None = None
+    sections: list[PaperReaderSectionModel] = Field(default_factory=list)
+    key_points: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    citations: list[PaperReaderCitationModel] = Field(default_factory=list)
+    chunk_ids: list[str] = Field(default_factory=list)
+    estimated_tokens: int = 0
+    page_start: int = 0
+    page_end: int = 0
+    generated_at: str | None = None
+    error: str | None = None
+
+
+class PaperReaderSessionModel(BaseModel):
+    session_id: str
+    source_type: Literal["arxiv", "file"]
+    source_url: str | None = None
+    source_id: str | None = None
+    paper_title: str
+    authors: list[str] = Field(default_factory=list)
+    published_date: str | None = None
+    answer_language: AnswerLanguage
+    max_context_tokens: int
+    page_input_budget: int
+    current_page_index: int = 0
+    page_count: int
+    session_status: str
+    pages: list[PaperReaderPageManifestModel] = Field(default_factory=list)
+
+
+class PaperReaderChatRequest(BaseModel):
+    message: str
+    history: list[PaperReaderHistoryMessage] = Field(default_factory=list)
+    page_index: int | None = None
+    answer_language: AnswerLanguage | None = None
+    settings: RuntimeSettingsRequest | None = None
+
+
+class PaperReaderChatResponse(BaseModel):
+    session_id: str
+    page_index: int
+    page_title: str | None = None
+    answer_text: str
+    citations: list[PaperReaderCitationModel] = Field(default_factory=list)
+    used_chunks: list[PaperReaderUsedChunkModel] = Field(default_factory=list)
 
 
 class ModelListRequest(BaseModel):
@@ -112,7 +264,7 @@ class RetrievalConstraintsModel(BaseModel):
 
 
 class QueryPlanModel(BaseModel):
-    answer_language: Literal["zh", "en"]
+    answer_language: AnswerLanguage
     intent_summary: str
     retrieval_query_en: str
     keywords_en: list[str]
@@ -198,13 +350,13 @@ class TraceResolveResponse(BaseModel):
 
 class TraceExecuteRequest(BaseModel):
     target_id: str
-    answer_language: Literal["zh", "en"] | None = None
+    answer_language: AnswerLanguage | None = None
     settings: RuntimeSettingsRequest | None = None
 
 
 class TraceExecuteResponse(BaseModel):
     trace_id: str
-    answer_language: Literal["zh", "en"]
+    answer_language: AnswerLanguage
     retrieval_text: str
     target_paper: TargetPaperModel
     papers: list[RankedPaperResponse]
@@ -239,8 +391,21 @@ class Live2DHistoryMessage(BaseModel):
 
 class WorkflowContextModel(BaseModel):
     kind: str | None = None
+    answer_language: AnswerLanguage | None = None
+    session_id: str | None = None
+    source: str | None = None
     query: str | None = None
     answer_text: str | None = None
+    paper_title: str | None = None
+    arxiv_id: str | None = None
+    page_language: AnswerLanguage | None = None
+    page_index: int | None = None
+    page_title: str | None = None
+    page_count: int | None = None
+    section_titles: list[str] = Field(default_factory=list)
+    latest_page_summary: str | None = None
+    latest_answer_text: str | None = None
+    question: str | None = None
     paper_ids: list[str] = Field(default_factory=list)
     paper_titles: list[str] = Field(default_factory=list)
     target_paper_id: str | None = None
@@ -259,6 +424,7 @@ class UsedMemoryItemModel(BaseModel):
 class Live2DChatRequest(BaseModel):
     source: Literal["user", "qa_auto", "pst_auto"]
     message: str = ""
+    language: AnswerLanguage | None = None
     history: list[Live2DHistoryMessage] = Field(default_factory=list)
     session_id: str | None = None
     workflow_context: WorkflowContextModel | None = None

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from threading import RLock
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +34,17 @@ from backend.live2d_service import (
     pin_live2d_memory_item,
     synthesize_live2d_tts,
 )
+from backend.paper_reader_service import (
+    chat_with_paper,
+    create_session_from_arxiv,
+    create_session_from_pdf_bytes,
+    get_page_content,
+    get_session,
+    get_session_settings,
+    page_content_to_model,
+    session_to_model,
+    stream_page_content_tokens,
+)
 from backend.ingest_manager import IngestManager
 from backend.schemas import (
     AssistantMemoryDeleteResponse,
@@ -49,6 +60,11 @@ from backend.schemas import (
     Live2DTTSResponse,
     ModelListRequest,
     ModelListResponse,
+    PaperReaderChatRequest,
+    PaperReaderChatResponse,
+    PaperReaderPageContentModel,
+    PaperReaderSessionFromArxivRequest,
+    PaperReaderSessionModel,
     QueryPlanModel,
     RetrievalConstraintsModel,
     TargetPaperModel,
@@ -285,12 +301,51 @@ def resolve_saved_model_list_api_key(payload: ModelListRequest) -> str | None:
 
     saved_settings = load_runtime_settings()
     requested_base_url = normalize_openai_compatible_base_url(payload.base_url)
-    for chat_config in (saved_settings.query_chat, saved_settings.answer_chat):
+    for chat_config in (
+        saved_settings.query_chat,
+        saved_settings.answer_chat,
+        saved_settings.paper_reader_chat,
+    ):
         if chat_config.provider != "openai_compatible":
             continue
         if normalize_openai_compatible_base_url(chat_config.base_url) == requested_base_url and chat_config.api_key:
             return chat_config.api_key
     return None
+
+
+def settings_from_optional_payload(
+    payload_settings: RuntimeSettingsRequest | None = None,
+    *,
+    session_id: str | None = None,
+) -> Any:
+    if payload_settings is not None:
+        settings, _sources = prepare_runtime_settings(payload_settings)
+        return settings
+    if session_id:
+        return get_session_settings(session_id)
+    settings, _sources = prepare_runtime_settings(None)
+    return settings
+
+
+def parse_runtime_settings_form(raw_settings: str | None) -> RuntimeSettingsRequest | None:
+    text = str(raw_settings or "").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+        if not payload:
+            return None
+        return RuntimeSettingsRequest.model_validate(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid paper reader settings payload: {exc}") from exc
+
+
+def detail_from_exception(exc: Exception) -> str:
+    if getattr(exc, "args", None):
+        first = exc.args[0]
+        if isinstance(first, str) and first.strip():
+            return first
+    return str(exc)
 
 
 @app.get("/api/config", response_model=RuntimeSettingsResponse)
@@ -338,6 +393,113 @@ def api_plan_query(payload: SearchPlanRequest) -> QueryPlanModel:
         return QueryPlanModel(**asdict(plan))
     except HTTPException:
         raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+
+@app.post("/api/paper-reader/session/from-arxiv", response_model=PaperReaderSessionModel)
+def api_paper_reader_session_from_arxiv(
+    payload: PaperReaderSessionFromArxivRequest,
+) -> PaperReaderSessionModel:
+    try:
+        settings = settings_from_optional_payload(payload.settings)
+        session = create_session_from_arxiv(payload.url, settings, answer_language=payload.answer_language)
+        return session_to_model(session)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+
+@app.post("/api/paper-reader/session/from-file", response_model=PaperReaderSessionModel)
+async def api_paper_reader_session_from_file(
+    pdf: UploadFile = File(...),
+    answer_language: str | None = Form(default=None),
+    settings: str | None = Form(default=None),
+) -> PaperReaderSessionModel:
+    filename = str(pdf.filename or "uploaded.pdf").strip() or "uploaded.pdf"
+    content_type = str(pdf.content_type or "").strip().lower()
+    if content_type not in {"", "application/pdf"} and not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
+
+    try:
+        payload_settings = parse_runtime_settings_form(settings)
+        resolved_settings = settings_from_optional_payload(payload_settings)
+        session = create_session_from_pdf_bytes(
+            await pdf.read(),
+            filename,
+            resolved_settings,
+            answer_language=answer_language,
+        )
+        return session_to_model(session)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+    finally:
+        await pdf.close()
+
+
+@app.get("/api/paper-reader/session/{session_id}", response_model=PaperReaderSessionModel)
+def api_paper_reader_session(session_id: str) -> PaperReaderSessionModel:
+    try:
+        return session_to_model(get_session(session_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+
+@app.get("/api/paper-reader/session/{session_id}/pages/{page_index}", response_model=PaperReaderPageContentModel)
+def api_paper_reader_page(session_id: str, page_index: int) -> PaperReaderPageContentModel:
+    try:
+        return page_content_to_model(get_page_content(session_id, page_index))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+
+@app.get("/api/paper-reader/session/{session_id}/pages/{page_index}/stream")
+def api_paper_reader_page_stream(session_id: str, page_index: int) -> StreamingResponse:
+    try:
+        settings = settings_from_optional_payload(session_id=session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+    def event_generator():
+        yield sse_event("message", {"status": "generating", "page_index": page_index})
+        try:
+            for chunk in stream_page_content_tokens(session_id, page_index, settings):
+                try:
+                    payload = json.loads(chunk)
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                yield sse_event("message", payload)
+            final_page = page_content_to_model(get_page_content(session_id, page_index))
+            yield sse_event("message", final_page.model_dump())
+            yield sse_event("complete", {"page_index": page_index})
+        except Exception as exc:
+            yield sse_event("error", {"message": str(exc), "page_index": page_index})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/paper-reader/session/{session_id}/chat", response_model=PaperReaderChatResponse)
+def api_paper_reader_chat(session_id: str, payload: PaperReaderChatRequest) -> PaperReaderChatResponse:
+    try:
+        settings = settings_from_optional_payload(payload.settings, session_id=session_id)
+        return chat_with_paper(session_id, payload, settings)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
     except Exception as exc:
         raise to_http_detail(exc) from exc
 
@@ -574,6 +736,7 @@ def api_live2d_chat(payload: Live2DChatRequest) -> Live2DChatResponse:
     response = generate_live2d_reply(
         source=payload.source,
         message=payload.message,
+        language=payload.language,
         history=[item.model_dump() for item in payload.history],
         answer_context=compose_answer_context(payload),
         workflow_context=workflow_context_data,

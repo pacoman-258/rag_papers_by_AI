@@ -847,6 +847,7 @@ export default function Live2DAssistant({
         body: JSON.stringify({
           source,
           message: trimmedMessage,
+          language,
           history,
           answer_context: resolvedContext,
           workflow_context: resolvedWorkflowContext,

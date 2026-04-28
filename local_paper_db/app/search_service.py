@@ -55,6 +55,15 @@ class ChatConfig:
 
 
 @dataclass(slots=True)
+class PaperReaderChatConfig:
+    provider: str
+    model: str
+    base_url: str | None = None
+    api_key: str | None = None
+    max_context_tokens: int = 8192
+
+
+@dataclass(slots=True)
 class EmbeddingConfig:
     api_url: str
     model: str
@@ -89,6 +98,7 @@ class AssistantMemoryConfig:
 class RuntimeSettings:
     query_chat: ChatConfig
     answer_chat: ChatConfig
+    paper_reader_chat: PaperReaderChatConfig
     embedding: EmbeddingConfig
     retrieval: RetrievalConfig
     rerank: RerankConfig
@@ -305,9 +315,17 @@ def get_env_default_settings() -> RuntimeSettings:
         base_url=os.getenv("QUERY_CHAT_BASE_URL", answer_chat.base_url),
         api_key=os.getenv("QUERY_CHAT_API_KEY", answer_chat.api_key),
     )
+    paper_reader_chat = PaperReaderChatConfig(
+        provider=normalize_provider(os.getenv("PAPER_READER_CHAT_PROVIDER", answer_chat.provider)),
+        model=os.getenv("PAPER_READER_CHAT_MODEL", answer_chat.model),
+        base_url=os.getenv("PAPER_READER_CHAT_BASE_URL", answer_chat.base_url),
+        api_key=os.getenv("PAPER_READER_CHAT_API_KEY", answer_chat.api_key),
+        max_context_tokens=int(os.getenv("PAPER_READER_CHAT_MAX_CONTEXT_TOKENS", "8192")),
+    )
     return RuntimeSettings(
         query_chat=query_chat,
         answer_chat=answer_chat,
+        paper_reader_chat=paper_reader_chat,
         embedding=EmbeddingConfig(
             api_url=embedding_api_url,
             model=os.getenv("OLLAMA_EMBED_MODEL", "qwen3-embedding:0.6b"),
@@ -356,10 +374,13 @@ def validate_chat_config(config: ChatConfig, label: str) -> None:
 def validate_runtime_settings(settings: RuntimeSettings) -> None:
     validate_chat_config(settings.query_chat, "query_chat")
     validate_chat_config(settings.answer_chat, "answer_chat")
+    validate_chat_config(settings.paper_reader_chat, "paper_reader_chat")
     if not settings.embedding.api_url:
         raise RuntimeError("Missing embedding.api_url")
     if not settings.embedding.model:
         raise RuntimeError("Missing embedding.model")
+    if settings.paper_reader_chat.max_context_tokens <= 0:
+        raise RuntimeError("paper_reader_chat.max_context_tokens must be positive.")
     if settings.retrieval.top_k <= 0 or settings.retrieval.top_n <= 0:
         raise RuntimeError("Retrieval top_k and top_n must be positive.")
     if not any(bool(settings.retrieval.providers.get(name)) for name in ("local", "arxiv", "wos")):

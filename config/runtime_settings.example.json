@@ -11,6 +11,13 @@
     "base_url": null,
     "api_key": null
   },
+  "paper_reader_chat": {
+    "provider": "ollama",
+    "model": "qwen3:8b",
+    "base_url": null,
+    "api_key": null,
+    "max_context_tokens": 8192
+  },
   "embedding": {
     "api_url": "http://localhost:11434/api",
     "model": "qwen3-embedding:0.6b"

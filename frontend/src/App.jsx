@@ -1,9 +1,12 @@
 import { Component, useEffect, useMemo, useRef, useState } from "react";
+import PaperReaderPage from "./PaperReaderPage.jsx";
+import ProgressTracker from "./ProgressTracker.jsx";
 
 const translations = {
   en: {
     appTitle: "FastAPI + React Workbench",
     searchTab: "Search Workspace",
+    paperReaderTab: "Paper Reader",
     ingestTab: "Ingest Manager",
     settingsTab: "Settings",
     qaMode: "QA",
@@ -13,6 +16,11 @@ const translations = {
     settingsTitle: "Model & Runtime Settings",
     settingsDescription: "Manage model providers, retrieval sources, API endpoints, and saved credentials.",
     loading: "Loading...",
+    progressIdle: "Idle",
+    progressRunning: "Running",
+    progressReady: "Ready",
+    progressCompleted: "Completed",
+    progressInterrupted: "Interrupted",
     noLogs: "No logs yet.",
     noPapers: "No papers selected yet.",
     noCandidates: "No target candidates.",
@@ -30,6 +38,7 @@ const translations = {
     keepStoredKey: "Keep stored key",
     queryChat: "Query Chat",
     answerChat: "Answer Chat",
+    paperReaderChatModel: "Paper Reader Chat",
     embedding: "Embedding",
     ollamaApiUrl: "Ollama API URL",
     embeddingModel: "Embedding Model",
@@ -115,11 +124,63 @@ const translations = {
     arxivId: "arXiv ID",
     summary: "Summary",
     runPst: "Run PST-lite",
-    candidateNotice: "Candidate prior papers, not verified citations."
+    candidateNotice: "Candidate prior papers, not verified citations.",
+    workspaceProgressTitle: "Workspace Progress",
+    workspaceProgressSubtitle: "Follow the current pipeline stage and whether the process is still alive.",
+    qaProgressPlan: "Draft query plan",
+    qaProgressReview: "Confirm rewrite",
+    qaProgressSearch: "Retrieve papers",
+    qaProgressAnswer: "Stream answer",
+    pstProgressResolve: "Resolve target paper",
+    pstProgressConfirm: "Confirm target",
+    pstProgressTrace: "Trace prior work",
+    pstProgressExplain: "Stream PST explanation",
+    paperReaderMaxContextTokens: "Max Context Tokens",
+    paperReaderTitle: "Paper Reader",
+    paperReaderDescription: "Load one arXiv paper or local PDF, then read it page by page with dynamic chunking and buffered generation.",
+    paperReaderProgressTitle: "Paper Reader Progress",
+    paperReaderProgressSubtitle: "Track paper loading, page generation, and whether the current reading task is still alive.",
+    paperReaderProgressLoad: "Load source",
+    paperReaderProgressPaginate: "Build dynamic pages",
+    paperReaderProgressPage: "Generate current page",
+    paperReaderProgressChat: "Ask this paper",
+    paperReaderArxivUrl: "arXiv URL",
+    paperReaderPdfFile: "PDF File",
+    paperReaderLoadArxiv: "Load arXiv Paper",
+    paperReaderLoadPdf: "Load PDF",
+    paperReaderSelectedFile: "No PDF selected yet.",
+    paperReaderEmpty: "Load one paper to start dynamic reading.",
+    paperReaderSummary: "Reading Summary",
+    paperReaderCitations: "Citations",
+    paperReaderPreviousPage: "Previous Page",
+    paperReaderNextPage: "Next Page",
+    paperReaderPageLabel: "Page",
+    paperReaderPageCount: "Pages",
+    paperReaderCurrentPage: "Current Page",
+    paperReaderCurrentStatus: "Status",
+    paperReaderSessionId: "Session",
+    paperReaderLoading: "Preparing paper reader session...",
+    paperReaderLoadFail: "Failed to load the paper reader session.",
+    paperReaderFetchFail: "Failed to fetch the paper reader session.",
+    paperReaderPageLoadFail: "Failed to load the requested page.",
+    paperReaderChatTitle: "Ask This Paper",
+    paperReaderQuestionTitle: "Question",
+    paperReaderQuestionPlaceholder: "Ask about this paper's assumptions, method, experiment design, or limitations.",
+    paperReaderAsk: "Ask",
+    paperReaderChatFail: "Failed to query the current paper.",
+    paperReaderNoSession: "No paper reader session yet.",
+    paperReaderNoContent: "No parsed content available yet.",
+    paperReaderQueued: "Queued",
+    paperReaderGenerating: "Generating",
+    paperReaderReady: "Ready",
+    paperReaderError: "Error",
+    paperReaderInvalidUrl: "Please enter a valid arXiv URL.",
+    paperReaderFileRequired: "Please choose a PDF file first."
   },
   zh: {
     appTitle: "FastAPI + React 可视化工作台",
     searchTab: "搜索工作台",
+    paperReaderTab: "论文精读",
     ingestTab: "入库管理",
     settingsTab: "设置",
     qaMode: "QA",
@@ -129,6 +190,11 @@ const translations = {
     settingsTitle: "模型与运行配置",
     settingsDescription: "统一管理模型提供方、检索来源、接口地址、检索默认值和已保存凭据。",
     loading: "加载中...",
+    progressIdle: "空闲",
+    progressRunning: "运行中",
+    progressReady: "已就绪",
+    progressCompleted: "已完成",
+    progressInterrupted: "已中断",
     noLogs: "暂时还没有日志。",
     noPapers: "还没有选中的论文。",
     noCandidates: "没有候选目标论文。",
@@ -146,6 +212,7 @@ const translations = {
     keepStoredKey: "保留已保存密钥",
     queryChat: "Query Rewrite 模型",
     answerChat: "最终回答模型",
+    paperReaderChatModel: "论文精读解析模型",
     embedding: "Embedding",
     ollamaApiUrl: "Ollama API 地址",
     embeddingModel: "Embedding 模型",
@@ -231,7 +298,58 @@ const translations = {
     arxivId: "arXiv ID",
     summary: "摘要",
     runPst: "运行 PST-lite",
-    candidateNotice: "这些是候选先驱论文，不是已验证引用。"
+    candidateNotice: "这些是候选先驱论文，不是已验证引用。",
+    workspaceProgressTitle: "工作台进度",
+    workspaceProgressSubtitle: "显示当前流程走到哪一步，并用可视化状态标记进程是否仍在存活。",
+    qaProgressPlan: "生成检索改写方案",
+    qaProgressReview: "确认改写结果",
+    qaProgressSearch: "检索候选论文",
+    qaProgressAnswer: "流式生成回答",
+    pstProgressResolve: "解析目标论文",
+    pstProgressConfirm: "确认目标论文",
+    pstProgressTrace: "追踪先驱工作",
+    pstProgressExplain: "流式生成 PST 解释",
+    paperReaderMaxContextTokens: "最大上下文 Token",
+    paperReaderTitle: "论文精读",
+    paperReaderDescription: "输入 arXiv 链接或上传本地 PDF，按论文内容动态分页精读，并在后台缓冲下一页。",
+    paperReaderProgressTitle: "论文精读进度",
+    paperReaderProgressSubtitle: "跟踪论文载入、分页解析和当前任务是否仍在正常运行。",
+    paperReaderProgressLoad: "载入论文来源",
+    paperReaderProgressPaginate: "构建动态分页",
+    paperReaderProgressPage: "生成当前精读页",
+    paperReaderProgressChat: "围绕论文追问",
+    paperReaderArxivUrl: "arXiv 链接",
+    paperReaderPdfFile: "PDF 文件",
+    paperReaderLoadArxiv: "载入 arXiv 论文",
+    paperReaderLoadPdf: "载入 PDF",
+    paperReaderSelectedFile: "尚未选择 PDF 文件。",
+    paperReaderEmpty: "请先加载一篇论文开始精读。",
+    paperReaderSummary: "本页精读摘要",
+    paperReaderCitations: "引用依据",
+    paperReaderPreviousPage: "上一页",
+    paperReaderNextPage: "下一页",
+    paperReaderPageLabel: "页",
+    paperReaderPageCount: "总页数",
+    paperReaderCurrentPage: "当前页",
+    paperReaderCurrentStatus: "当前状态",
+    paperReaderSessionId: "会话 ID",
+    paperReaderLoading: "正在准备论文精读会话...",
+    paperReaderLoadFail: "载入论文精读会话失败。",
+    paperReaderFetchFail: "获取论文精读会话失败。",
+    paperReaderPageLoadFail: "加载当前分页失败。",
+    paperReaderChatTitle: "围绕这篇论文继续追问",
+    paperReaderQuestionTitle: "问题",
+    paperReaderQuestionPlaceholder: "可以继续追问这篇论文的假设、方法、实验设计或局限。",
+    paperReaderAsk: "提问",
+    paperReaderChatFail: "围绕当前论文追问失败。",
+    paperReaderNoSession: "当前还没有论文精读会话。",
+    paperReaderNoContent: "当前还没有可显示的解析内容。",
+    paperReaderQueued: "排队中",
+    paperReaderGenerating: "生成中",
+    paperReaderReady: "已就绪",
+    paperReaderError: "错误",
+    paperReaderInvalidUrl: "请输入有效的 arXiv 链接。",
+    paperReaderFileRequired: "请先选择一个 PDF 文件。"
   }
 };
 
@@ -267,6 +385,7 @@ function buildInitialModelCatalogs() {
   return {
     query_chat: buildEmptyModelCatalog(),
     answer_chat: buildEmptyModelCatalog(),
+    paper_reader_chat: buildEmptyModelCatalog(),
     embedding: buildEmptyModelCatalog()
   };
 }
@@ -447,6 +566,7 @@ function buildDefaultState(config) {
   return {
     query_chat: { ...config.query_chat, api_key: "", clear_api_key: false },
     answer_chat: { ...config.answer_chat, api_key: "", clear_api_key: false },
+    paper_reader_chat: { ...config.paper_reader_chat, api_key: "", clear_api_key: false },
     embedding: { ...config.embedding },
     retrieval: {
       ...config.retrieval,
@@ -475,6 +595,14 @@ function buildRuntimeRequest(settings) {
       base_url: settings.answer_chat.base_url || null,
       api_key: settings.answer_chat.api_key || null,
       clear_api_key: settings.answer_chat.clear_api_key
+    },
+    paper_reader_chat: {
+      provider: settings.paper_reader_chat.provider,
+      model: settings.paper_reader_chat.model,
+      base_url: settings.paper_reader_chat.base_url || null,
+      api_key: settings.paper_reader_chat.api_key || null,
+      clear_api_key: settings.paper_reader_chat.clear_api_key,
+      max_context_tokens: Number(settings.paper_reader_chat.max_context_tokens)
     },
     embedding: {
       api_url: settings.embedding.api_url,
@@ -565,6 +693,7 @@ function buildQaWorkflowContext({
   question,
   retrievalText,
   answerText,
+  answerLanguage,
   papers,
   appliedConstraints,
   corpusLatestDate,
@@ -575,6 +704,7 @@ function buildQaWorkflowContext({
   const { paper_ids, paper_titles } = normalizeAssistantPaperRefs(papers);
   return {
     kind: "qa",
+    answer_language: answerLanguage || null,
     query: String(question || "").trim(),
     answer_text: trimAssistantAnswerContext(answerText),
     paper_ids,
@@ -590,10 +720,20 @@ function buildQaWorkflowContext({
   };
 }
 
-function buildPstWorkflowContext({ query, answerText, papers, targetPaper, traceId, retrievalSources, sourceFreshness }) {
+function buildPstWorkflowContext({
+  query,
+  answerText,
+  answerLanguage,
+  papers,
+  targetPaper,
+  traceId,
+  retrievalSources,
+  sourceFreshness
+}) {
   const { paper_ids, paper_titles } = normalizeAssistantPaperRefs(papers);
   return {
     kind: "pst",
+    answer_language: answerLanguage || null,
     query: String(query || "").trim(),
     answer_text: trimAssistantAnswerContext(answerText),
     paper_ids,
@@ -754,7 +894,8 @@ function ChatConfigSection({
   modelCatalog,
   onFetchModels,
   modelListId,
-  showApiKeyStatus = true
+  showApiKeyStatus = true,
+  children = null
 }) {
   return (
     <section className="config-section">
@@ -805,6 +946,7 @@ function ChatConfigSection({
       <button type="button" className="secondary" onClick={() => onChange("clear_api_key", !config.clear_api_key)}>
         {config.clear_api_key ? t("keepStoredKey") : t("clearStoredKey")}
       </button>
+      {children}
     </section>
   );
 }
@@ -952,6 +1094,20 @@ export default function App() {
   const [assistantSessionId, setAssistantSessionId] = useState(getOrCreateAssistantSessionId);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [workspaceProgressByMode, setWorkspaceProgressByMode] = useState({
+    qa: {
+      step: "plan",
+      status: "idle",
+      detail: "",
+      updatedAt: null
+    },
+    pst: {
+      step: "resolve",
+      status: "idle",
+      detail: "",
+      updatedAt: null
+    }
+  });
   const [modelCatalogs, setModelCatalogs] = useState(buildInitialModelCatalogs);
   const [appliedConstraints, setAppliedConstraints] = useState(null);
   const [corpusLatestDate, setCorpusLatestDate] = useState(null);
@@ -972,6 +1128,33 @@ export default function App() {
     [language]
   );
   const runtimePayload = useMemo(() => (settings ? buildRuntimeRequest(settings) : null), [settings]);
+  const workspaceProgress = workspaceProgressByMode[workspaceMode] || workspaceProgressByMode.qa;
+  const workspaceProgressSteps = useMemo(() => {
+    if (workspaceMode === "pst") {
+      return [
+        { key: "resolve", label: t("pstProgressResolve") },
+        { key: "confirm", label: t("pstProgressConfirm") },
+        { key: "trace", label: t("pstProgressTrace") },
+        { key: "answer", label: t("pstProgressExplain") }
+      ];
+    }
+    return [
+      { key: "plan", label: t("qaProgressPlan") },
+      { key: "review", label: t("qaProgressReview") },
+      { key: "search", label: t("qaProgressSearch") },
+      { key: "answer", label: t("qaProgressAnswer") }
+    ];
+  }, [workspaceMode, t]);
+  const progressStatusLabels = useMemo(
+    () => ({
+      idle: t("progressIdle"),
+      running: t("progressRunning"),
+      ready: t("progressReady"),
+      completed: t("progressCompleted"),
+      interrupted: t("progressInterrupted")
+    }),
+    [t]
+  );
 
   useEffect(() => {
     window.localStorage.setItem("app_language", language);
@@ -987,6 +1170,18 @@ export default function App() {
       ingestSourceRef.current?.close();
     };
   }, []);
+
+  function updateWorkspaceProgress(mode, step, status, detail = "") {
+    setWorkspaceProgressByMode((current) => ({
+      ...current,
+      [mode]: {
+        step,
+        status,
+        detail,
+        updatedAt: new Date().toISOString()
+      }
+    }));
+  }
 
   async function loadConfig() {
     const response = await fetch("/api/config");
@@ -1017,7 +1212,7 @@ export default function App() {
       [section]: { ...current[section], [key]: value }
     }));
     if (
-      (section === "query_chat" || section === "answer_chat") &&
+      (section === "query_chat" || section === "answer_chat" || section === "paper_reader_chat") &&
       ["provider", "base_url", "api_key", "clear_api_key"].includes(key)
     ) {
       setModelCatalogs((current) => ({
@@ -1065,6 +1260,17 @@ export default function App() {
       answerContext: trimmed,
       workflowContext
     });
+  }
+
+  function renderAssistantLayer() {
+    return (
+      <IsolatedAssistantLayer
+        language={language}
+        autoReply={assistantAutoReply}
+        assistantSessionId={assistantSessionId}
+        onAssistantSessionIdChange={setAssistantSessionIdWithPersistence}
+      />
+    );
   }
 
   async function saveDefaults() {
@@ -1152,6 +1358,7 @@ export default function App() {
     }
     setBusy(true);
     setMessage("");
+    updateWorkspaceProgress("qa", "plan", "running", t("qaProgressPlan"));
     try {
       const response = await fetch("/api/search/plan", {
         method: "POST",
@@ -1167,8 +1374,10 @@ export default function App() {
       setResolvedTarget(null);
       setTraceCandidates([]);
       setCorpusLatestDate(data.corpus_latest_date || null);
+      updateWorkspaceProgress("qa", "review", "ready", t("qaProgressReview"));
     } catch (error) {
       setMessage(String(error));
+      updateWorkspaceProgress("qa", "plan", "interrupted", String(error));
     } finally {
       setBusy(false);
     }
@@ -1180,6 +1389,7 @@ export default function App() {
     }
     setBusy(true);
     setMessage("");
+    updateWorkspaceProgress("qa", "plan", "running", t("qaProgressPlan"));
     try {
       const response = await fetch("/api/search/plan/refine", {
         method: "POST",
@@ -1198,18 +1408,34 @@ export default function App() {
       setQueryPlan(data);
       setFeedback("");
       setCorpusLatestDate(data.corpus_latest_date || null);
+      updateWorkspaceProgress("qa", "review", "ready", t("qaProgressReview"));
     } catch (error) {
       setMessage(String(error));
+      updateWorkspaceProgress("qa", "plan", "interrupted", String(error));
     } finally {
       setBusy(false);
     }
   }
 
-  function streamFrom(path, autoReplySource, buildWorkflowContext) {
+  function streamFrom(path, autoReplySource, buildWorkflowContext, progressMode) {
     answerSourceRef.current?.close();
     answerBufferRef.current = "";
+    updateWorkspaceProgress(
+      progressMode,
+      "answer",
+      "running",
+      progressMode === "qa" ? t("qaProgressAnswer") : t("pstProgressExplain")
+    );
     const source = new EventSource(path);
     answerSourceRef.current = source;
+    source.onopen = () => {
+      updateWorkspaceProgress(
+        progressMode,
+        "answer",
+        "running",
+        progressMode === "qa" ? t("qaProgressAnswer") : t("pstProgressExplain")
+      );
+    };
     source.addEventListener("token", (event) => {
       const payload = JSON.parse(event.data);
       answerBufferRef.current += payload.content;
@@ -1231,11 +1457,18 @@ export default function App() {
           workflowContext
         });
       }
+      updateWorkspaceProgress(
+        progressMode,
+        "answer",
+        "completed",
+        progressMode === "qa" ? t("qaProgressAnswer") : t("pstProgressExplain")
+      );
       source.close();
     });
     source.onerror = () => {
       source.close();
       setMessage(t("answerStreamFailed"));
+      updateWorkspaceProgress(progressMode, "answer", "interrupted", t("answerStreamFailed"));
     };
   }
 
@@ -1243,6 +1476,7 @@ export default function App() {
     setBusy(true);
     setMessage("");
     setAnswer("");
+    updateWorkspaceProgress("qa", "search", "running", t("qaProgressSearch"));
     try {
       const response = await fetch("/api/search/execute", {
         method: "POST",
@@ -1264,21 +1498,27 @@ export default function App() {
       setCorpusLatestDate(data.corpus_latest_date || null);
       setRetrievalSources(data.retrieval_sources || []);
       setSourceFreshness(data.source_freshness || {});
-      streamFrom(`/api/search/${data.search_id}/answer/stream`, "qa_auto", (answerText) =>
-        buildQaWorkflowContext({
-          question,
-          retrievalText,
-          answerText,
-          papers: data.papers,
-          appliedConstraints: data.applied_constraints || null,
-          corpusLatestDate: data.corpus_latest_date || null,
-          searchId: data.search_id,
-          retrievalSources: data.retrieval_sources || [],
-          sourceFreshness: data.source_freshness || {}
-        })
+      streamFrom(
+        `/api/search/${data.search_id}/answer/stream`,
+        "qa_auto",
+        (answerText) =>
+          buildQaWorkflowContext({
+            question,
+            retrievalText,
+            answerText,
+            answerLanguage: language,
+            papers: data.papers,
+            appliedConstraints: data.applied_constraints || null,
+            corpusLatestDate: data.corpus_latest_date || null,
+            searchId: data.search_id,
+            retrievalSources: data.retrieval_sources || [],
+            sourceFreshness: data.source_freshness || {}
+          }),
+        "qa"
       );
     } catch (error) {
       setMessage(String(error));
+      updateWorkspaceProgress("qa", "search", "interrupted", String(error));
     } finally {
       setBusy(false);
     }
@@ -1291,6 +1531,7 @@ export default function App() {
     }
     setBusy(true);
     setMessage("");
+    updateWorkspaceProgress("pst", "resolve", "running", t("pstProgressResolve"));
     try {
       const response = await fetch("/api/trace/resolve-target", {
         method: "POST",
@@ -1310,9 +1551,13 @@ export default function App() {
       if (data.status === "not_found") {
         setResolvedTarget(null);
         setTraceCandidates([]);
+        updateWorkspaceProgress("pst", "resolve", "interrupted", data.message || t("failedResolveTarget"));
+      } else {
+        updateWorkspaceProgress("pst", "confirm", "ready", data.message || t("pstProgressConfirm"));
       }
     } catch (error) {
       setMessage(String(error));
+      updateWorkspaceProgress("pst", "resolve", "interrupted", String(error));
     } finally {
       setBusy(false);
     }
@@ -1322,6 +1567,7 @@ export default function App() {
     setBusy(true);
     setMessage("");
     setAnswer("");
+    updateWorkspaceProgress("pst", "trace", "running", t("pstProgressTrace"));
     try {
       const response = await fetch("/api/trace/execute", {
         method: "POST",
@@ -1344,19 +1590,25 @@ export default function App() {
       setCorpusLatestDate(null);
       setRetrievalSources(data.retrieval_sources || []);
       setSourceFreshness(data.source_freshness || {});
-      streamFrom(`/api/trace/${data.trace_id}/answer/stream`, "pst_auto", (answerText) =>
-        buildPstWorkflowContext({
-          query: traceQuery,
-          answerText,
-          papers: data.papers,
-          targetPaper: data.target_paper || targetPaper,
-          traceId: data.trace_id,
-          retrievalSources: data.retrieval_sources || [],
-          sourceFreshness: data.source_freshness || {}
-        })
+      streamFrom(
+        `/api/trace/${data.trace_id}/answer/stream`,
+        "pst_auto",
+        (answerText) =>
+          buildPstWorkflowContext({
+            query: traceQuery,
+            answerText,
+            answerLanguage: language,
+            papers: data.papers,
+            targetPaper: data.target_paper || targetPaper,
+            traceId: data.trace_id,
+            retrievalSources: data.retrieval_sources || [],
+            sourceFreshness: data.source_freshness || {}
+          }),
+        "pst"
       );
     } catch (error) {
       setMessage(String(error));
+      updateWorkspaceProgress("pst", "trace", "interrupted", String(error));
     } finally {
       setBusy(false);
     }
@@ -1427,6 +1679,9 @@ export default function App() {
             <button className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>
               {t("searchTab")}
             </button>
+            <button className={activeTab === "paper_reader" ? "active" : ""} onClick={() => setActiveTab("paper_reader")}>
+              {t("paperReaderTab")}
+            </button>
             <button className={activeTab === "ingest" ? "active" : ""} onClick={() => setActiveTab("ingest")}>
               {t("ingestTab")}
             </button>
@@ -1449,6 +1704,17 @@ export default function App() {
                 {t("pstMode")}
               </button>
             </div>
+
+            <ProgressTracker
+              title={t("workspaceProgressTitle")}
+              subtitle={t("workspaceProgressSubtitle")}
+              steps={workspaceProgressSteps}
+              currentStep={workspaceProgress.step}
+              status={workspaceProgress.status}
+              statusLabel={progressStatusLabels[workspaceProgress.status] || t("progressIdle")}
+              detail={workspaceProgress.detail}
+              updatedAt={workspaceProgress.updatedAt}
+            />
 
             {workspaceMode === "qa" ? (
               <>
@@ -1581,14 +1847,20 @@ export default function App() {
           </section>
 
           <aside className="assistant-column">
-            <IsolatedAssistantLayer
-              language={language}
-              autoReply={assistantAutoReply}
-              assistantSessionId={assistantSessionId}
-              onAssistantSessionIdChange={setAssistantSessionIdWithPersistence}
-            />
+            {renderAssistantLayer()}
           </aside>
         </div>
+      ) : null}
+
+      {activeTab === "paper_reader" ? (
+        <PaperReaderPage
+          language={language}
+          t={t}
+          settings={settings}
+          runtimePayload={runtimePayload}
+          renderAssistantLayer={renderAssistantLayer}
+          onScheduleAssistantAutoReply={scheduleAssistantAutoReply}
+        />
       ) : null}
 
       {activeTab === "ingest" ? (
@@ -1648,6 +1920,27 @@ export default function App() {
               onFetchModels={() => fetchAvailableModels("answer_chat")}
               modelListId="answer-chat-models"
             />
+            <ChatConfigSection
+              title={t("paperReaderChatModel")}
+              config={settings.paper_reader_chat}
+              onChange={(key, value) => updateNested("paper_reader_chat", key, value)}
+              t={t}
+              language={language}
+              providerOptions={providerOptions}
+              modelCatalog={modelCatalogs.paper_reader_chat}
+              onFetchModels={() => fetchAvailableModels("paper_reader_chat")}
+              modelListId="paper-reader-chat-models"
+            >
+              <label>
+                {t("paperReaderMaxContextTokens")}
+                <input
+                  type="number"
+                  min="1"
+                  value={settings.paper_reader_chat.max_context_tokens}
+                  onChange={(event) => updateNested("paper_reader_chat", "max_context_tokens", event.target.value)}
+                />
+              </label>
+            </ChatConfigSection>
             <section className="config-section">
               <h3>{t("embedding")}</h3>
               <label>

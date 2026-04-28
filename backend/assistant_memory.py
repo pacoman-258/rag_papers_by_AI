@@ -392,6 +392,26 @@ def _build_event_text(
     if cleaned:
         return cleaned
     if workflow_context:
+        kind = _safe_text(workflow_context.get("kind")).casefold()
+        if kind == "paper_reader":
+            paper_title = _safe_text(workflow_context.get("paper_title"), max_length=160)
+            page_index = workflow_context.get("page_index")
+            page_title = _safe_text(workflow_context.get("page_title"), max_length=160)
+            latest_page_summary = _safe_text(workflow_context.get("latest_page_summary"), max_length=700)
+            latest_answer_text = _safe_text(workflow_context.get("latest_answer_text"), max_length=700)
+            parts: list[str] = []
+            if paper_title:
+                parts.append(f"Paper: {paper_title}")
+            if page_index is not None:
+                parts.append(f"Page index: {page_index}")
+            if page_title:
+                parts.append(f"Page title: {page_title}")
+            if latest_page_summary:
+                parts.append(f"Page summary: {latest_page_summary}")
+            if latest_answer_text:
+                parts.append(f"Latest answer: {latest_answer_text}")
+            if parts:
+                return " | ".join(parts)
         parts: list[str] = []
         kind = _safe_text(workflow_context.get("kind"))
         query = _safe_text(workflow_context.get("query"))
@@ -416,8 +436,46 @@ def _build_event_text(
 def _render_workflow_context_text(workflow_context: dict[str, Any] | None) -> str:
     if not workflow_context:
         return ""
-    lines: list[str] = []
-    kind = _safe_text(workflow_context.get("kind"))
+    kind = _safe_text(workflow_context.get("kind")).casefold()
+    if kind == "paper_reader":
+        lines: list[str] = []
+        paper_title = _safe_text(workflow_context.get("paper_title"), max_length=240)
+        page_index = workflow_context.get("page_index")
+        page_title = _safe_text(workflow_context.get("page_title"), max_length=240)
+        page_count = workflow_context.get("page_count")
+        section_titles = workflow_context.get("section_titles")
+        latest_page_summary = _safe_text(workflow_context.get("latest_page_summary"), max_length=1800)
+        latest_answer_text = _safe_text(workflow_context.get("latest_answer_text"), max_length=1800)
+        source = _safe_text(workflow_context.get("source"), max_length=48)
+
+        if paper_title:
+            lines.append(f"- paper_title: {paper_title}")
+        if page_index is not None:
+            lines.append(f"- page_index: {page_index}")
+            try:
+                page_number = int(page_index) + 1
+            except Exception:
+                page_number = None
+            if page_number and page_number > 0:
+                lines.append(f"- page_label: 第{page_number}页")
+        if page_title:
+            lines.append(f"- page_title: {page_title}")
+        if page_count is not None:
+            lines.append(f"- page_count: {page_count}")
+        if isinstance(section_titles, list) and section_titles:
+            lines.append("- section_titles: " + ", ".join(_safe_text(item, 100) for item in section_titles[:8]))
+        if source:
+            lines.append(f"- source: {source}")
+        if latest_page_summary:
+            lines.append(f"- latest_page_summary: {latest_page_summary}")
+        if latest_answer_text:
+            lines.append(f"- latest_answer_text: {latest_answer_text}")
+        lines.append(
+            "- guidance: focus on the current page, explain what matters, suggest the next reading step, and do not invent citations or paper-wide claims."
+        )
+        return "\n".join(lines)
+
+    lines = []
     query = _safe_text(workflow_context.get("query"))
     answer_text = _safe_text(workflow_context.get("answer_text"), max_length=1800)
     paper_titles = workflow_context.get("paper_titles")

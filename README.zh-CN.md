@@ -255,8 +255,24 @@ CLI 和后端共用同一套 retrieval provider 配置。如果你想摆脱对�
 
 ### 4. 启动 FastAPI 后端
 
+macOS 下一键启动：
+
 ```bash
-uvicorn backend.main:app --reload
+./start_workbench.command
+```
+
+该脚本会自动拉起 `9178` 端口上的后端、`5173` 端口上的前端，等待两个服务就绪后自动打开浏览器。
+
+手动启动后端：
+
+```bash
+./start_backend.command
+```
+
+或者：
+
+```bash
+./scripts/start_backend.sh
 ```
 
 ### 5. 启动 React 前端
@@ -268,7 +284,7 @@ npm run dev
 
 开发环境默认地址：
 
-- 后端：`http://127.0.0.1:8000`
+- 后端：`http://127.0.0.1:9178`
 - 前端：`http://127.0.0.1:5173`
 
 ### 6. 构建前端静态文件

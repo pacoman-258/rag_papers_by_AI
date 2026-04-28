@@ -255,8 +255,24 @@ The CLI uses the same retrieval-provider settings as the backend service. If you
 
 ### 4. Run the FastAPI backend
 
+One-click startup on macOS:
+
 ```bash
-uvicorn backend.main:app --reload
+./start_workbench.command
+```
+
+The launcher starts the backend on `9178`, starts the frontend on `5173`, waits until both are ready, and opens the browser automatically.
+
+Manual backend startup:
+
+```bash
+./start_backend.command
+```
+
+or:
+
+```bash
+./scripts/start_backend.sh
 ```
 
 ### 5. Run the React frontend
@@ -268,7 +284,7 @@ npm run dev
 
 Default dev URLs:
 
-- Backend: `http://127.0.0.1:8000`
+- Backend: `http://127.0.0.1:9178`
 - Frontend: `http://127.0.0.1:5173`
 
 ### 6. Production frontend build
