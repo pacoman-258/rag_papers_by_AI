@@ -63,6 +63,7 @@ FastAPI + React 工作台包含两个主区域：
 
 前端不会回显明文 API Key，后端只返回 `has_api_key: true/false`。  
 出于安全考虑，仓库只提交 [`config/runtime_settings.example.json`](config/runtime_settings.example.json)，真实的 `config/runtime_settings.json` 应保留在本地。
+Paper Reader 使用 `paper_reader_chat` 生成结构化精读页，`paper_reader_translation` 仅负责原文卡片翻译。
 
 ## 目录结构
 
@@ -287,7 +288,11 @@ npm run dev
 - 后端：`http://127.0.0.1:9178`
 - 前端：`http://127.0.0.1:5173`
 
-### 6. 构建前端静态文件
+### 6. 使用 Paper Reader 精读单篇论文
+
+在网页里打开“论文精读”标签页，输入 arXiv 链接或上传本地 PDF。精读器可以自动识别或手动指定论文所属学科，并以三栏方式展示：左侧固定 Live2D 论文助手，中间是论文原文加随界面语言变化的解读，右侧是学科化讲解卡片；鼠标悬停在卡片上会高亮对应原文块。原文卡片翻译会走独立的 `paper_reader_translation` 运行时配置，不再交给主 Paper Reader 模型兼做。该页的继续追问由 Live2D 助手承接，并注入当前页原文上下文；前端不再对用户问题执行独立的 Paper Reader embedding 检索问答。
+
+### 7. 构建前端静态文件
 
 ```bash
 cd frontend

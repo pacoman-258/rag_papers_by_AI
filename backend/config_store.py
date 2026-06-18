@@ -145,6 +145,12 @@ def runtime_settings_to_storage(
             "api_key": settings.paper_reader_chat.api_key,
             "max_context_tokens": settings.paper_reader_chat.max_context_tokens,
         },
+        "paper_reader_translation": {
+            "provider": settings.paper_reader_translation.provider,
+            "model": settings.paper_reader_translation.model,
+            "base_url": settings.paper_reader_translation.base_url,
+            "api_key": settings.paper_reader_translation.api_key,
+        },
         "embedding": {
             "api_url": settings.embedding.api_url,
             "model": settings.embedding.model,
@@ -180,9 +186,13 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
     embedding_api_url = normalize_ollama_api_url(data["embedding"]["api_url"])
     default_assistant_memory = get_env_default_settings().assistant_memory
     default_paper_reader_chat = default_settings.paper_reader_chat
+    default_paper_reader_translation = default_settings.paper_reader_translation
     assistant_memory_data = data.get("assistant_memory") if isinstance(data.get("assistant_memory"), dict) else {}
     paper_reader_chat_data = (
         data.get("paper_reader_chat") if isinstance(data.get("paper_reader_chat"), dict) else {}
+    )
+    paper_reader_translation_data = (
+        data.get("paper_reader_translation") if isinstance(data.get("paper_reader_translation"), dict) else {}
     )
     retrieval_data = data.get("retrieval") if isinstance(data.get("retrieval"), dict) else {}
     retrieval_providers = _coerce_retrieval_providers(
@@ -191,6 +201,23 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
     )
     validate_retrieval_providers(retrieval_providers)
     _set_current_retrieval_providers(retrieval_providers)
+    paper_reader_chat = PaperReaderChatConfig(
+        provider=paper_reader_chat_data.get("provider") or default_paper_reader_chat.provider,
+        model=paper_reader_chat_data.get("model") or default_paper_reader_chat.model,
+        base_url=paper_reader_chat_data.get("base_url") or default_paper_reader_chat.base_url,
+        api_key=paper_reader_chat_data.get("api_key", default_paper_reader_chat.api_key),
+        max_context_tokens=int(
+            paper_reader_chat_data.get(
+                "max_context_tokens", default_paper_reader_chat.max_context_tokens
+            )
+        ),
+    )
+    translation_has_identity = bool(
+        paper_reader_translation_data.get("provider") or paper_reader_translation_data.get("model")
+    )
+    paper_reader_translation_fallback: ChatConfig = (
+        default_paper_reader_translation if translation_has_identity else paper_reader_chat
+    )
     return RuntimeSettings(
         query_chat=ChatConfig(
             provider=data["query_chat"]["provider"],
@@ -204,16 +231,12 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
             base_url=data["answer_chat"].get("base_url") or embedding_api_url,
             api_key=data["answer_chat"].get("api_key"),
         ),
-        paper_reader_chat=PaperReaderChatConfig(
-            provider=paper_reader_chat_data.get("provider", default_paper_reader_chat.provider),
-            model=paper_reader_chat_data.get("model", default_paper_reader_chat.model),
-            base_url=paper_reader_chat_data.get("base_url") or default_paper_reader_chat.base_url,
-            api_key=paper_reader_chat_data.get("api_key", default_paper_reader_chat.api_key),
-            max_context_tokens=int(
-                paper_reader_chat_data.get(
-                    "max_context_tokens", default_paper_reader_chat.max_context_tokens
-                )
-            ),
+        paper_reader_chat=paper_reader_chat,
+        paper_reader_translation=ChatConfig(
+            provider=paper_reader_translation_data.get("provider") or paper_reader_translation_fallback.provider,
+            model=paper_reader_translation_data.get("model") or paper_reader_translation_fallback.model,
+            base_url=paper_reader_translation_data.get("base_url") or paper_reader_translation_fallback.base_url,
+            api_key=paper_reader_translation_data.get("api_key", paper_reader_translation_fallback.api_key),
         ),
         embedding=EmbeddingConfig(api_url=embedding_api_url, model=data["embedding"]["model"]),
         retrieval=RetrievalConfig(
@@ -319,6 +342,25 @@ def merge_paper_reader_chat(
     )
 
 
+def merge_optional_chat(
+    base: ChatConfig,
+    incoming: ChatConfigRequest | None,
+    embedding_api_url: str,
+) -> ChatConfig:
+    if incoming is None:
+        return base
+
+    merged = merge_chat(base, incoming)
+    if merged.provider == "ollama" and not merged.base_url:
+        return ChatConfig(
+            provider=merged.provider,
+            model=merged.model,
+            base_url=embedding_api_url,
+            api_key=merged.api_key,
+        )
+    return merged
+
+
 def merge_runtime_settings(
     base: RuntimeSettings,
     incoming: RuntimeSettingsRequest | None,
@@ -332,6 +374,11 @@ def merge_runtime_settings(
     paper_reader_chat = merge_paper_reader_chat(
         base.paper_reader_chat,
         incoming.paper_reader_chat,
+        embedding_api_url,
+    )
+    paper_reader_translation = merge_optional_chat(
+        base.paper_reader_translation,
+        incoming.paper_reader_translation,
         embedding_api_url,
     )
 
@@ -366,6 +413,7 @@ def merge_runtime_settings(
         query_chat=query_chat,
         answer_chat=answer_chat,
         paper_reader_chat=paper_reader_chat,
+        paper_reader_translation=paper_reader_translation,
         embedding=EmbeddingConfig(
             api_url=incoming.embedding.api_url,
             model=incoming.embedding.model,
@@ -404,6 +452,12 @@ def runtime_settings_to_response(
             base_url=settings.paper_reader_chat.base_url,
             has_api_key=bool(settings.paper_reader_chat.api_key),
             max_context_tokens=settings.paper_reader_chat.max_context_tokens,
+        ),
+        paper_reader_translation=ChatConfigResponse(
+            provider=settings.paper_reader_translation.provider,
+            model=settings.paper_reader_translation.model,
+            base_url=settings.paper_reader_translation.base_url,
+            has_api_key=bool(settings.paper_reader_translation.api_key),
         ),
         embedding=EmbeddingConfigModel(
             api_url=settings.embedding.api_url,

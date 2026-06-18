@@ -99,6 +99,7 @@ class RuntimeSettings:
     query_chat: ChatConfig
     answer_chat: ChatConfig
     paper_reader_chat: PaperReaderChatConfig
+    paper_reader_translation: ChatConfig
     embedding: EmbeddingConfig
     retrieval: RetrievalConfig
     rerank: RerankConfig
@@ -322,10 +323,17 @@ def get_env_default_settings() -> RuntimeSettings:
         api_key=os.getenv("PAPER_READER_CHAT_API_KEY", answer_chat.api_key),
         max_context_tokens=int(os.getenv("PAPER_READER_CHAT_MAX_CONTEXT_TOKENS", "8192")),
     )
+    paper_reader_translation = ChatConfig(
+        provider=normalize_provider(os.getenv("PAPER_READER_TRANSLATION_PROVIDER", paper_reader_chat.provider)),
+        model=os.getenv("PAPER_READER_TRANSLATION_MODEL", paper_reader_chat.model),
+        base_url=os.getenv("PAPER_READER_TRANSLATION_BASE_URL", paper_reader_chat.base_url),
+        api_key=os.getenv("PAPER_READER_TRANSLATION_API_KEY", paper_reader_chat.api_key),
+    )
     return RuntimeSettings(
         query_chat=query_chat,
         answer_chat=answer_chat,
         paper_reader_chat=paper_reader_chat,
+        paper_reader_translation=paper_reader_translation,
         embedding=EmbeddingConfig(
             api_url=embedding_api_url,
             model=os.getenv("OLLAMA_EMBED_MODEL", "qwen3-embedding:0.6b"),
@@ -375,6 +383,7 @@ def validate_runtime_settings(settings: RuntimeSettings) -> None:
     validate_chat_config(settings.query_chat, "query_chat")
     validate_chat_config(settings.answer_chat, "answer_chat")
     validate_chat_config(settings.paper_reader_chat, "paper_reader_chat")
+    validate_chat_config(settings.paper_reader_translation, "paper_reader_translation")
     if not settings.embedding.api_url:
         raise RuntimeError("Missing embedding.api_url")
     if not settings.embedding.model:

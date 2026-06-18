@@ -305,6 +305,7 @@ def resolve_saved_model_list_api_key(payload: ModelListRequest) -> str | None:
         saved_settings.query_chat,
         saved_settings.answer_chat,
         saved_settings.paper_reader_chat,
+        saved_settings.paper_reader_translation,
     ):
         if chat_config.provider != "openai_compatible":
             continue
@@ -403,7 +404,13 @@ def api_paper_reader_session_from_arxiv(
 ) -> PaperReaderSessionModel:
     try:
         settings = settings_from_optional_payload(payload.settings)
-        session = create_session_from_arxiv(payload.url, settings, answer_language=payload.answer_language)
+        session = create_session_from_arxiv(
+            payload.url,
+            settings,
+            answer_language=payload.answer_language,
+            reader_mode=payload.reader_mode,
+            discipline=payload.discipline,
+        )
         return session_to_model(session)
     except HTTPException:
         raise
@@ -415,6 +422,8 @@ def api_paper_reader_session_from_arxiv(
 async def api_paper_reader_session_from_file(
     pdf: UploadFile = File(...),
     answer_language: str | None = Form(default=None),
+    reader_mode: str | None = Form(default="guided"),
+    discipline: str | None = Form(default="auto"),
     settings: str | None = Form(default=None),
 ) -> PaperReaderSessionModel:
     filename = str(pdf.filename or "uploaded.pdf").strip() or "uploaded.pdf"
@@ -430,6 +439,8 @@ async def api_paper_reader_session_from_file(
             filename,
             resolved_settings,
             answer_language=answer_language,
+            reader_mode=reader_mode,
+            discipline=discipline,
         )
         return session_to_model(session)
     except HTTPException:

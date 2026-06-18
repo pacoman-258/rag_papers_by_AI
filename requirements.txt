@@ -1,6 +1,7 @@
 edge-tts
 arxiv
 fastapi
+httpx[socks]
 openai
 psycopg2-binary
 pydantic

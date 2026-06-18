@@ -8,6 +8,26 @@ from pydantic import BaseModel, Field
 Provider = Literal["ollama", "openai_compatible"]
 ModelListKind = Literal["chat", "embedding"]
 AnswerLanguage = Literal["zh", "en"]
+PaperReaderMode = Literal["guided", "standard"]
+PaperReaderDiscipline = Literal[
+    "general",
+    "science_engineering",
+    "mathematics",
+    "medicine_biology",
+    "economics_social_science",
+    "philosophy_humanities",
+    "policy_law",
+]
+PaperReaderDisciplineRequest = Literal[
+    "auto",
+    "general",
+    "science_engineering",
+    "mathematics",
+    "medicine_biology",
+    "economics_social_science",
+    "philosophy_humanities",
+    "policy_law",
+]
 
 
 class ChatConfigRequest(BaseModel):
@@ -84,6 +104,7 @@ class RuntimeSettingsRequest(BaseModel):
     query_chat: ChatConfigRequest
     answer_chat: ChatConfigRequest
     paper_reader_chat: PaperReaderChatConfigRequest | None = None
+    paper_reader_translation: ChatConfigRequest | None = None
     embedding: EmbeddingConfigModel
     retrieval: RetrievalConfigRequest
     rerank: RerankConfigRequest
@@ -94,6 +115,7 @@ class RuntimeSettingsResponse(BaseModel):
     query_chat: ChatConfigResponse
     answer_chat: ChatConfigResponse
     paper_reader_chat: PaperReaderChatConfigResponse
+    paper_reader_translation: ChatConfigResponse
     embedding: EmbeddingConfigModel
     retrieval: RetrievalConfigModel
     rerank: RerankConfigResponse
@@ -103,6 +125,8 @@ class RuntimeSettingsResponse(BaseModel):
 class PaperReaderSessionFromArxivRequest(BaseModel):
     url: str
     answer_language: AnswerLanguage | None = None
+    reader_mode: PaperReaderMode = "guided"
+    discipline: PaperReaderDisciplineRequest = "auto"
     settings: RuntimeSettingsRequest | None = None
 
 
@@ -136,6 +160,28 @@ class PaperReaderUsedChunkModel(PaperReaderChunkModel):
     pass
 
 
+class PaperReaderIndexNodeModel(BaseModel):
+    node_id: str
+    title: str
+    summary: str | None = None
+    reading_focus_key: str | None = None
+    page_start: int = 0
+    page_end: int = 0
+    page_indices: list[int] = Field(default_factory=list)
+    chunk_ids: list[str] = Field(default_factory=list)
+    children: list["PaperReaderIndexNodeModel"] = Field(default_factory=list)
+
+
+class PaperReaderSelectedNodeModel(BaseModel):
+    node_id: str
+    title: str
+    summary: str | None = None
+    page_start: int = 0
+    page_end: int = 0
+    page_indices: list[int] = Field(default_factory=list)
+    reason: str | None = None
+
+
 class PaperReaderPageManifestModel(BaseModel):
     page_index: int
     title: str
@@ -144,6 +190,7 @@ class PaperReaderPageManifestModel(BaseModel):
     chunk_count: int
     page_start: int
     page_end: int
+    source_node_ids: list[str] = Field(default_factory=list)
 
 
 class PaperReaderSectionModel(BaseModel):
@@ -154,6 +201,16 @@ class PaperReaderSectionModel(BaseModel):
 
 class PaperReaderStructuredTextModel(BaseModel):
     original_en: str | None = None
+    explanation: str | None = None
+    display_text: str | None = None
+
+
+class PaperReaderReadingBlockModel(BaseModel):
+    chunk_id: str
+    source_label: str
+    page_start: int
+    page_end: int
+    original_en: str
     explanation: str | None = None
     display_text: str | None = None
 
@@ -180,9 +237,56 @@ class PaperReaderInsightModel(BaseModel):
     kind: str = "insight"
     summary: PaperReaderStructuredTextModel | None = None
     evidence: list[PaperReaderStructuredTextModel] = Field(default_factory=list)
+    why_it_matters: list[PaperReaderStructuredTextModel] = Field(default_factory=list)
     source_chunk_ids: list[str] = Field(default_factory=list)
     source_section_labels: list[str] = Field(default_factory=list)
     citations: list[PaperReaderCitationModel] = Field(default_factory=list)
+
+
+class PaperReaderStoryStageModel(BaseModel):
+    key: str
+    title: str
+    description: str | None = None
+
+
+class PaperReaderBlackboardNotesModel(BaseModel):
+    core_concepts: list[str] = Field(default_factory=list)
+    method_steps: list[str] = Field(default_factory=list)
+    experiment_takeaways: list[str] = Field(default_factory=list)
+    takeaway: str | None = None
+
+
+class PaperReaderDisciplineGuidePanelModel(BaseModel):
+    key: str
+    title: str
+    items: list[str] = Field(default_factory=list)
+    takeaway: str | None = None
+
+
+class PaperReaderDisciplineGuideModel(BaseModel):
+    discipline: PaperReaderDiscipline
+    title: str
+    panels: list[PaperReaderDisciplineGuidePanelModel] = Field(default_factory=list)
+
+
+class PaperReaderGlossaryTermModel(BaseModel):
+    term: str
+    explanation: str
+    source: Literal["paper", "background"] = "paper"
+    citation: PaperReaderCitationModel | None = None
+
+
+class PaperReaderReadingHintModel(BaseModel):
+    kind: Literal["must_know", "skim", "advanced"]
+    text: str
+    reason: str | None = None
+
+
+class PaperReaderCheckpointModel(BaseModel):
+    question: str
+    answer: str
+    review_hint: str | None = None
+    source_page_index: int | None = None
 
 
 class PaperReaderPageContentModel(BaseModel):
@@ -193,13 +297,22 @@ class PaperReaderPageContentModel(BaseModel):
     page_overview: PaperReaderStructuredTextModel | None = None
     insights: list[PaperReaderInsightModel] = Field(default_factory=list)
     structured_status: PaperReaderStructuredStatusModel = Field(default_factory=PaperReaderStructuredStatusModel)
+    reading_blocks: list[PaperReaderReadingBlockModel] = Field(default_factory=list)
     source_sections: list[PaperReaderSourceSectionModel] = Field(default_factory=list)
+    mentor_script: list[PaperReaderStructuredTextModel] = Field(default_factory=list)
+    blackboard_notes: PaperReaderBlackboardNotesModel | None = None
+    discipline_guide: PaperReaderDisciplineGuideModel | None = None
+    story_stage: PaperReaderStoryStageModel | None = None
+    glossary_terms: list[PaperReaderGlossaryTermModel] = Field(default_factory=list)
+    reading_hints: list[PaperReaderReadingHintModel] = Field(default_factory=list)
+    checkpoints: list[PaperReaderCheckpointModel] = Field(default_factory=list)
     summary: str | None = None
     sections: list[PaperReaderSectionModel] = Field(default_factory=list)
     key_points: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     citations: list[PaperReaderCitationModel] = Field(default_factory=list)
     chunk_ids: list[str] = Field(default_factory=list)
+    source_node_ids: list[str] = Field(default_factory=list)
     estimated_tokens: int = 0
     page_start: int = 0
     page_end: int = 0
@@ -216,12 +329,17 @@ class PaperReaderSessionModel(BaseModel):
     authors: list[str] = Field(default_factory=list)
     published_date: str | None = None
     answer_language: AnswerLanguage
+    reader_mode: PaperReaderMode = "guided"
+    discipline: PaperReaderDiscipline = "general"
+    discipline_source: Literal["auto", "manual"] = "auto"
     max_context_tokens: int
     page_input_budget: int
     current_page_index: int = 0
     page_count: int
     session_status: str
     pages: list[PaperReaderPageManifestModel] = Field(default_factory=list)
+    index_status: Literal["ready", "fallback"] = "fallback"
+    index_tree: PaperReaderIndexNodeModel | None = None
 
 
 class PaperReaderChatRequest(BaseModel):
@@ -229,6 +347,8 @@ class PaperReaderChatRequest(BaseModel):
     history: list[PaperReaderHistoryMessage] = Field(default_factory=list)
     page_index: int | None = None
     answer_language: AnswerLanguage | None = None
+    reader_mode: PaperReaderMode | None = None
+    discipline: PaperReaderDisciplineRequest | None = None
     settings: RuntimeSettingsRequest | None = None
 
 
@@ -239,6 +359,7 @@ class PaperReaderChatResponse(BaseModel):
     answer_text: str
     citations: list[PaperReaderCitationModel] = Field(default_factory=list)
     used_chunks: list[PaperReaderUsedChunkModel] = Field(default_factory=list)
+    selected_nodes: list[PaperReaderSelectedNodeModel] = Field(default_factory=list)
 
 
 class ModelListRequest(BaseModel):
@@ -399,9 +520,17 @@ class WorkflowContextModel(BaseModel):
     paper_title: str | None = None
     arxiv_id: str | None = None
     page_language: AnswerLanguage | None = None
+    reader_mode: PaperReaderMode | None = None
+    discipline: PaperReaderDiscipline | None = None
+    discipline_source: Literal["auto", "manual"] | None = None
     page_index: int | None = None
     page_title: str | None = None
     page_count: int | None = None
+    story_stage: dict[str, Any] | None = None
+    discipline_guide: dict[str, Any] | None = None
+    blackboard_notes: dict[str, Any] | None = None
+    glossary_terms: list[dict[str, Any]] = Field(default_factory=list)
+    checkpoint_status: str | None = None
     section_titles: list[str] = Field(default_factory=list)
     latest_page_summary: str | None = None
     latest_answer_text: str | None = None

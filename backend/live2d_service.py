@@ -270,6 +270,16 @@ def _render_paper_reader_context_lines(workflow_context: dict[str, Any]) -> list
     source = _safe_text(workflow_context.get("source"), max_length=48)
     page_count = _coerce_int(workflow_context.get("page_count"))
     answer_language = _safe_text(workflow_context.get("answer_language"), max_length=16).casefold()
+    reader_mode = _safe_text(workflow_context.get("reader_mode"), max_length=32)
+    discipline = _safe_text(workflow_context.get("discipline"), max_length=64)
+    discipline_source = _safe_text(workflow_context.get("discipline_source"), max_length=16)
+    story_stage = workflow_context.get("story_stage") if isinstance(workflow_context.get("story_stage"), dict) else {}
+    story_stage_title = _safe_text(story_stage.get("title"), max_length=160) if story_stage else ""
+    discipline_guide = workflow_context.get("discipline_guide") if isinstance(workflow_context.get("discipline_guide"), dict) else {}
+    guide_panels = discipline_guide.get("panels") if isinstance(discipline_guide.get("panels"), list) else []
+    blackboard_notes = workflow_context.get("blackboard_notes")
+    glossary_terms = workflow_context.get("glossary_terms") if isinstance(workflow_context.get("glossary_terms"), list) else []
+    checkpoint_status = _safe_text(workflow_context.get("checkpoint_status"), max_length=48)
 
     if paper_title:
         lines.append(f"- paper_title: {paper_title}")
@@ -284,8 +294,39 @@ def _render_paper_reader_context_lines(workflow_context: dict[str, Any]) -> list
         lines.append(f"- page_count: {page_count}")
     if answer_language in {"zh", "en"}:
         lines.append(f"- answer_language: {answer_language}")
+    if reader_mode:
+        lines.append(f"- reader_mode: {reader_mode}")
+    if discipline:
+        suffix = f" ({discipline_source})" if discipline_source else ""
+        lines.append(f"- discipline: {discipline}{suffix}")
+    if story_stage_title:
+        lines.append(f"- story_stage: {story_stage_title}")
+    if guide_panels:
+        panel_titles = []
+        for item in guide_panels[:5]:
+            if isinstance(item, dict):
+                title = _safe_text(item.get("title"), max_length=100)
+                if title:
+                    panel_titles.append(title)
+        if panel_titles:
+            lines.append("- discipline_guide_panels: " + ", ".join(panel_titles))
     if section_titles:
         lines.append("- section_titles: " + ", ".join(section_titles))
+    if isinstance(blackboard_notes, dict):
+        takeaway = _safe_text(blackboard_notes.get("takeaway"), max_length=500)
+        if takeaway:
+            lines.append(f"- blackboard_takeaway: {takeaway}")
+    if glossary_terms:
+        term_names = []
+        for item in glossary_terms[:6]:
+            if isinstance(item, dict):
+                term = _safe_text(item.get("term"), max_length=80)
+                if term:
+                    term_names.append(term)
+        if term_names:
+            lines.append("- glossary_terms: " + ", ".join(term_names))
+    if checkpoint_status:
+        lines.append(f"- checkpoint_status: {checkpoint_status}")
     if source:
         lines.append(f"- source: {source}")
     if latest_page_summary:
@@ -293,7 +334,7 @@ def _render_paper_reader_context_lines(workflow_context: dict[str, Any]) -> list
     if latest_answer_text:
         lines.append(f"- latest_answer_text: {latest_answer_text}")
     lines.append(
-        "- guidance: focus on the current page, explain what matters, suggest the next reading step, and do not invent citations or paper-wide claims."
+        "- guidance: act as a professional guided-reading mentor, follow the paper discipline, focus on the current page, explain what matters, suggest the next reading step, and do not invent citations or paper-wide claims."
     )
     return lines
 
@@ -415,7 +456,7 @@ def _build_live2d_system_prompt(
         page_ref_hint = 'Prefer "这一页" / "这一部分"' if reply_language == "zh" else 'Prefer "this page" / "this section"'
         paper_reader_rules = """
 - When the workflow context is paper_reader, treat it as a page-local paper reading assistant.
-- Explain the current page in plain language, point out what matters, and suggest the next sensible reading step.
+- Explain the current page in plain language, follow the discipline-specific reading frame, point out what matters, and suggest the next sensible reading step.
 - Use cautious language. Do not invent citations, experiments, formulas, or paper-wide conclusions beyond the provided page context.
 - {page_ref_hint} language when the user is reading a paper.
 - If the user asks for a broader summary, explain that you can only ground the reply in the current page context and can help continue page by page.

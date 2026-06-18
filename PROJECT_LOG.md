@@ -20,6 +20,99 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-17 11:06
+
+- 摘要：修复旧配置中缺少 `paper_reader_translation` 时原文卡片翻译仍回退到默认本地模型的问题；现在未显式配置翻译模型时会继承当前保存的 `paper_reader_chat` provider/model/base_url/key，避免页面卡片解读持续为空。
+- 涉及文件：`backend/config_store.py`、`tests/test_paper_reader_translation.py`、`PROJECT_LOG.md`
+- 验证：用本地 `config/runtime_settings.json` 安全检查确认原始配置缺少 `paper_reader_translation` 且精读模型为 `openai_compatible / gemini-3.1-pro-preview`；新增回归测试 `test_missing_translation_config_inherits_saved_paper_reader_chat` 并先看到失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation.PaperReaderTranslationTest.test_missing_translation_config_inherits_saved_paper_reader_chat`（通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，18 tests）；执行 `.venv/bin/python -m py_compile backend/config_store.py backend/paper_reader_service.py backend/main.py backend/schemas.py local_paper_db/app/search_service.py tests/test_paper_reader_translation.py`（通过）；执行 `cd frontend && npm run build`（通过）；再次调用 `load_runtime_settings()` 确认 `paper_reader_translation` 加载为 `openai_compatible / gemini-3.1-pro-preview` 且 `has_api_key=True`。
+- 后续：当前浏览器里已经缓存的旧 Paper Reader 页面不会自动补翻译；需要后端重载后重新生成当前页或重新载入论文。
+
+## 2026-06-15 14:31
+
+- 摘要：为 `Paper Reader` 原文卡片新增独立的 `paper_reader_translation` 翻译配置，主精读模型不再负责 `reading_blocks` 翻译；页面生成后由翻译模型按 `chunk_id` 补齐缺失卡片解读，翻译失败时主精读页继续降级显示占位。
+- 涉及文件：`backend/schemas.py`、`backend/config_store.py`、`backend/main.py`、`backend/paper_reader_service.py`、`local_paper_db/app/search_service.py`、`frontend/src/App.jsx`、`config/runtime_settings.example.json`、`README.md`、`README.zh-CN.md`、`tests/test_paper_reader_translation.py`、`tests/test_paper_reader_index.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation`（先失败后通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation tests.test_paper_reader_index tests.test_paper_reader_discipline`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，17 tests）；执行 `PYTHONPYCACHEPREFIX=/private/tmp/rag-paper-reader-pycache .venv/bin/python -m py_compile backend/schemas.py backend/config_store.py backend/main.py backend/paper_reader_service.py local_paper_db/app/search_service.py tests/test_paper_reader_translation.py tests/test_paper_reader_index.py`（通过）；执行 `cd frontend && npm run build`（通过）；启动 Vite dev server 并用浏览器打开 `http://127.0.0.1:5174/`，确认设置页出现独立的“原文卡片翻译模型”配置卡片。
+- 后续：旧的进程内 Paper Reader 页面缓存不会自动补翻译；需要刷新服务或重新载入/重新生成论文页后才会走新的翻译配置。
+
+## 2026-06-12 12:15
+
+- 摘要：修复 `Paper Reader` 阅读块解读与原文不对应的问题，移除按章节或整页 overview 复用解读的兜底逻辑，仅允许明确 `chunk_id` 对齐的 insight 补齐阅读块，并强化模型提示词要求逐块解释精确对应原文。
+- 涉及文件：`backend/paper_reader_service.py`、`tests/test_paper_reader_index.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_paper_reader_index.PaperReaderIndexTreeTest.test_page_model_does_not_reuse_page_or_section_summary_for_reading_blocks`（先失败后通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_index tests.test_paper_reader_discipline`（通过）；执行 `PYTHONPYCACHEPREFIX=/private/tmp/rag-paper-reader-pycache .venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py backend/live2d_service.py backend/main.py`（通过）；执行 `cd frontend && npm run build`（通过）。
+- 后续：已缓存的旧页面内容可能仍显示错配解读，需要刷新/重新生成当前页以获取新的逐块解读。
+
+## 2026-06-12 10:19
+
+- 摘要：调整 `Paper Reader` 与 Live2D 助手的联动方式，精读页仅静默更新当前页论文上下文，不再在每页生成/切换时触发助手自动总结回复；助手仍可在用户主动提问时参考当前页原文与结构化上下文。
+- 涉及文件：`frontend/src/App.jsx`、`frontend/src/PaperReaderPage.jsx`、`tests/test_paper_reader_live2d_behavior.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_paper_reader_live2d_behavior`（先失败后通过）；执行 `PYTHONPYCACHEPREFIX=/private/tmp/rag-paper-reader-pycache .venv/bin/python -m py_compile tests/test_paper_reader_live2d_behavior.py`（通过）；执行 `cd frontend && npm run build`（通过）。
+- 后续：真实浏览器会话中建议刷新前端后确认 Live2D 不再追加“已根据最新回答自动补充建议”的每页自动消息。
+
+## 2026-06-11 23:52
+
+- 摘要：修复 `Paper Reader` 三栏页中阅读块“页面语言解读”误显示英文原文的问题，收紧 `reading_blocks` 生成契约，并在序列化时用同 chunk 的 insight 解读补齐缺失翻译。
+- 涉及文件：`backend/paper_reader_service.py`、`frontend/src/PaperReaderPage.jsx`、`tests/test_paper_reader_index.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_paper_reader_index.PaperReaderIndexTreeTest.test_page_model_does_not_use_original_as_reading_block_translation`（先失败后通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_index tests.test_paper_reader_discipline`（通过）；执行 `PYTHONPYCACHEPREFIX=/private/tmp/rag-paper-reader-pycache .venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py backend/live2d_service.py backend/main.py`（通过）；执行 `cd frontend && npm run build`（通过）。
+- 后续：旧会话若已在前端缓存了页面内容，可能需要刷新页面或重新生成当前页后才能看到逐块解读更新。
+
+## 2026-06-11 22:12
+
+- 摘要：修复设置页拉取模型后原生 `datalist` 展开不可靠的问题，为模型输入框新增显式“展开/收起模型列表”按钮和可点击候选列表。
+- 涉及文件：`frontend/src/App.jsx`、`frontend/src/styles.css`、`PROJECT_LOG.md`
+- 验证：执行 `cd frontend && npm run build`（通过）。
+- 后续：无。
+
+## 2026-06-11 16:39
+
+- 摘要：重设计 `Paper Reader` 为左侧固定 Live2D 助手、中间原文/页面语言解读、右侧学科卡片三栏布局；新增 `reading_blocks` 页面接口字段，并移除前端底部 Paper Reader 独立追问入口，改由 Live2D 注入当前页原文上下文承接追问。
+- 涉及文件：`backend/schemas.py`、`backend/paper_reader_service.py`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`tests/test_paper_reader_index.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_paper_reader_index tests.test_paper_reader_discipline`（通过）；执行 `PYTHONPYCACHEPREFIX=/private/tmp/rag-paper-reader-pycache .venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py backend/live2d_service.py backend/main.py`（通过）；执行 `cd frontend && npm run build`（通过）。
+- 后续：仍建议在真实 Paper Reader 会话中人工检查右侧卡片到原文块的 hover 高亮是否符合阅读预期，尤其是模型未返回逐块 explanation 时的兜底体验。
+
+## 2026-06-10 11:45
+
+- 摘要：为 `Paper Reader` 新增学科自适应精读链路，支持自动/手动学科选择、学科专属分页阅读路线、`discipline_guide` 讲解面板、学科化追问提示词，并同步 Live2D/长期记忆上下文。
+- 涉及文件：`backend/schemas.py`、`backend/main.py`、`backend/paper_reader_service.py`、`backend/live2d_service.py`、`backend/assistant_memory.py`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`tests/test_paper_reader_discipline.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_paper_reader_discipline tests.test_paper_reader_index`（通过）；执行 `PYTHONPYCACHEPREFIX=/private/tmp/rag-paper-reader-pycache .venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py backend/live2d_service.py backend/assistant_memory.py`（通过）；执行 `cd frontend && npm run build`（通过）。
+- 后续：旧的进程内 `Paper Reader` 会话不会迁移到新的学科路线；切换学科需要重新载入论文生成新会话。
+
+## 2026-06-06 20:34
+
+- 摘要：收敛 `Paper Reader` 已载入论文后的前端布局，隐藏非主链路助手栏、折叠二次导入表单、拓宽精读正文区，并将导师讲解、洞察卡与黑板/术语/检查点整理为更清晰的阅读分区。
+- 涉及文件：`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`PROJECT_LOG.md`
+- 验证：执行 `cd frontend && npm run build`（通过）；使用 Chrome 导入 `Attention Is All You Need` 的 arXiv `1706.03762` 真实会话（通过）；使用 mock `Attention Is All You Need` session 做桌面与移动端截图检查，确认无横向溢出、导入抽屉闭合、助手栏不再占用主阅读宽度；当前 Chrome 页指标显示阅读卡宽度约 1106px、`scrollWidth == innerWidth`。
+- 后续：本机 `Downloads` 目录被 macOS 权限拦截，未能直接读取用户下载好的 PDF 文件路径；建议用户在页面文件选择器中手动选择该 PDF 再做一次最终人工验收。
+
+## 2026-06-06 19:51
+
+- 摘要：修复 SOCKS 代理环境下 `httpx` 缺少 `socksio` 导致 OpenAI/httpx 客户端初始化失败的问题，显式声明并安装 `httpx[socks]`。
+- 涉及文件：`pyproject.toml`、`requirements.txt`、`uv.lock`、`tests/test_dependency_declarations.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_dependency_declarations tests.test_paper_reader_index`（通过）；执行 `.venv/bin/python -c "import socksio, httpx; client = httpx.Client(proxy='socks5://127.0.0.1:9999'); client.close(); print('socks proxy support ok')"`（通过）；执行 `uv lock` 并用 `uv pip install "httpx[socks]" --python .venv/bin/python` 更新当前虚拟环境（通过）。
+- 后续：无。
+
+## 2026-06-06 14:32
+
+- 摘要：重构 `Paper Reader` 的第一层学习形态，新增 Paper Map 结构树、阅读页到证据节点的映射、论文追问的 selected nodes 返回，并在前端左侧导航展示本地化论文地图与整洁的证据节点信息。
+- 涉及文件：`backend/schemas.py`、`backend/paper_reader_service.py`、`frontend/src/App.jsx`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`README.md`、`README.zh-CN.md`、`tests/test_paper_reader_index.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_paper_reader_index`（通过）；执行 `PYTHONPYCACHEPREFIX=/private/tmp/rag-paper-reader-pycache .venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py`（通过）；执行 `cd frontend && npm run build`（通过）；使用 mock Paper Reader 会话进行 headless Chrome 截图检查，确认中文阅读焦点本地化且页面无横向溢出。
+- 后续：真实 PDF/arXiv 端到端仍需用实际论文人工验收地图节点质量；当前结构树仍基于文本抽取和标题启发式，尚未引入图表/公式/版面级 Paper IR。
+
+## 2026-04-29 10:21
+
+- 摘要：产品化打磨 `Paper Reader` 精读页，后端扩展 insight 的 `why_it_matters` 结构化字段与兼容解析，前端改为默认页面语言解读 + 可展开英文原文、独立 Why callout、metadata 化证据/来源、页内 scrollspy 子锚点、顶部紧凑翻页与键盘左右翻页。
+- 涉及文件：`backend/schemas.py`、`backend/paper_reader_service.py`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`PROJECT_LOG.md`
+- 验证：执行 `cd frontend && npm run build`（通过）；执行 `PYTHONPYCACHEPREFIX=/private/tmp/rag-paper-reader-pycache python3 -m py_compile backend/schemas.py backend/paper_reader_service.py`（通过）
+- 后续：真实论文端到端体验仍建议用已有 arXiv/PDF 样例人工检查 scrollspy 锚点、Why callout 内容质量与模型新字段输出稳定性。
+
+## 2026-04-28 00:00
+
+- 摘要：参考 Paper2Gal 的教学结构，为 `Paper Reader` 新增默认 guided 陪读模式、Quick Story 速读页、导师讲解流、黑板笔记、术语降维、阅读提示、理解检查点、研究笔记导出，并在搜索结果卡加入“精读这篇”入口。
+- 涉及文件：`backend/schemas.py`、`backend/main.py`、`backend/paper_reader_service.py`、`backend/live2d_service.py`、`backend/assistant_memory.py`、`frontend/src/App.jsx`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`
+- 验证：执行 `PYTHONPYCACHEPREFIX=/tmp/pythoncache python3 -m compileall backend`（通过）；执行 `cd frontend && npm run build`（通过）
+- 后续：
+  1. Quick Story 和 guided 阅读结构依赖模型结构化输出，真实论文端到端体验仍需用 arXiv/PDF 做人工验收。
+  2. 当前研究笔记导出基于已生成页面内容，尚未生成的分页不会自动补齐到导出文件。
+
 ## 2026-04-17 01:26
 
 - 摘要：重构 `Paper Reader` 的可读性与结构化输出链路，前端改成“左侧阅读导航 + 中央导读卡 + 同卡双色 insight cards”，后端进一步收紧分页提示词，避免长段混合文本或 JSON 字符串直接进入页面。

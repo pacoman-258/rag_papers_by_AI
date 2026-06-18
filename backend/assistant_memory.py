@@ -397,6 +397,7 @@ def _build_event_text(
             paper_title = _safe_text(workflow_context.get("paper_title"), max_length=160)
             page_index = workflow_context.get("page_index")
             page_title = _safe_text(workflow_context.get("page_title"), max_length=160)
+            discipline = _safe_text(workflow_context.get("discipline"), max_length=80)
             latest_page_summary = _safe_text(workflow_context.get("latest_page_summary"), max_length=700)
             latest_answer_text = _safe_text(workflow_context.get("latest_answer_text"), max_length=700)
             parts: list[str] = []
@@ -406,6 +407,8 @@ def _build_event_text(
                 parts.append(f"Page index: {page_index}")
             if page_title:
                 parts.append(f"Page title: {page_title}")
+            if discipline:
+                parts.append(f"Discipline: {discipline}")
             if latest_page_summary:
                 parts.append(f"Page summary: {latest_page_summary}")
             if latest_answer_text:
@@ -447,6 +450,14 @@ def _render_workflow_context_text(workflow_context: dict[str, Any] | None) -> st
         latest_page_summary = _safe_text(workflow_context.get("latest_page_summary"), max_length=1800)
         latest_answer_text = _safe_text(workflow_context.get("latest_answer_text"), max_length=1800)
         source = _safe_text(workflow_context.get("source"), max_length=48)
+        reader_mode = _safe_text(workflow_context.get("reader_mode"), max_length=32)
+        discipline = _safe_text(workflow_context.get("discipline"), max_length=80)
+        discipline_source = _safe_text(workflow_context.get("discipline_source"), max_length=16)
+        story_stage = workflow_context.get("story_stage") if isinstance(workflow_context.get("story_stage"), dict) else {}
+        story_stage_title = _safe_text(story_stage.get("title"), max_length=160) if story_stage else ""
+        discipline_guide = workflow_context.get("discipline_guide") if isinstance(workflow_context.get("discipline_guide"), dict) else {}
+        guide_panels = discipline_guide.get("panels") if isinstance(discipline_guide.get("panels"), list) else []
+        blackboard_notes = workflow_context.get("blackboard_notes")
 
         if paper_title:
             lines.append(f"- paper_title: {paper_title}")
@@ -462,6 +473,26 @@ def _render_workflow_context_text(workflow_context: dict[str, Any] | None) -> st
             lines.append(f"- page_title: {page_title}")
         if page_count is not None:
             lines.append(f"- page_count: {page_count}")
+        if reader_mode:
+            lines.append(f"- reader_mode: {reader_mode}")
+        if discipline:
+            suffix = f" ({discipline_source})" if discipline_source else ""
+            lines.append(f"- discipline: {discipline}{suffix}")
+        if story_stage_title:
+            lines.append(f"- story_stage: {story_stage_title}")
+        if guide_panels:
+            panel_titles = []
+            for item in guide_panels[:5]:
+                if isinstance(item, dict):
+                    title = _safe_text(item.get("title"), max_length=100)
+                    if title:
+                        panel_titles.append(title)
+            if panel_titles:
+                lines.append("- discipline_guide_panels: " + ", ".join(panel_titles))
+        if isinstance(blackboard_notes, dict):
+            takeaway = _safe_text(blackboard_notes.get("takeaway"), max_length=500)
+            if takeaway:
+                lines.append(f"- blackboard_takeaway: {takeaway}")
         if isinstance(section_titles, list) and section_titles:
             lines.append("- section_titles: " + ", ".join(_safe_text(item, 100) for item in section_titles[:8]))
         if source:
@@ -471,7 +502,7 @@ def _render_workflow_context_text(workflow_context: dict[str, Any] | None) -> st
         if latest_answer_text:
             lines.append(f"- latest_answer_text: {latest_answer_text}")
         lines.append(
-            "- guidance: focus on the current page, explain what matters, suggest the next reading step, and do not invent citations or paper-wide claims."
+            "- guidance: focus on guided reading for the current page, follow the paper discipline, explain what matters, suggest the next reading step, and do not invent citations or paper-wide claims."
         )
         return "\n".join(lines)
 

@@ -39,6 +39,7 @@ const translations = {
     queryChat: "Query Chat",
     answerChat: "Answer Chat",
     paperReaderChatModel: "Paper Reader Chat",
+    paperReaderTranslationModel: "Source Card Translation",
     embedding: "Embedding",
     ollamaApiUrl: "Ollama API URL",
     embeddingModel: "Embedding Model",
@@ -76,6 +77,7 @@ const translations = {
     sourceFreshness: "Source Freshness",
     matchedSources: "Matched Sources",
     openSource: "Open Source Page",
+    readPaper: "Read This Paper",
     none: "(none)",
     useRewrite: "Use Rewrite",
     useOriginal: "Use Original",
@@ -110,6 +112,9 @@ const translations = {
     fetchModels: "Fetch Models",
     loadingModels: "Loading models...",
     fetchedModels: "Fetched models",
+    showModelList: "Show model list",
+    hideModelList: "Hide model list",
+    selectModel: "Select model",
     language: "Language",
     appliedConstraints: "Applied Constraints",
     implicitLatest: "Implicit latest window",
@@ -137,11 +142,11 @@ const translations = {
     pstProgressExplain: "Stream PST explanation",
     paperReaderMaxContextTokens: "Max Context Tokens",
     paperReaderTitle: "Paper Reader",
-    paperReaderDescription: "Load one arXiv paper or local PDF, then read it page by page with dynamic chunking and buffered generation.",
+    paperReaderDescription: "Load one arXiv paper or local PDF, then read it through a paper map, evidence nodes, and guided checkpoints.",
     paperReaderProgressTitle: "Paper Reader Progress",
     paperReaderProgressSubtitle: "Track paper loading, page generation, and whether the current reading task is still alive.",
     paperReaderProgressLoad: "Load source",
-    paperReaderProgressPaginate: "Build dynamic pages",
+    paperReaderProgressPaginate: "Build paper map and pages",
     paperReaderProgressPage: "Generate current page",
     paperReaderProgressChat: "Ask this paper",
     paperReaderArxivUrl: "arXiv URL",
@@ -213,6 +218,7 @@ const translations = {
     queryChat: "Query Rewrite 模型",
     answerChat: "最终回答模型",
     paperReaderChatModel: "论文精读解析模型",
+    paperReaderTranslationModel: "原文卡片翻译模型",
     embedding: "Embedding",
     ollamaApiUrl: "Ollama API 地址",
     embeddingModel: "Embedding 模型",
@@ -250,6 +256,7 @@ const translations = {
     sourceFreshness: "来源新鲜度",
     matchedSources: "命中来源",
     openSource: "打开来源页面",
+    readPaper: "精读这篇",
     none: "（无）",
     useRewrite: "使用改写结果",
     useOriginal: "直接用原句",
@@ -284,6 +291,9 @@ const translations = {
     fetchModels: "拉取模型列表",
     loadingModels: "正在拉取模型...",
     fetchedModels: "已拉取模型",
+    showModelList: "展开模型列表",
+    hideModelList: "收起模型列表",
+    selectModel: "选择模型",
     language: "语言",
     appliedConstraints: "实际使用的约束",
     implicitLatest: "隐式最新时间窗",
@@ -311,11 +321,11 @@ const translations = {
     pstProgressExplain: "流式生成 PST 解释",
     paperReaderMaxContextTokens: "最大上下文 Token",
     paperReaderTitle: "论文精读",
-    paperReaderDescription: "输入 arXiv 链接或上传本地 PDF，按论文内容动态分页精读，并在后台缓冲下一页。",
+    paperReaderDescription: "输入 arXiv 链接或上传本地 PDF，先建立论文地图，再按证据节点和理解检查点逐步精读。",
     paperReaderProgressTitle: "论文精读进度",
     paperReaderProgressSubtitle: "跟踪论文载入、分页解析和当前任务是否仍在正常运行。",
     paperReaderProgressLoad: "载入论文来源",
-    paperReaderProgressPaginate: "构建动态分页",
+    paperReaderProgressPaginate: "构建论文地图与分页",
     paperReaderProgressPage: "生成当前精读页",
     paperReaderProgressChat: "围绕论文追问",
     paperReaderArxivUrl: "arXiv 链接",
@@ -386,6 +396,7 @@ function buildInitialModelCatalogs() {
     query_chat: buildEmptyModelCatalog(),
     answer_chat: buildEmptyModelCatalog(),
     paper_reader_chat: buildEmptyModelCatalog(),
+    paper_reader_translation: buildEmptyModelCatalog(),
     embedding: buildEmptyModelCatalog()
   };
 }
@@ -444,11 +455,26 @@ function AssistantLayerFallback({ language, onRetry, details = "" }) {
   );
 }
 
-function AssistantLayerContent({ AssistantComponent, language, autoReply, assistantSessionId, onAssistantSessionIdChange }) {
+function AssistantLayerContent({ AssistantComponent, language, autoReply, linkedContext, assistantSessionId, onAssistantSessionIdChange }) {
   const [latestAutoContext, setLatestAutoContext] = useState({
     answerContext: null,
     workflowContext: null
   });
+
+  useEffect(() => {
+    const trimmed = String(linkedContext?.answerContext || "").trim();
+    const workflowContext =
+      linkedContext?.workflowContext && typeof linkedContext.workflowContext === "object" && !Array.isArray(linkedContext.workflowContext)
+        ? linkedContext.workflowContext
+        : null;
+    if (!trimmed && !workflowContext) {
+      return;
+    }
+    setLatestAutoContext({
+      answerContext: trimmed || null,
+      workflowContext
+    });
+  }, [linkedContext]);
 
   useEffect(() => {
     const trimmed = String(autoReply?.answerContext || "").trim();
@@ -483,7 +509,7 @@ function AssistantLayerContent({ AssistantComponent, language, autoReply, assist
   );
 }
 
-function IsolatedAssistantLayer({ language, autoReply, assistantSessionId, onAssistantSessionIdChange }) {
+function IsolatedAssistantLayer({ language, autoReply, linkedContext, assistantSessionId, onAssistantSessionIdChange }) {
   const [instanceKey, setInstanceKey] = useState(0);
   const [AssistantComponent, setAssistantComponent] = useState(null);
   const [loadError, setLoadError] = useState("");
@@ -537,6 +563,7 @@ function IsolatedAssistantLayer({ language, autoReply, assistantSessionId, onAss
           AssistantComponent={AssistantComponent}
           language={language}
           autoReply={autoReply}
+          linkedContext={linkedContext}
           assistantSessionId={assistantSessionId}
           onAssistantSessionIdChange={onAssistantSessionIdChange}
         />
@@ -563,10 +590,12 @@ function getInitialLanguage() {
 }
 
 function buildDefaultState(config) {
+  const translationConfig = config.paper_reader_translation || config.paper_reader_chat;
   return {
     query_chat: { ...config.query_chat, api_key: "", clear_api_key: false },
     answer_chat: { ...config.answer_chat, api_key: "", clear_api_key: false },
     paper_reader_chat: { ...config.paper_reader_chat, api_key: "", clear_api_key: false },
+    paper_reader_translation: { ...translationConfig, api_key: "", clear_api_key: false },
     embedding: { ...config.embedding },
     retrieval: {
       ...config.retrieval,
@@ -603,6 +632,13 @@ function buildRuntimeRequest(settings) {
       api_key: settings.paper_reader_chat.api_key || null,
       clear_api_key: settings.paper_reader_chat.clear_api_key,
       max_context_tokens: Number(settings.paper_reader_chat.max_context_tokens)
+    },
+    paper_reader_translation: {
+      provider: settings.paper_reader_translation.provider,
+      model: settings.paper_reader_translation.model,
+      base_url: settings.paper_reader_translation.base_url || null,
+      api_key: settings.paper_reader_translation.api_key || null,
+      clear_api_key: settings.paper_reader_translation.clear_api_key
     },
     embedding: {
       api_url: settings.embedding.api_url,
@@ -822,7 +858,17 @@ function EventLog({ lines, t }) {
   );
 }
 
-function PaperList({ papers, t }) {
+function buildPaperReaderUrl(paper) {
+  if (paper?.external_url && /arxiv\.org\/(abs|pdf)\//i.test(paper.external_url)) {
+    return paper.external_url;
+  }
+  if (paper?.arxiv_id) {
+    return `https://arxiv.org/abs/${String(paper.arxiv_id).replace(/^arxiv:/i, "")}`;
+  }
+  return "";
+}
+
+function PaperList({ papers, t, onReadPaper }) {
   if (!papers.length) {
     return <p className="muted">{t("noPapers")}</p>;
   }
@@ -849,10 +895,21 @@ function PaperList({ papers, t }) {
             {t("method")}: {paper.method}
           </p>
           {paper.external_url ? (
-            <p>
+            <p className="paper-card-actions">
               <a href={paper.external_url} target="_blank" rel="noreferrer">
                 {t("openSource")}
               </a>
+              {buildPaperReaderUrl(paper) ? (
+                <button type="button" className="secondary" onClick={() => onReadPaper?.(buildPaperReaderUrl(paper))}>
+                  {t("readPaper")}
+                </button>
+              ) : null}
+            </p>
+          ) : buildPaperReaderUrl(paper) ? (
+            <p className="paper-card-actions">
+              <button type="button" className="secondary" onClick={() => onReadPaper?.(buildPaperReaderUrl(paper))}>
+                {t("readPaper")}
+              </button>
             </p>
           ) : null}
         </article>
@@ -862,6 +919,20 @@ function PaperList({ papers, t }) {
 }
 
 function ModelSelectorField({ listId, value, onChange, models, loading, error, onFetch, t, language }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasModels = models.length > 0;
+
+  useEffect(() => {
+    if (!hasModels) {
+      setExpanded(false);
+    }
+  }, [hasModels]);
+
+  function selectModel(model) {
+    onChange(model);
+    setExpanded(false);
+  }
+
   return (
     <div className="model-selector-group">
       <label>
@@ -877,8 +948,37 @@ function ModelSelectorField({ listId, value, onChange, models, loading, error, o
         <button type="button" className="secondary" onClick={onFetch} disabled={loading}>
           {loading ? t("loadingModels") : t("fetchModels")}
         </button>
-        {models.length ? <span className="muted">{formatFetchedModelsLabel(language, models.length)}</span> : null}
+        {hasModels ? (
+          <button
+            type="button"
+            className="secondary model-list-toggle"
+            onClick={() => setExpanded((current) => !current)}
+            aria-expanded={expanded}
+            aria-controls={`${listId}-model-list`}
+          >
+            {expanded ? t("hideModelList") : t("showModelList")}
+          </button>
+        ) : null}
+        {hasModels ? <span className="muted">{formatFetchedModelsLabel(language, models.length)}</span> : null}
       </div>
+      {hasModels && expanded ? (
+        <div id={`${listId}-model-list`} className="model-option-list" role="listbox" aria-label={t("fetchedModels")}>
+          {models.map((model) => (
+            <button
+              key={model}
+              type="button"
+              className={`model-option${model === value ? " active" : ""}`}
+              onClick={() => selectModel(model)}
+              role="option"
+              aria-selected={model === value}
+              title={model}
+            >
+              <span>{model}</span>
+              <small>{t("selectModel")}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {error ? <p className="field-error">{error}</p> : null}
     </div>
   );
@@ -1091,6 +1191,10 @@ export default function App() {
   const [warnings, setWarnings] = useState([]);
   const [answer, setAnswer] = useState("");
   const [assistantAutoReply, setAssistantAutoReply] = useState(null);
+  const [assistantLinkedContext, setAssistantLinkedContext] = useState({
+    answerContext: null,
+    workflowContext: null
+  });
   const [assistantSessionId, setAssistantSessionId] = useState(getOrCreateAssistantSessionId);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -1115,6 +1219,7 @@ export default function App() {
   const [sourceFreshness, setSourceFreshness] = useState({});
   const [ingestStatus, setIngestStatus] = useState(null);
   const [ingestLogs, setIngestLogs] = useState([]);
+  const [pendingPaperReaderUrl, setPendingPaperReaderUrl] = useState("");
   const answerSourceRef = useRef(null);
   const answerBufferRef = useRef("");
   const ingestSourceRef = useRef(null);
@@ -1212,7 +1317,10 @@ export default function App() {
       [section]: { ...current[section], [key]: value }
     }));
     if (
-      (section === "query_chat" || section === "answer_chat" || section === "paper_reader_chat") &&
+      (section === "query_chat" ||
+        section === "answer_chat" ||
+        section === "paper_reader_chat" ||
+        section === "paper_reader_translation") &&
       ["provider", "base_url", "api_key", "clear_api_key"].includes(key)
     ) {
       setModelCatalogs((current) => ({
@@ -1254,10 +1362,26 @@ export default function App() {
     if (!trimmed) {
       return;
     }
+    setAssistantLinkedContext({
+      answerContext: trimmed,
+      workflowContext
+    });
     setAssistantAutoReply({
       id: `${source}-${Date.now()}`,
       source,
       answerContext: trimmed,
+      workflowContext
+    });
+  }
+
+  function updateAssistantLinkedContext(context) {
+    const trimmed = trimAssistantAnswerContext(context?.answerContext);
+    const workflowContext =
+      context?.workflowContext && typeof context.workflowContext === "object" && !Array.isArray(context.workflowContext)
+        ? context.workflowContext
+        : null;
+    setAssistantLinkedContext({
+      answerContext: trimmed || null,
       workflowContext
     });
   }
@@ -1267,6 +1391,7 @@ export default function App() {
       <IsolatedAssistantLayer
         language={language}
         autoReply={assistantAutoReply}
+        linkedContext={assistantLinkedContext}
         assistantSessionId={assistantSessionId}
         onAssistantSessionIdChange={setAssistantSessionIdWithPersistence}
       />
@@ -1522,6 +1647,15 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function openPaperReaderFromSearch(url) {
+    const resolvedUrl = String(url || "").trim();
+    if (!resolvedUrl) {
+      return;
+    }
+    setPendingPaperReaderUrl(resolvedUrl);
+    setActiveTab("paper_reader");
   }
 
   async function resolveTraceTarget() {
@@ -1837,7 +1971,7 @@ export default function App() {
 
             <section>
               <h3>{workspaceMode === "qa" ? t("topPapers") : t("priorPaperCandidates")}</h3>
-              <PaperList papers={papers} t={t} />
+              <PaperList papers={papers} t={t} onReadPaper={openPaperReaderFromSearch} />
             </section>
 
             <section>
@@ -1858,8 +1992,10 @@ export default function App() {
           t={t}
           settings={settings}
           runtimePayload={runtimePayload}
+          initialArxivUrl={pendingPaperReaderUrl}
+          onInitialArxivUrlConsumed={() => setPendingPaperReaderUrl("")}
           renderAssistantLayer={renderAssistantLayer}
-          onScheduleAssistantAutoReply={scheduleAssistantAutoReply}
+          onAssistantContextChange={updateAssistantLinkedContext}
         />
       ) : null}
 
@@ -1941,6 +2077,17 @@ export default function App() {
                 />
               </label>
             </ChatConfigSection>
+            <ChatConfigSection
+              title={t("paperReaderTranslationModel")}
+              config={settings.paper_reader_translation}
+              onChange={(key, value) => updateNested("paper_reader_translation", key, value)}
+              t={t}
+              language={language}
+              providerOptions={providerOptions}
+              modelCatalog={modelCatalogs.paper_reader_translation}
+              onFetchModels={() => fetchAvailableModels("paper_reader_translation")}
+              modelListId="paper-reader-translation-models"
+            />
             <section className="config-section">
               <h3>{t("embedding")}</h3>
               <label>

@@ -87,6 +87,36 @@ function normalizeStatus(value) {
   return status || "queued";
 }
 
+const PAPER_READER_DISCIPLINE_OPTIONS = [
+  { value: "auto", zh: "自动识别", en: "Auto detect" },
+  { value: "general", zh: "通用论文", en: "General" },
+  { value: "science_engineering", zh: "科学/工程论文", en: "Science / engineering" },
+  { value: "mathematics", zh: "数学文章", en: "Mathematics" },
+  { value: "medicine_biology", zh: "医学/生物文章", en: "Medicine / biology" },
+  { value: "economics_social_science", zh: "经济/社会科学文章", en: "Economics / social science" },
+  { value: "philosophy_humanities", zh: "哲学/人文文章", en: "Philosophy / humanities" },
+  { value: "policy_law", zh: "政策/法律文章", en: "Policy / law" }
+];
+
+function normalizeDiscipline(value, fallback = "general") {
+  const normalized = String(value || "").trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+  return PAPER_READER_DISCIPLINE_OPTIONS.some((option) => option.value === normalized) ? normalized : fallback;
+}
+
+function getDisciplineLabel(value, language) {
+  const normalized = normalizeDiscipline(value, "general");
+  const option = PAPER_READER_DISCIPLINE_OPTIONS.find((item) => item.value === normalized);
+  return option ? option[language === "zh" ? "zh" : "en"] : normalized;
+}
+
+function getDisciplineSourceLabel(source, language) {
+  const normalized = String(source || "").trim().toLowerCase();
+  if (language === "zh") {
+    return normalized === "manual" ? "手动选择" : "自动识别";
+  }
+  return normalized === "manual" ? "manual" : "auto detected";
+}
+
 function toArray(raw) {
   if (Array.isArray(raw)) {
     return raw;
@@ -322,6 +352,70 @@ function normalizeStructuredText(raw) {
   };
 }
 
+function sameNormalizedReadingText(left, right) {
+  const leftKey = sanitizeText(left).toLocaleLowerCase();
+  const rightKey = sanitizeText(right).toLocaleLowerCase();
+  return Boolean(leftKey && rightKey && leftKey === rightKey);
+}
+
+function localizedReadingText(value, original) {
+  const text = sanitizeText(value);
+  if (!text || sameNormalizedReadingText(text, original)) {
+    return "";
+  }
+  return text;
+}
+
+function normalizeReadingBlocks(raw) {
+  return toArray(raw)
+    .map((item, index) => {
+      if (typeof item === "string") {
+        const text = sanitizeText(item);
+        return text
+          ? {
+              chunk_id: `reading-block-${index + 1}`,
+              source_label: `Section ${index + 1}`,
+              page_start: null,
+              page_end: null,
+              original_en: text,
+              explanation: "",
+              display_text: ""
+            }
+          : null;
+      }
+      if (!isPlainObject(item)) {
+        return null;
+      }
+      const original = firstNonEmpty(
+        item.original_en,
+        item.originalEn,
+        item.original_text,
+        item.originalText,
+        item.text,
+        item.content
+      );
+      const explanation = localizedReadingText(
+        firstNonEmpty(item.explanation, item.translation, item.localized_explanation, item.localizedExplanation),
+        original
+      );
+      const displayText = localizedReadingText(firstNonEmpty(item.display_text, item.displayText), original) || explanation;
+      const chunkId = firstNonEmpty(item.chunk_id, item.chunkId, item.id, `reading-block-${index + 1}`);
+      if (!original && !displayText) {
+        return null;
+      }
+      return {
+        chunk_id: chunkId,
+        source_label: firstNonEmpty(item.source_label, item.sourceLabel, item.label, item.section_title, item.sectionTitle, `Section ${index + 1}`),
+        page_start: item.page_start ?? item.pageStart ?? null,
+        page_end: item.page_end ?? item.pageEnd ?? null,
+        original_en: original || displayText,
+        explanation,
+        display_text: displayText
+      };
+    })
+    .filter(Boolean);
+}
+
 function normalizeStructuredStatus(raw) {
   if (!isPlainObject(raw)) {
     return {
@@ -366,6 +460,213 @@ function normalizeSourceSections(raw) {
     .filter(Boolean);
 }
 
+function normalizeIndexNode(raw) {
+  if (!isPlainObject(raw)) {
+    return null;
+  }
+  const nodeId = firstNonEmpty(raw.node_id, raw.nodeId, raw.id, raw.key);
+  const title = firstNonEmpty(raw.title, raw.label, raw.name);
+  if (!nodeId || !title) {
+    return null;
+  }
+  const children = toArray(raw.children || raw.nodes || raw.items)
+    .map((item) => normalizeIndexNode(item))
+    .filter(Boolean);
+  return {
+    node_id: nodeId,
+    title,
+    summary: firstNonEmpty(raw.summary, raw.description, raw.text),
+    reading_focus_key: firstNonEmpty(raw.reading_focus_key, raw.readingFocusKey, raw.focus_key, raw.focusKey),
+    page_start: raw.page_start ?? raw.pageStart ?? null,
+    page_end: raw.page_end ?? raw.pageEnd ?? null,
+    page_indices: toArray(raw.page_indices || raw.pageIndices)
+      .map((item) => toNumber(item, null))
+      .filter((item) => item != null),
+    chunk_ids: toArray(raw.chunk_ids || raw.chunkIds)
+      .map((item) => sanitizeText(item))
+      .filter(Boolean),
+    children
+  };
+}
+
+function flattenIndexNodes(root) {
+  if (!root) {
+    return [];
+  }
+  return [root, ...toArray(root.children).flatMap((child) => flattenIndexNodes(child))];
+}
+
+function normalizeSelectedNodes(raw) {
+  return toArray(raw)
+    .map((item) => {
+      if (!isPlainObject(item)) {
+        return null;
+      }
+      const nodeId = firstNonEmpty(item.node_id, item.nodeId, item.id);
+      const title = firstNonEmpty(item.title, item.label, item.name);
+      if (!nodeId || !title) {
+        return null;
+      }
+      return {
+        node_id: nodeId,
+        title,
+        summary: firstNonEmpty(item.summary, item.description),
+        page_start: item.page_start ?? item.pageStart ?? null,
+        page_end: item.page_end ?? item.pageEnd ?? null,
+        page_indices: toArray(item.page_indices || item.pageIndices)
+          .map((value) => toNumber(value, null))
+          .filter((value) => value != null),
+        reason: firstNonEmpty(item.reason, item.why)
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeStoryStage(raw) {
+  if (!isPlainObject(raw)) {
+    return null;
+  }
+  const title = firstNonEmpty(raw.title, raw.name, raw.label);
+  if (!title) {
+    return null;
+  }
+  return {
+    key: firstNonEmpty(raw.key, raw.id, "reading_stage"),
+    title,
+    description: firstNonEmpty(raw.description, raw.summary, raw.text)
+  };
+}
+
+function normalizeBlackboardNotes(raw) {
+  if (!isPlainObject(raw)) {
+    return null;
+  }
+  const notes = {
+    core_concepts: normalizeList(raw.core_concepts || raw.coreConcepts || raw.concepts),
+    method_steps: normalizeList(raw.method_steps || raw.methodSteps || raw.steps),
+    experiment_takeaways: normalizeList(raw.experiment_takeaways || raw.experimentTakeaways || raw.results || raw.evidence),
+    takeaway: firstNonEmpty(raw.takeaway, raw.summary, raw.text)
+  };
+  if (
+    !notes.core_concepts.length &&
+    !notes.method_steps.length &&
+    !notes.experiment_takeaways.length &&
+    !notes.takeaway
+  ) {
+    return null;
+  }
+  return notes;
+}
+
+function normalizeDisciplineGuide(raw) {
+  if (!isPlainObject(raw)) {
+    return null;
+  }
+  const discipline = normalizeDiscipline(raw.discipline, "general");
+  const panels = toArray(raw.panels || raw.sections || raw.items)
+    .map((item, index) => {
+      if (!isPlainObject(item)) {
+        const text = sanitizeText(item);
+        return text
+          ? {
+              key: `panel_${index + 1}`,
+              title: `Panel ${index + 1}`,
+              items: [text],
+              takeaway: ""
+            }
+          : null;
+      }
+      const title = firstNonEmpty(item.title, item.label, item.name, `Panel ${index + 1}`);
+      const items = normalizeList(item.items || item.points || item.bullets || item.children);
+      const takeaway = firstNonEmpty(item.takeaway, item.summary, item.text);
+      if (!title || (!items.length && !takeaway)) {
+        return null;
+      }
+      return {
+        key: firstNonEmpty(item.key, item.id, `panel_${index + 1}`),
+        title,
+        items,
+        takeaway
+      };
+    })
+    .filter(Boolean);
+  if (!panels.length) {
+    return null;
+  }
+  return {
+    discipline,
+    title: firstNonEmpty(raw.title, raw.heading, getDisciplineLabel(discipline, "en")),
+    panels
+  };
+}
+
+function normalizeGlossaryTerms(raw) {
+  return toArray(raw)
+    .map((item) => {
+      if (!isPlainObject(item)) {
+        return null;
+      }
+      const term = firstNonEmpty(item.term, item.name, item.symbol);
+      const explanation = firstNonEmpty(item.explanation, item.meaning, item.description, item.text);
+      if (!term || !explanation) {
+        return null;
+      }
+      return {
+        term,
+        explanation,
+        source: firstNonEmpty(item.source, item.background ? "background" : "paper"),
+        citation: normalizeCitations(item.citation ? [item.citation] : item.citations)[0] || null
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeReadingHints(raw) {
+  return toArray(raw)
+    .map((item) => {
+      if (typeof item === "string") {
+        const text = sanitizeText(item);
+        return text ? { kind: "must_know", text, reason: "" } : null;
+      }
+      if (!isPlainObject(item)) {
+        return null;
+      }
+      const text = firstNonEmpty(item.text, item.title, item.summary);
+      if (!text) {
+        return null;
+      }
+      const kind = firstNonEmpty(item.kind, item.type, "must_know").replaceAll("-", "_");
+      return {
+        kind: ["must_know", "skim", "advanced"].includes(kind) ? kind : "must_know",
+        text,
+        reason: firstNonEmpty(item.reason, item.why, item.description)
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeCheckpoints(raw) {
+  return toArray(raw)
+    .map((item, index) => {
+      if (!isPlainObject(item)) {
+        return null;
+      }
+      const question = firstNonEmpty(item.question, item.prompt);
+      const answer = firstNonEmpty(item.answer, item.reference_answer, item.referenceAnswer, item.solution);
+      if (!question || !answer) {
+        return null;
+      }
+      return {
+        id: firstNonEmpty(item.id, `checkpoint-${index + 1}`),
+        question,
+        answer,
+        review_hint: firstNonEmpty(item.review_hint, item.reviewHint, item.hint, item.look_back, item.lookBack),
+        source_page_index: item.source_page_index ?? item.sourcePageIndex ?? null
+      };
+    })
+    .filter(Boolean);
+}
+
 function firstSentence(text, maxLength = 180) {
   const normalized = sanitizeText(text);
   if (!normalized) {
@@ -373,6 +674,10 @@ function firstSentence(text, maxLength = 180) {
   }
   const first = normalized.split(/(?<=[。！？.!?])\s+/)[0] || normalized;
   return first.length > maxLength ? `${first.slice(0, maxLength).trim()}...` : first;
+}
+
+function exactTextKey(value) {
+  return sanitizeText(value).replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function normalizeWhyItems(raw) {
@@ -407,6 +712,8 @@ function normalizeWhyItems(raw) {
         item.text,
         item.note,
         item.reason,
+        item.display_text,
+        item.displayText,
         contentPair.explanation,
         contentPair.original
       );
@@ -415,12 +722,59 @@ function normalizeWhyItems(raw) {
     .filter(Boolean);
 }
 
-function ensureWhyItems(items, explanationText) {
-  if (items?.length) {
-    return items;
+function dedupeWhyItems(items, duplicateCandidates = []) {
+  const duplicateKeys = new Set(duplicateCandidates.map((item) => exactTextKey(item)).filter(Boolean));
+  const seen = new Set();
+  return toArray(items)
+    .filter(Boolean)
+    .filter((item) => {
+      const key = exactTextKey(firstNonEmpty(item.explanation, item.original));
+      if (!key || duplicateKeys.has(key) || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+}
+
+function cleanWhyItems(items, duplicateCandidates = []) {
+  return dedupeWhyItems(normalizeWhyItems(items), duplicateCandidates).slice(0, 2);
+}
+
+function evidenceDuplicateCandidates({ originalText, explanationText, summaryBlock, evidenceBlocks, supportingPoints }) {
+  return [
+    originalText,
+    explanationText,
+    summaryBlock?.original_en,
+    summaryBlock?.explanation,
+    summaryBlock?.display_text,
+    ...toArray(evidenceBlocks).flatMap((block) => [block?.original_en, block?.explanation, block?.display_text]),
+    ...toArray(supportingPoints)
+  ];
+}
+
+function BilingualReaderBlock({ block, original, explanation, copy, compact = false }) {
+  const originalText = firstNonEmpty(original, block?.original_en, copy.noOriginal);
+  const explanationText = firstNonEmpty(explanation, block?.explanation, block?.display_text, copy.noExplanation);
+  return (
+    <div className={`reader-bilingual-block${compact ? " reader-bilingual-block-compact" : ""}`}>
+      <div className="reader-bilingual-primary">
+        <span className="reader-tone-label">{copy.explanationLabel}</span>
+        <p>{explanationText}</p>
+      </div>
+      <details className="reader-original-disclosure">
+        <summary>{copy.showOriginalLabel}</summary>
+        <p>{originalText}</p>
+      </details>
+    </div>
+  );
+}
+
+function scrollToReaderModule(moduleId) {
+  const target = document.getElementById(moduleId);
+  if (target) {
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
   }
-  const fallback = firstSentence(explanationText);
-  return fallback ? [{ original: "", explanation: fallback }] : [];
 }
 
 function stripPageCountSuffix(title) {
@@ -498,9 +852,10 @@ function normalizeInsightCard(raw, index, fallback = {}) {
       eyebrow: firstNonEmpty(fallback.eyebrow),
       original_text: originalText,
       explanation_text: explanationText,
-      why_it_matters: ensureWhyItems(fallback.why_it_matters || [], explanationText),
+      why_it_matters: cleanWhyItems(fallback.why_it_matters || [], [originalText, explanationText]),
       citations: fallback.citations || [],
       supporting_points: fallback.supporting_points || [],
+      source_chunk_ids: fallback.source_chunk_ids || [],
       source_section_labels: fallback.source_section_labels || []
     };
   }
@@ -518,7 +873,10 @@ function normalizeInsightCard(raw, index, fallback = {}) {
   const sourceSectionLabels = toArray(raw.source_section_labels || raw.sourceSectionLabels)
     .map((item) => sanitizeText(item))
     .filter(Boolean);
-  const whyItems = normalizeWhyItems(
+  const sourceChunkIds = toArray(raw.source_chunk_ids || raw.sourceChunkIds || raw.chunk_ids || raw.chunkIds)
+    .map((item) => sanitizeText(item))
+    .filter(Boolean);
+  const rawWhyItems =
     raw.why_it_matters ||
       raw.whyItMatters ||
       raw.significance ||
@@ -526,8 +884,7 @@ function normalizeInsightCard(raw, index, fallback = {}) {
       raw.takeaway ||
       raw.takeaways ||
       raw.relevance ||
-      raw.notes
-  );
+      raw.notes;
 
   const originalText = firstNonEmpty(
     raw.original_text,
@@ -575,12 +932,6 @@ function normalizeInsightCard(raw, index, fallback = {}) {
     return null;
   }
 
-  const derivedWhyItems = evidenceBlocks
-    .map((block) => ({
-      original: firstNonEmpty(block?.original_en),
-      explanation: firstNonEmpty(block?.explanation, block?.display_text)
-    }))
-    .filter((item) => item.explanation);
   const supportingPoints = evidenceBlocks
     .map((block) => firstNonEmpty(block?.explanation, block?.display_text, block?.original_en))
     .filter(Boolean)
@@ -601,12 +952,16 @@ function normalizeInsightCard(raw, index, fallback = {}) {
     ),
     original_text: originalText,
     explanation_text: explanationText,
-    why_it_matters: ensureWhyItems(
-      whyItems.length ? whyItems : derivedWhyItems.length ? derivedWhyItems : fallback.why_it_matters || [],
-      explanationText
-    ),
+    why_it_matters: cleanWhyItems(rawWhyItems || fallback.why_it_matters || [], evidenceDuplicateCandidates({
+      originalText,
+      explanationText,
+      summaryBlock,
+      evidenceBlocks,
+      supportingPoints
+    })),
     citations: citations.length ? citations : fallback.citations || [],
     supporting_points: supportingPoints.length ? supportingPoints : fallback.supporting_points || [],
+    source_chunk_ids: sourceChunkIds.length ? sourceChunkIds : fallback.source_chunk_ids || [],
     source_section_labels: sourceSectionLabels.length ? sourceSectionLabels : fallback.source_section_labels || []
   };
 }
@@ -623,7 +978,6 @@ function buildLegacyInsightCards({
   citations
 }) {
   const summaryPair = splitReaderContent(firstNonEmpty(summary, text));
-  const sharedWhyItems = [...normalizeWhyItems(keyPoints), ...normalizeWhyItems(limitations)];
   const citationFallbackText = firstNonEmpty(
     citations.map((citation) => firstNonEmpty(citation.excerpt, citation.text))
   );
@@ -631,7 +985,6 @@ function buildLegacyInsightCards({
   const sectionCards = sections
     .map((section, index) => {
       const pair = splitReaderContent(section.text);
-      const sectionWhy = normalizeWhyItems(section.bullets);
       const sectionCitations = section.citations?.length ? section.citations : citations;
       const originalText = firstNonEmpty(
         pair.original,
@@ -640,7 +993,7 @@ function buildLegacyInsightCards({
         citationFallbackText
       );
       const explanationText = firstNonEmpty(pair.explanation, summaryPair.explanation, summaryPair.original);
-      if (!originalText && !explanationText && !sectionWhy.length) {
+      if (!originalText && !explanationText) {
         return null;
       }
       return {
@@ -649,9 +1002,10 @@ function buildLegacyInsightCards({
         eyebrow: index === 0 ? firstNonEmpty(bucketLabel) : "",
         original_text: originalText,
         explanation_text: explanationText,
-        why_it_matters: ensureWhyItems(sectionWhy.length ? sectionWhy : sharedWhyItems.slice(0, 2), explanationText),
+        why_it_matters: [],
         citations: sectionCitations.slice(0, 4),
         supporting_points: section.bullets?.slice(0, 3) || [],
+        source_chunk_ids: [],
         source_section_labels: [section.title].filter(Boolean)
       };
     })
@@ -672,9 +1026,10 @@ function buildLegacyInsightCards({
       eyebrow: "",
       original_text: leadOriginal,
       explanation_text: leadExplanation,
-      why_it_matters: ensureWhyItems(sharedWhyItems.slice(0, 2), leadExplanation || leadOriginal),
+      why_it_matters: [],
       citations: citations.slice(0, 4),
       supporting_points: [...normalizeList(keyPoints), ...normalizeList(limitations)].slice(0, 3),
+      source_chunk_ids: [],
       source_section_labels: [bucketLabel].filter(Boolean)
     });
   }
@@ -693,9 +1048,10 @@ function buildLegacyInsightCards({
         eyebrow: firstNonEmpty(bucketLabel),
         original_text: originalText,
         explanation_text: explanationText,
-        why_it_matters: ensureWhyItems(sharedWhyItems.slice(0, 2), explanationText),
+        why_it_matters: [],
         citations: citations.slice(0, 4),
         supporting_points: [],
+        source_chunk_ids: [],
         source_section_labels: [bucketLabel].filter(Boolean)
       });
     });
@@ -734,7 +1090,6 @@ function normalizeInsightCards({
 
   if (structuredInsights.length) {
     const summaryPair = splitReaderContent(firstNonEmpty(summary, text));
-    const fallbackWhy = [...normalizeWhyItems(keyPoints), ...normalizeWhyItems(limitations)].slice(0, 2);
     const normalized = structuredInsights
       .map((item, index) =>
         normalizeInsightCard(item, index, {
@@ -743,7 +1098,7 @@ function normalizeInsightCards({
           eyebrow: bucketLabel,
           original_text: summaryPair.original,
           explanation_text: summaryPair.explanation,
-          why_it_matters: fallbackWhy,
+          why_it_matters: [],
           citations: citations.slice(0, 4)
         })
       )
@@ -782,8 +1137,17 @@ function mergePageEntry(base, update) {
     limitations: update.limitations?.length ? update.limitations : base.limitations || [],
     insights: update.insights?.length ? update.insights : base.insights || [],
     citations: update.citations?.length ? update.citations : base.citations || [],
+    reading_blocks: update.reading_blocks?.length ? update.reading_blocks : base.reading_blocks || [],
     source_sections: update.source_sections?.length ? update.source_sections : base.source_sections || [],
+    source_node_ids: update.source_node_ids?.length ? update.source_node_ids : base.source_node_ids || [],
     page_overview: update.page_overview || base.page_overview || null,
+    mentor_script: update.mentor_script?.length ? update.mentor_script : base.mentor_script || [],
+    blackboard_notes: update.blackboard_notes || base.blackboard_notes || null,
+    discipline_guide: update.discipline_guide || base.discipline_guide || null,
+    story_stage: update.story_stage || base.story_stage || null,
+    glossary_terms: update.glossary_terms?.length ? update.glossary_terms : base.glossary_terms || [],
+    reading_hints: update.reading_hints?.length ? update.reading_hints : base.reading_hints || [],
+    checkpoints: update.checkpoints?.length ? update.checkpoints : base.checkpoints || [],
     structured_status:
       update.structured_status?.state && update.structured_status.state !== "pending"
         ? update.structured_status
@@ -823,6 +1187,17 @@ function normalizePageEntry(raw, fallbackIndex = 0) {
             citations: []
           }),
           citations: [],
+          reading_blocks: [
+            {
+              chunk_id: `page-${fallbackIndex}-text`,
+              source_label: `Page ${fallbackIndex + 1}`,
+              page_start: null,
+              page_end: null,
+              original_en: text,
+              explanation: "",
+              display_text: ""
+            }
+          ],
           error: ""
         }
       : null;
@@ -864,6 +1239,31 @@ function normalizePageEntry(raw, fallbackIndex = 0) {
   const sourceSections = normalizeSourceSections(
     raw.source_sections || raw.sourceSections || nestedContent?.source_sections || nestedContent?.sourceSections
   );
+  const readingBlocks = normalizeReadingBlocks(
+    raw.reading_blocks || raw.readingBlocks || nestedContent?.reading_blocks || nestedContent?.readingBlocks
+  );
+  const mentorScript = toArray(raw.mentor_script || raw.mentorScript || nestedContent?.mentor_script || nestedContent?.mentorScript)
+    .map((item) => normalizeStructuredText(item))
+    .filter(Boolean);
+  const blackboardNotes = normalizeBlackboardNotes(
+    raw.blackboard_notes || raw.blackboardNotes || nestedContent?.blackboard_notes || nestedContent?.blackboardNotes
+  );
+  const disciplineGuide = normalizeDisciplineGuide(
+    raw.discipline_guide || raw.disciplineGuide || nestedContent?.discipline_guide || nestedContent?.disciplineGuide
+  );
+  const storyStage = normalizeStoryStage(raw.story_stage || raw.storyStage || nestedContent?.story_stage || nestedContent?.storyStage);
+  const glossaryTerms = normalizeGlossaryTerms(
+    raw.glossary_terms || raw.glossaryTerms || nestedContent?.glossary_terms || nestedContent?.glossaryTerms
+  );
+  const readingHints = normalizeReadingHints(
+    raw.reading_hints || raw.readingHints || nestedContent?.reading_hints || nestedContent?.readingHints
+  );
+  const checkpoints = normalizeCheckpoints(
+    raw.checkpoints || raw.quiz || nestedContent?.checkpoints || nestedContent?.quiz
+  );
+  const sourceNodeIds = toArray(raw.source_node_ids || raw.sourceNodeIds || nestedContent?.source_node_ids || nestedContent?.sourceNodeIds)
+    .map((item) => sanitizeText(item))
+    .filter(Boolean);
   const summary = firstNonEmpty(
     pageOverview?.display_text,
     raw.summary,
@@ -903,7 +1303,30 @@ function normalizePageEntry(raw, fallbackIndex = 0) {
     bucket_label: bucketLabel,
     page_overview: pageOverview,
     structured_status: structuredStatus,
+    reading_blocks: readingBlocks.length
+      ? readingBlocks
+      : text
+        ? [
+            {
+              chunk_id: `page-${pageIndex}-text`,
+              source_label: firstNonEmpty(raw.section_title, raw.sectionTitle, nestedContent?.section_title, nestedContent?.sectionTitle, title),
+              page_start: raw.page_start ?? raw.pageStart ?? nestedContent?.page_start ?? nestedContent?.pageStart ?? null,
+              page_end: raw.page_end ?? raw.pageEnd ?? nestedContent?.page_end ?? nestedContent?.pageEnd ?? null,
+              original_en: text,
+              explanation: "",
+              display_text: ""
+            }
+          ]
+        : [],
     source_sections: sourceSections,
+    source_node_ids: sourceNodeIds,
+    mentor_script: mentorScript,
+    blackboard_notes: blackboardNotes,
+    discipline_guide: disciplineGuide,
+    story_stage: storyStage,
+    glossary_terms: glossaryTerms,
+    reading_hints: readingHints,
+    checkpoints,
     section_title: firstNonEmpty(raw.section_title, raw.sectionTitle, nestedContent?.section_title, nestedContent?.sectionTitle),
     page_start: raw.page_start ?? raw.pageStart ?? nestedContent?.page_start ?? nestedContent?.pageStart ?? null,
     page_end: raw.page_end ?? raw.pageEnd ?? nestedContent?.page_end ?? nestedContent?.pageEnd ?? null,
@@ -932,6 +1355,7 @@ function normalizeSession(raw) {
       : Array.isArray(raw.page_list)
         ? raw.page_list
         : [];
+  const indexTree = normalizeIndexNode(raw.index_tree || raw.indexTree || raw.paper_map || raw.paperMap);
   return {
     session_id: firstNonEmpty(raw.session_id, raw.sessionId, raw.id),
     status: normalizeStatus(raw.session_status ?? raw.status ?? raw.state),
@@ -944,10 +1368,15 @@ function normalizeSession(raw) {
     authors: Array.isArray(raw.authors) ? raw.authors.map((item) => sanitizeText(item)).filter(Boolean) : [],
     published_date: firstNonEmpty(raw.published_date, raw.publishedDate),
     answer_language: firstNonEmpty(raw.answer_language, raw.answerLanguage),
+    reader_mode: firstNonEmpty(raw.reader_mode, raw.readerMode, "guided"),
+    discipline: normalizeDiscipline(raw.discipline ?? raw.paper_discipline ?? raw.paperDiscipline, "general"),
+    discipline_source: firstNonEmpty(raw.discipline_source, raw.disciplineSource, "auto"),
     max_context_tokens: toNumber(raw.max_context_tokens ?? raw.maxContextTokens ?? 0, 0),
     page_input_budget: toNumber(raw.page_input_budget ?? raw.pageInputBudget ?? 0, 0),
     current_page_index: toNumber(raw.current_page_index ?? raw.currentPageIndex ?? raw.page_index ?? 0, 0),
     page_count: toNumber(raw.page_count ?? raw.pageCount ?? pagesRaw.length, pagesRaw.length),
+    index_status: firstNonEmpty(raw.index_status, raw.indexStatus, indexTree ? "ready" : "fallback"),
+    index_tree: indexTree,
     pages: pagesRaw
       .map((page, index) => normalizePageEntry(page, index))
       .filter(Boolean)
@@ -956,24 +1385,30 @@ function normalizeSession(raw) {
   };
 }
 
-function normalizeChatResponse(raw) {
-  return {
-    reply_text: firstNonEmpty(raw?.reply_text, raw?.answer, raw?.answer_text, raw?.content),
-    speak_text: firstNonEmpty(raw?.speak_text, raw?.reply_text, raw?.answer, raw?.answer_text, raw?.content),
-    session_id: firstNonEmpty(raw?.session_id, raw?.sessionId),
-    expression: firstNonEmpty(raw?.expression, raw?.face, raw?.emotion),
-    memory_used: Boolean(raw?.memory_used),
-    memory_notice: firstNonEmpty(raw?.memory_notice, raw?.memoryNotice),
-    used_memory_items: Array.isArray(raw?.used_memory_items) ? raw.used_memory_items : Array.isArray(raw?.usedMemoryItems) ? raw.usedMemoryItems : [],
-    citations: normalizeCitations(raw?.citations),
-    used_chunks: Array.isArray(raw?.used_chunks) ? raw.used_chunks : Array.isArray(raw?.usedChunks) ? raw.usedChunks : []
-  };
-}
-
 function extractAssistantContextText(page) {
   return firstNonEmpty(
+    page?.reading_blocks
+      ?.map((block) =>
+        [
+          block.source_label,
+          formatPageRange(block.page_start, block.page_end, { sourcePages: "pages" }),
+          block.original_en,
+          block.explanation
+        ]
+          .filter(Boolean)
+          .join("\n")
+      )
+      .filter(Boolean)
+      .join("\n\n"),
     page?.page_overview?.display_text,
     page?.page_overview?.explanation,
+    page?.mentor_script?.map((item) => firstNonEmpty(item.explanation, item.display_text, item.original_en)).join("\n"),
+    page?.discipline_guide?.panels
+      ?.map((panel) => [panel.title, ...(panel.items || []), panel.takeaway].filter(Boolean).join("\n"))
+      .filter(Boolean)
+      .join("\n\n"),
+    page?.blackboard_notes?.takeaway,
+    page?.glossary_terms?.map((item) => `${item.term}: ${item.explanation}`).join("\n"),
     page?.insights
       ?.map((card) =>
         [
@@ -1006,12 +1441,88 @@ function buildPaperReaderWorkflowContext({ session, page, answerText, question, 
     arxiv_id: session?.arxiv_id || null,
     answer_language: session?.answer_language || language || null,
     page_language: language || null,
+    reader_mode: session?.reader_mode || null,
+    discipline: session?.discipline || null,
+    discipline_source: session?.discipline_source || null,
     page_index: pageIndex,
     page_title: page?.title || null,
+    page_count: session?.page_count || null,
+    story_stage: page?.story_stage || null,
+    discipline_guide: page?.discipline_guide || null,
+    blackboard_notes: page?.blackboard_notes || null,
+    glossary_terms: page?.glossary_terms || [],
+    checkpoint_status: page?.checkpoints?.length ? "available" : "none",
     latest_page_summary: extractAssistantContextText(page) || null,
     latest_answer_text: firstNonEmpty(answerText),
-    question: String(question || "").trim() || null
+    question: String(question || "").trim() || null,
+    metadata: {
+      reading_blocks: toArray(page?.reading_blocks)
+        .slice(0, 8)
+        .map((block) => ({
+          chunk_id: block.chunk_id,
+          source_label: block.source_label,
+          page_start: block.page_start,
+          page_end: block.page_end,
+          original_en: firstNonEmpty(block.original_en).slice(0, 1200),
+          explanation: firstNonEmpty(block.explanation, block.display_text).slice(0, 800)
+        }))
+    }
   };
+}
+
+function localizeReaderLabel(value, language) {
+  const text = sanitizeText(value);
+  if (!text || language !== "zh") {
+    return text;
+  }
+  const normalized = stripPageCountSuffix(text).toLowerCase();
+  const suffix = extractPageCounter(text);
+  const map = {
+    "quick story": "速读页",
+    "core question": "核心问题",
+    "method or mechanism": "方法机制",
+    "evidence or experiments": "实验证据",
+    "conclusion": "结论收束",
+    "open questions or limitations": "局限与开放问题",
+    "problem and claim": "问题与主张",
+    "method or system": "方法或系统",
+    "experiments and results": "实验与结果",
+    "conclusion and limits": "结论与局限",
+    "statement to prove": "目标命题",
+    "definitions and setup": "定义与设定",
+    "proof strategy": "证明路线",
+    "key proof steps": "关键证明步骤",
+    "implications and open problems": "推论与开放问题",
+    "mechanism or intervention": "机制或干预",
+    "study design and evidence level": "研究设计与证据等级",
+    "measurement and mechanism": "测量与机制",
+    "results and evidence strength": "结果与证据强度",
+    "limitations and safety": "局限与安全性",
+    "explanation or hypothesis": "解释或假设",
+    "data and identification": "数据与识别",
+    "causal evidence and robustness": "因果证据与稳健性",
+    implications: "影响与含义",
+    "threats to validity": "有效性威胁",
+    "question and context": "问题与语境",
+    "concept definitions": "概念界定",
+    "argument structure": "论证结构",
+    "evidence and interpretation": "证据与阐释",
+    "objections and stakes": "反驳与利害关系",
+    "practical problem": "现实问题",
+    "rules and institutions": "规则与制度",
+    "interests and trade-offs": "利益与权衡",
+    "consequences and enforcement": "后果与执行",
+    "risks and open issues": "风险与开放问题",
+    insight: "精读卡",
+    claim: "主张",
+    method: "方法",
+    evidence: "证据",
+    takeaway: "结论",
+    limitation: "局限",
+    question: "问题"
+  };
+  const localized = map[normalized] || text;
+  return suffix && localized !== text ? `${localized} (${suffix})` : localized;
 }
 
 function getStatusLabel(status, t) {
@@ -1046,35 +1557,74 @@ function getStructuredStatusLabel(state, language) {
 function getPaperReaderCopy(language, t) {
   if (language === "zh") {
     return {
+      productEyebrow: "论文精读",
       navigationTitle: "阅读导航",
-      bucketLabel: "Bucket",
+      bucketLabel: "阅读焦点",
+      paperMapTitle: "论文地图",
+      paperMapSubtitle: "按原文章节建立学习路线，先看全局，再进入具体阅读页。",
+      paperMapFallback: "这篇论文暂时只有阅读页导航，还没有可展示的结构地图。",
+      mapNodePages: "原文页",
+      mapNodeReaderPages: "阅读页",
+      evidenceNodesLabel: "证据节点",
+      focusCardsLabel: "精读卡",
+      usedChunksLabel: "证据片段",
       pageWord: t("paperReaderPageLabel"),
       partWord: "分片",
       sourcePages: "原始页码",
-      originalLabel: "Original (EN)",
+      originalLabel: "英文原文",
       explanationLabel: "页面语言解读",
-      whyLabel: "Why it matters",
+      showOriginalLabel: "展开英文原文",
+      whyLabel: "为什么重要",
       citationsLabel: t("paperReaderCitations"),
       noOriginal: "暂无可展示的英文原文片段。",
       noExplanation: "当前还没有可展示的页面解读。",
-      noInsights: "当前页还没有结构化 insight cards。",
+      noInsights: "当前页还没有结构化精读卡。",
       pagesShort: "页",
       overviewTitle: "本页导读",
       sourceSectionsTitle: "覆盖章节",
+      readingBlocksTitle: "论文原文与解读",
+      rightCardsTitle: "学科讲解卡片",
+      cardHoverHint: "悬停卡片会高亮对应原文，点击可跳转。",
       evidenceLabel: "证据线索",
       structuredFailureTitle: "本页结构化解析失败",
       structuredFailureBody: "我没有展示原始模型文本，而是保留了安全失败态。你可以重试本页，或跳到下一页继续阅读。",
-      pageFocusLabel: "当前阅读焦点"
+      pageFocusLabel: "当前阅读焦点",
+      disciplineLabel: "讲解学科",
+      disciplineHelp: "自动识别会根据 arXiv 分类、标题摘要和正文线索选择阅读路线。",
+      disciplineGuideTitle: "学科讲解面板",
+      disciplineSourceAuto: "自动识别",
+      disciplineSourceManual: "手动选择",
+      guidedMode: "陪读模式",
+      standardMode: "标准模式",
+      mentorTitle: "导师讲解流",
+      blackboardTitle: "黑板笔记",
+      glossaryTitle: "术语降维",
+      hintsTitle: "阅读提示",
+      checkpointsTitle: "读完这一页我应该会什么",
+      exportNotes: "导出研究笔记",
+      paperSourceLabel: "论文证据",
+      backgroundSourceLabel: "背景解释",
+      quickStoryHint: "速读页会先帮你用 5 分钟判断这篇论文值不值得继续精读。"
     };
   }
   return {
+    productEyebrow: "Paper Reader",
     navigationTitle: "Reading Navigation",
-    bucketLabel: "Bucket",
+    bucketLabel: "Reading focus",
+    paperMapTitle: "Paper Map",
+    paperMapSubtitle: "A source-structure route for reading the paper from the whole to the parts.",
+    paperMapFallback: "This session has reading pages, but no structure map yet.",
+    mapNodePages: "Source pages",
+    mapNodeReaderPages: "Reader pages",
+    evidenceNodesLabel: "Evidence nodes",
+    focusCardsLabel: "Insight cards",
+    usedChunksLabel: "Evidence chunks",
     pageWord: t("paperReaderPageLabel"),
     partWord: "Part",
     sourcePages: "Source pages",
     originalLabel: "Original (EN)",
     explanationLabel: "Page-language reading",
+    showOriginalLabel: "Show English original",
     whyLabel: "Why it matters",
     citationsLabel: t("paperReaderCitations"),
     noOriginal: "No grounded English excerpt yet.",
@@ -1083,20 +1633,42 @@ function getPaperReaderCopy(language, t) {
     pagesShort: "pp.",
     overviewTitle: "Page overview",
     sourceSectionsTitle: "Covered sections",
+    readingBlocksTitle: "Original and reading translation",
+    rightCardsTitle: "Discipline cards",
+    cardHoverHint: "Hover a card to highlight the matching original text; click to jump.",
     evidenceLabel: "Evidence trail",
     structuredFailureTitle: "Structured page parsing failed",
     structuredFailureBody:
       "Raw model output is intentionally hidden here. Retry this page, or continue to the next page while the reader keeps the safe failure state.",
-    pageFocusLabel: "Current focus"
+      pageFocusLabel: "Current focus",
+      disciplineLabel: "Discipline",
+      disciplineHelp: "Auto detection chooses a reading route from arXiv category, title, abstract, and paper text cues.",
+      disciplineGuideTitle: "Discipline guide",
+      disciplineSourceAuto: "auto detected",
+      disciplineSourceManual: "manual",
+      guidedMode: "Guided mode",
+    standardMode: "Standard mode",
+    mentorTitle: "Mentor walkthrough",
+    blackboardTitle: "Blackboard notes",
+    glossaryTitle: "Terms made easier",
+    hintsTitle: "Reading hints",
+    checkpointsTitle: "What should I know after this page?",
+    exportNotes: "Export research notes",
+    paperSourceLabel: "Paper evidence",
+    backgroundSourceLabel: "Background explanation",
+    quickStoryHint: "Quick Story gives you a five-minute sense of whether to keep reading deeply."
   };
 }
 
-function buildPageBuckets(pages) {
+function buildPageBuckets(pages, language) {
   const buckets = [];
   const bucketMap = new Map();
 
   pages.forEach((page) => {
-    const label = firstNonEmpty(page.bucket_label, stripPageCountSuffix(page.title), page.coverage, `Page ${page.page_index + 1}`);
+    const label = localizeReaderLabel(
+      firstNonEmpty(page.bucket_label, stripPageCountSuffix(page.title), page.coverage, `Page ${page.page_index + 1}`),
+      language
+    );
     if (!bucketMap.has(label)) {
       const bucket = {
         key: `${label}-${buckets.length}`,
@@ -1122,6 +1694,311 @@ function formatPageRange(start, end, copy) {
   return `${copy.sourcePages}: ${start ?? end}`;
 }
 
+function PaperMapTree({ root, pages, activePageIndex, activeSourceNodeIds, onGoToPage, copy, language }) {
+  if (!root?.children?.length) {
+    return (
+      <section className="reader-map-panel">
+        <div className="reader-map-head">
+          <p className="reader-block-label">{copy.paperMapTitle}</p>
+          <p className="muted">{copy.paperMapFallback}</p>
+        </div>
+      </section>
+    );
+  }
+  const pageLookup = new Map(toArray(pages).map((page) => [page.page_index, page]));
+  const nodeCount = Math.max(0, flattenIndexNodes(root).length - 1);
+
+  function renderNode(node, depth = 0) {
+    const pageIndices = toArray(node.page_indices).filter((pageIndex) => pageLookup.has(pageIndex));
+    const active = activeSourceNodeIds.has(node.node_id) || pageIndices.includes(activePageIndex);
+    return (
+      <li key={node.node_id} className={`reader-map-node${active ? " active" : ""}`} style={{ "--reader-map-depth": depth }}>
+        <div className="reader-map-node-main">
+          <div>
+            <strong>{node.title}</strong>
+            <small>{formatPageRange(node.page_start, node.page_end, copy)}</small>
+          </div>
+          {pageIndices.length ? (
+            <div className="reader-map-page-links" aria-label={copy.mapNodeReaderPages}>
+              {pageIndices.slice(0, 4).map((pageIndex) => (
+                <button
+                  key={`${node.node_id}-${pageIndex}`}
+                  type="button"
+                  className={`reader-map-page-link${pageIndex === activePageIndex ? " active" : ""}`}
+                  onClick={() => onGoToPage(pageIndex)}
+                  title={localizeReaderLabel(pageLookup.get(pageIndex)?.title || `${copy.pageWord} ${pageIndex + 1}`, language)}
+                >
+                  {pageIndex + 1}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        {node.children?.length ? <ul>{node.children.map((child) => renderNode(child, depth + 1))}</ul> : null}
+      </li>
+    );
+  }
+
+  return (
+    <section className="reader-map-panel">
+      <div className="reader-map-head">
+        <div>
+          <p className="reader-block-label">{copy.paperMapTitle}</p>
+          <p className="muted">{copy.paperMapSubtitle}</p>
+        </div>
+        <span className="reader-status-chip">{nodeCount}</span>
+      </div>
+      <ul className="reader-map-tree">{root.children.map((node) => renderNode(node))}</ul>
+    </section>
+  );
+}
+
+function safeDomId(value, fallback = "item") {
+  const text = String(value || "").trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return text || fallback;
+}
+
+function readingBlockElementId(chunkId) {
+  return `reader-source-${safeDomId(chunkId, "block")}`;
+}
+
+function sourceIdsFromLabels(labels, sourceSections) {
+  const normalizedLabels = new Set(toArray(labels).map((label) => sanitizeText(label).toLowerCase()).filter(Boolean));
+  if (!normalizedLabels.size) {
+    return [];
+  }
+  return toArray(sourceSections)
+    .filter((section) => normalizedLabels.has(sanitizeText(section.label).toLowerCase()))
+    .flatMap((section) => section.chunk_ids || section.chunkIds || [])
+    .map((item) => sanitizeText(item))
+    .filter(Boolean);
+}
+
+function resolveCardSourceIds({ explicitIds = [], labels = [], index = 0, readingBlocks = [], sourceSections = [] }) {
+  const ids = [
+    ...toArray(explicitIds).map((item) => sanitizeText(item)),
+    ...sourceIdsFromLabels(labels, sourceSections)
+  ].filter(Boolean);
+  if (!ids.length && sourceSections[index]?.chunk_ids?.length) {
+    ids.push(...sourceSections[index].chunk_ids.map((item) => sanitizeText(item)).filter(Boolean));
+  }
+  if (!ids.length && readingBlocks[index]?.chunk_id) {
+    ids.push(readingBlocks[index].chunk_id);
+  }
+  return [...new Set(ids)];
+}
+
+function buildDisciplineCards({ page, readingBlocks, sourceSections, language, copy }) {
+  const cards = [];
+  const guidePanels = page?.discipline_guide?.panels || [];
+  guidePanels.forEach((panel, index) => {
+    cards.push({
+      id: `guide-${panel.key || index}`,
+      eyebrow: copy.disciplineGuideTitle,
+      title: panel.title,
+      body: panel.takeaway,
+      items: panel.items || [],
+      sourceIds: resolveCardSourceIds({ index, readingBlocks, sourceSections })
+    });
+  });
+
+  (page?.insights || []).forEach((insight, index) => {
+    cards.push({
+      id: `insight-${insight.id || index}`,
+      eyebrow: firstNonEmpty(localizeReaderLabel(insight.eyebrow, language), copy.focusCardsLabel),
+      title: insight.title,
+      body: firstNonEmpty(insight.explanation_text, insight.original_text),
+      items: insight.supporting_points || [],
+      sourceIds: resolveCardSourceIds({
+        explicitIds: insight.source_chunk_ids,
+        labels: insight.source_section_labels,
+        index,
+        readingBlocks,
+        sourceSections
+      })
+    });
+  });
+
+  (page?.glossary_terms || []).slice(0, 4).forEach((term, index) => {
+    cards.push({
+      id: `term-${term.term}-${index}`,
+      eyebrow: term.source === "background" ? copy.backgroundSourceLabel : copy.paperSourceLabel,
+      title: term.term,
+      body: term.explanation,
+      items: [],
+      sourceIds: resolveCardSourceIds({
+        labels: term.citation?.section_title ? [term.citation.section_title] : [],
+        index,
+        readingBlocks,
+        sourceSections
+      })
+    });
+  });
+
+  (page?.reading_hints || []).slice(0, 3).forEach((hint, index) => {
+    cards.push({
+      id: `hint-${hint.kind}-${index}`,
+      eyebrow: copy.hintsTitle,
+      title: hint.kind === "skim" ? (language === "zh" ? "可以先略读" : "Skim first") : hint.kind === "advanced" ? (language === "zh" ? "进阶再看" : "Advanced") : (language === "zh" ? "新手必懂" : "Must know"),
+      body: hint.text,
+      items: hint.reason ? [hint.reason] : [],
+      sourceIds: resolveCardSourceIds({ index, readingBlocks, sourceSections })
+    });
+  });
+
+  (page?.checkpoints || []).slice(0, 2).forEach((checkpoint, index) => {
+    cards.push({
+      id: `checkpoint-${checkpoint.id || index}`,
+      eyebrow: copy.checkpointsTitle,
+      title: checkpoint.question,
+      body: checkpoint.answer,
+      items: checkpoint.review_hint ? [checkpoint.review_hint] : [],
+      sourceIds: resolveCardSourceIds({ index, readingBlocks, sourceSections })
+    });
+  });
+
+  return cards.filter((card) => card.title || card.body).slice(0, 10);
+}
+
+function ReadingBlocks({ blocks, activeSourceId, copy }) {
+  if (!blocks?.length) {
+    return (
+      <section className="reader-reading-blocks reader-module-section" id="reader-module-reading-blocks">
+        <div className="reader-structured-empty">
+          <p>{copy.noOriginal}</p>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="reader-reading-blocks reader-module-section" id="reader-module-reading-blocks">
+      <div className="reader-block-head">
+        <div>
+          <p className="reader-block-label">{copy.readingBlocksTitle}</p>
+        </div>
+      </div>
+      <div className="reader-reading-block-list">
+        {blocks.map((block, index) => {
+          const active = activeSourceId && block.chunk_id === activeSourceId;
+          const pageRange = formatPageRange(block.page_start, block.page_end, copy);
+          return (
+            <article
+              key={`${block.chunk_id}-${index}`}
+              id={readingBlockElementId(block.chunk_id)}
+              className={`reader-reading-block${active ? " active" : ""}`}
+            >
+              <div className="reader-reading-block-meta">
+                <span>{block.source_label}</span>
+                {pageRange ? <small>{pageRange}</small> : null}
+              </div>
+              <div className="reader-original-panel">
+                <span className="reader-tone-label">{copy.originalLabel}</span>
+                <p>{block.original_en}</p>
+              </div>
+              <div className="reader-translation-panel">
+                <span className="reader-tone-label">{copy.explanationLabel}</span>
+                <p>{firstNonEmpty(block.explanation, block.display_text, copy.noExplanation)}</p>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function DisciplineCards({ cards, activeSourceId, onActivate, onClear, onOpen, copy }) {
+  return (
+    <section className="workspace paper-reader-discipline-cards">
+      <div className="reader-card-column-head">
+        <div>
+          <p className="reader-block-label">{copy.rightCardsTitle}</p>
+          <p className="muted">{copy.cardHoverHint}</p>
+        </div>
+      </div>
+      <div className="reader-side-card-list">
+        {cards.length ? (
+          cards.map((card) => {
+            const active = activeSourceId && card.sourceIds?.includes(activeSourceId);
+            return (
+              <article
+                key={card.id}
+                className={`reader-side-card${active ? " active" : ""}`}
+                tabIndex={0}
+                onMouseEnter={() => onActivate(card)}
+                onMouseLeave={onClear}
+                onFocus={() => onActivate(card)}
+                onBlur={onClear}
+                onClick={() => onOpen(card)}
+              >
+                {card.eyebrow ? <p className="reader-insight-eyebrow">{card.eyebrow}</p> : null}
+                <h4>{card.title}</h4>
+                {card.body ? <p>{card.body}</p> : null}
+                {card.items?.length ? (
+                  <ul>
+                    {card.items.slice(0, 3).map((item, index) => (
+                      <li key={`${card.id}-item-${index}`}>{item}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </article>
+            );
+          })
+        ) : (
+          <div className="reader-structured-empty">
+            <p>{copy.noInsights}</p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function buildReaderModuleAnchors({
+  page,
+  insights,
+  sourceSections,
+  mentorScript,
+  disciplineGuide,
+  glossaryTerms,
+  readingHints,
+  checkpoints,
+  copy
+}) {
+  if (!page) {
+    return [];
+  }
+  const hasEvidence = toArray(insights).some(
+    (card) => card.supporting_points?.length || card.citations?.length || card.source_section_labels?.length
+  );
+  const hasWhy = toArray(insights).some((card) => card.why_it_matters?.length);
+  return [
+    page.page_overview ? { id: "reader-module-overview", label: copy.overviewTitle } : null,
+    mentorScript?.length ? { id: "reader-module-mentor", label: copy.mentorTitle } : null,
+    disciplineGuide?.panels?.length ? { id: "reader-module-discipline-guide", label: copy.disciplineGuideTitle } : null,
+    sourceSections?.length ? { id: "reader-module-sources", label: copy.sourceSectionsTitle } : null,
+    glossaryTerms?.length || readingHints?.length ? { id: "reader-module-guidance", label: copy.hintsTitle } : null,
+    insights?.length ? { id: "reader-module-insights", label: copy.focusCardsLabel } : null,
+    hasEvidence ? { id: "reader-module-evidence", label: copy.evidenceLabel } : null,
+    hasWhy ? { id: "reader-module-why", label: copy.whyLabel } : null,
+    checkpoints?.length ? { id: "reader-module-checkpoints", label: copy.checkpointsTitle } : null
+  ].filter(Boolean);
+}
+
+function isTypingTarget(target) {
+  if (!target) {
+    return false;
+  }
+  const tagName = String(target.tagName || "").toLowerCase();
+  return (
+    tagName === "input" ||
+    tagName === "textarea" ||
+    tagName === "select" ||
+    target.isContentEditable ||
+    Boolean(target.closest?.("[contenteditable='true']"))
+  );
+}
+
 function formatCitationLabel(citation, copy, index) {
   const parts = [
     firstNonEmpty(citation.label, citation.section_title, citation.chunk_id, `citation-${index + 1}`),
@@ -1133,25 +2010,79 @@ function formatCitationLabel(citation, copy, index) {
   return parts.join(" · ");
 }
 
+function buildResearchNoteMarkdown({ session, pages, language }) {
+  const lines = [];
+  const title = firstNonEmpty(session?.paper_title, language === "zh" ? "论文精读笔记" : "Paper Reader Notes");
+  lines.push(`# ${title}`);
+  lines.push("");
+  if (session?.arxiv_id) {
+    lines.push(`- arXiv: ${session.arxiv_id}`);
+  }
+  if (session?.file_name) {
+    lines.push(`- PDF: ${session.file_name}`);
+  }
+  lines.push(`- Reader mode: ${session?.reader_mode || "guided"}`);
+  if (session?.discipline) {
+    lines.push(`- Discipline: ${getDisciplineLabel(session.discipline, language)} (${getDisciplineSourceLabel(session.discipline_source, language)})`);
+  }
+  lines.push("");
+  pages.forEach((page) => {
+    lines.push(`## ${page.title || `Page ${page.page_index + 1}`}`);
+    if (page.story_stage?.title) {
+      lines.push(`Stage: ${page.story_stage.title}`);
+      lines.push("");
+    }
+    if (page.page_overview?.display_text) {
+      lines.push(page.page_overview.display_text);
+      lines.push("");
+    }
+    if (page.discipline_guide?.panels?.length) {
+      lines.push(language === "zh" ? "### 学科讲解面板" : "### Discipline guide");
+      page.discipline_guide.panels.forEach((panel) => {
+        lines.push(`#### ${panel.title}`);
+        (panel.items || []).filter(Boolean).forEach((item) => lines.push(`- ${item}`));
+        if (panel.takeaway) {
+          lines.push(`- ${panel.takeaway}`);
+        }
+      });
+      lines.push("");
+    }
+    if (page.insights?.length) {
+      lines.push(language === "zh" ? "### 精读卡" : "### Insight cards");
+      page.insights.forEach((insight) => {
+        lines.push(`- ${insight.title}: ${firstNonEmpty(insight.explanation_text, insight.original_text)}`);
+      });
+      lines.push("");
+    }
+    if (page.glossary_terms?.length) {
+      lines.push(language === "zh" ? "### 术语表" : "### Glossary");
+      page.glossary_terms.forEach((term) => lines.push(`- **${term.term}**: ${term.explanation}`));
+      lines.push("");
+    }
+  });
+  return lines.join("\n").trim() + "\n";
+}
+
 export default function PaperReaderPage({
   language,
   t,
   settings,
   runtimePayload,
+  initialArxivUrl = "",
+  onInitialArxivUrlConsumed,
   renderAssistantLayer,
-  onScheduleAssistantAutoReply
+  onAssistantContextChange
 }) {
   const paperReaderConfig = settings?.paper_reader_chat || {};
   const [arxivUrl, setArxivUrl] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
+  const [readerMode, setReaderMode] = useState("guided");
+  const [discipline, setDiscipline] = useState("auto");
   const [session, setSession] = useState(null);
   const [pagesByIndex, setPagesByIndex] = useState({});
   const [activePageIndex, setActivePageIndex] = useState(0);
-  const [chatDraft, setChatDraft] = useState("");
-  const [chatMessages, setChatMessages] = useState([]);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [pageBusyMap, setPageBusyMap] = useState({});
-  const [chatBusy, setChatBusy] = useState(false);
   const [bannerMessage, setBannerMessage] = useState("");
   const [bannerError, setBannerError] = useState("");
   const [readerProgress, setReaderProgress] = useState({
@@ -1160,11 +2091,15 @@ export default function PaperReaderPage({
     detail: "",
     updatedAt: null
   });
+  const [activeModuleId, setActiveModuleId] = useState("");
+  const [activeSourceId, setActiveSourceId] = useState("");
   const streamRefs = useRef(new Map());
   const pollRefs = useRef(new Map());
-  const autoReplyKeyRef = useRef("");
+  const assistantContextKeyRef = useRef("");
   const activeRequestRef = useRef(0);
+  const autoLoadUrlRef = useRef("");
   const fileInputRef = useRef(null);
+  const pageCardRef = useRef(null);
 
   const pageEntries = useMemo(() => {
     const manifest = Array.isArray(session?.pages) ? session.pages : [];
@@ -1194,8 +2129,7 @@ export default function PaperReaderPage({
     () => [
       { key: "load", label: t("paperReaderProgressLoad") },
       { key: "paginate", label: t("paperReaderProgressPaginate") },
-      { key: "page", label: t("paperReaderProgressPage") },
-      { key: "chat", label: t("paperReaderProgressChat") }
+      { key: "page", label: t("paperReaderProgressPage") }
     ],
     [t]
   );
@@ -1210,15 +2144,77 @@ export default function PaperReaderPage({
     [t]
   );
   const copy = useMemo(() => getPaperReaderCopy(language, t), [language, t]);
-  const pageBuckets = useMemo(() => buildPageBuckets(pageEntries), [pageEntries]);
+  const pageBuckets = useMemo(() => buildPageBuckets(pageEntries, language), [pageEntries, language]);
   const activeStructuredState = activePage?.structured_status?.state || "pending";
   const activeStructuredMessage = firstNonEmpty(activePage?.structured_status?.message, activePage?.error);
   const activeOverview = activePage?.page_overview || null;
+  const activeReadingBlocks = activePage?.reading_blocks || [];
   const activeSourceSections = activePage?.source_sections || [];
+  const indexTree = session?.index_tree || null;
+  const activeSourceNodeIds = useMemo(() => new Set(activePage?.source_node_ids || []), [activePage?.source_node_ids]);
   const activeInsights = activePage?.insights || [];
+  const firstEvidenceInsightIndex = activeInsights.findIndex(
+    (card) => card.supporting_points?.length || card.citations?.length || card.source_section_labels?.length
+  );
+  const firstWhyInsightIndex = activeInsights.findIndex((card) => card.why_it_matters?.length);
+  const activeMentorScript = activePage?.mentor_script || [];
+  const activeDisciplineGuide = activePage?.discipline_guide || null;
+  const activeStoryStage = activePage?.story_stage || null;
+  const activeGlossaryTerms = activePage?.glossary_terms || [];
+  const activeReadingHints = activePage?.reading_hints || [];
+  const activeCheckpoints = activePage?.checkpoints || [];
+  const activeDisciplineCards = useMemo(
+    () =>
+      buildDisciplineCards({
+        page: activePage,
+        readingBlocks: activeReadingBlocks,
+        sourceSections: activeSourceSections,
+        language,
+        copy
+      }),
+    [activePage, activeReadingBlocks, activeSourceSections, copy, language]
+  );
   const activeTitle = firstNonEmpty(activePage?.title, `${t("paperReaderPageLabel")} ${activePageIndex + 1}`);
-  const activeTitleBase = stripPageCountSuffix(activeTitle) || activeTitle;
+  const activeTitleBase = localizeReaderLabel(stripPageCountSuffix(activeTitle) || activeTitle, language);
   const activeTitleCounter = extractPageCounter(activeTitle);
+  const pageModuleAnchors = useMemo(
+    () =>
+      buildReaderModuleAnchors({
+        page: activePage,
+        insights: activeInsights,
+        sourceSections: activeSourceSections,
+        mentorScript: activeMentorScript,
+        disciplineGuide: activeDisciplineGuide,
+        glossaryTerms: activeGlossaryTerms,
+        readingHints: activeReadingHints,
+        checkpoints: activeCheckpoints,
+        copy
+      }),
+    [
+      activePage,
+      activeInsights,
+      activeSourceSections,
+      activeMentorScript,
+      activeDisciplineGuide,
+      activeGlossaryTerms,
+      activeReadingHints,
+      activeCheckpoints,
+      copy
+    ]
+  );
+
+  useEffect(() => {
+    const url = String(initialArxivUrl || "").trim();
+    if (!url || autoLoadUrlRef.current === url) {
+      return;
+    }
+    autoLoadUrlRef.current = url;
+    setArxivUrl(url);
+    void loadArxivUrl(url).finally(() => {
+      onInitialArxivUrlConsumed?.();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialArxivUrl]);
 
   useEffect(() => {
     return () => {
@@ -1251,6 +2247,7 @@ export default function PaperReaderPage({
     if (!session?.session_id || !activePage || currentPageStatus !== "ready") {
       return;
     }
+    const answerContext = extractAssistantContextText(activePage);
     const workflowContext = buildPaperReaderWorkflowContext({
       session,
       page: activePage,
@@ -1261,16 +2258,64 @@ export default function PaperReaderPage({
     const cacheKey = `${session.session_id}:page:${activePage.page_index}:${
       activePage.page_overview?.display_text || activePage.summary || activePage.text || ""
     }`;
-    if (autoReplyKeyRef.current === cacheKey) {
+    if (assistantContextKeyRef.current === cacheKey) {
       return;
     }
-    autoReplyKeyRef.current = cacheKey;
-    onScheduleAssistantAutoReply?.({
-      source: "qa_auto",
-      answerContext: extractAssistantContextText(activePage),
+    assistantContextKeyRef.current = cacheKey;
+    onAssistantContextChange?.({
+      answerContext,
       workflowContext
     });
-  }, [activePage, currentPageStatus, language, onScheduleAssistantAutoReply, session]);
+  }, [activePage, currentPageStatus, language, onAssistantContextChange, session]);
+
+  useEffect(() => {
+    setActiveModuleId(pageModuleAnchors[0]?.id || "");
+  }, [activePageIndex, pageModuleAnchors]);
+
+  useEffect(() => {
+    if (!pageModuleAnchors.length || typeof IntersectionObserver === "undefined") {
+      return undefined;
+    }
+    const elements = pageModuleAnchors.map((anchor) => document.getElementById(anchor.id)).filter(Boolean);
+    if (!elements.length) {
+      return undefined;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
+        if (visible?.target?.id) {
+          setActiveModuleId(visible.target.id);
+        }
+      },
+      {
+        root: null,
+        rootMargin: "-18% 0px -64% 0px",
+        threshold: [0.01, 0.2, 0.5]
+      }
+    );
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [activePageIndex, pageModuleAnchors]);
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (isTypingTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      if (event.key === "ArrowLeft" && activePageIndex > 0) {
+        event.preventDefault();
+        goToPage(activePageIndex - 1);
+      }
+      if (event.key === "ArrowRight" && (!pageCount || activePageIndex < pageCount - 1)) {
+        event.preventDefault();
+        goToPage(activePageIndex + 1);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activePageIndex, pageCount, session?.session_id]);
 
   function updateReaderProgress(step, status, detail = "") {
     setReaderProgress({
@@ -1295,8 +2340,6 @@ export default function PaperReaderPage({
     setSession(null);
     setPagesByIndex({});
     setActivePageIndex(0);
-    setChatMessages([]);
-    setChatDraft("");
     setBannerMessage("");
     setBannerError("");
     setPageBusyMap({});
@@ -1306,7 +2349,11 @@ export default function PaperReaderPage({
       detail: "",
       updatedAt: null
     });
-    autoReplyKeyRef.current = "";
+    assistantContextKeyRef.current = "";
+    onAssistantContextChange?.({
+      answerContext: null,
+      workflowContext: null
+    });
   }
 
   function upsertPage(page) {
@@ -1440,7 +2487,7 @@ export default function PaperReaderPage({
               : page.error || t("paperReaderPageLoadFail")
           );
           if (!prefetch && page?.status === "ready" && activePageIndex === pageIndex) {
-            scheduleAssistantForPage(page, "");
+            publishAssistantContextForPage(page, "");
             prefetchNextPage(pageIndex);
           }
         }
@@ -1476,7 +2523,7 @@ export default function PaperReaderPage({
                 : page.error || t("paperReaderPageLoadFail")
             );
             if (!prefetch && page.status === "ready" && activePageIndex === pageIndex) {
-              scheduleAssistantForPage(page, "");
+              publishAssistantContextForPage(page, "");
               prefetchNextPage(pageIndex);
             }
           }
@@ -1512,7 +2559,7 @@ export default function PaperReaderPage({
     if (existing?.status === "ready") {
       updateReaderProgress("page", "ready", `${t("paperReaderProgressPage")} ${normalizedIndex + 1}`);
       if (!prefetch && normalizedIndex === activePageIndex) {
-        scheduleAssistantForPage(existing, "");
+        publishAssistantContextForPage(existing, "");
         prefetchNextPage(normalizedIndex);
       }
       return;
@@ -1527,7 +2574,7 @@ export default function PaperReaderPage({
       if (snapshot?.status === "ready") {
         updateReaderProgress("page", "ready", `${t("paperReaderProgressPage")} ${snapshot.page_index + 1}`);
         if (!prefetch && normalizedIndex === activePageIndex) {
-          scheduleAssistantForPage(snapshot, "");
+          publishAssistantContextForPage(snapshot, "");
           prefetchNextPage(normalizedIndex);
         }
         return;
@@ -1556,19 +2603,18 @@ export default function PaperReaderPage({
     void ensurePageReady(nextIndex, { prefetch: true });
   }
 
-  function scheduleAssistantForPage(page, answerText) {
-    if (!page || !session?.session_id || typeof onScheduleAssistantAutoReply !== "function") {
+  function publishAssistantContextForPage(page, answerText) {
+    if (!page || !session?.session_id || typeof onAssistantContextChange !== "function") {
       return;
     }
     const cacheKey = `${session.session_id}:page:${page.page_index}:${page.status}:${
       answerText || page.page_overview?.display_text || page.summary || page.text || ""
     }`;
-    if (autoReplyKeyRef.current === cacheKey) {
+    if (assistantContextKeyRef.current === cacheKey) {
       return;
     }
-    autoReplyKeyRef.current = cacheKey;
-    onScheduleAssistantAutoReply({
-      source: "qa_auto",
+    assistantContextKeyRef.current = cacheKey;
+    onAssistantContextChange({
       answerContext: firstNonEmpty(answerText, extractAssistantContextText(page)),
       workflowContext: buildPaperReaderWorkflowContext({
         session,
@@ -1580,9 +2626,8 @@ export default function PaperReaderPage({
     });
   }
 
-  async function handleLoadArxiv(event) {
-    event.preventDefault();
-    const url = String(arxivUrl || "").trim();
+  async function loadArxivUrl(rawUrl) {
+    const url = String(rawUrl || "").trim();
     if (!url) {
       setBannerError(t("paperReaderInvalidUrl"));
       return;
@@ -1600,6 +2645,8 @@ export default function PaperReaderPage({
         body: JSON.stringify({
           url,
           answer_language: language,
+          reader_mode: readerMode,
+          discipline,
           settings: runtimePayload
         })
       });
@@ -1616,6 +2663,8 @@ export default function PaperReaderPage({
         throw new Error(t("paperReaderLoadFail"));
       }
       setSession(normalized);
+      setReaderMode(normalized.reader_mode || readerMode);
+      setDiscipline(normalized.discipline_source === "manual" ? normalized.discipline : "auto");
       normalized.pages.forEach((page) => upsertPage(page));
       if (normalized.current_page) {
         upsertPage(normalized.current_page);
@@ -1641,6 +2690,11 @@ export default function PaperReaderPage({
     }
   }
 
+  async function handleLoadArxiv(event) {
+    event.preventDefault();
+    await loadArxivUrl(arxivUrl);
+  }
+
   async function handleLoadPdf(event) {
     event.preventDefault();
     const file = pdfFile || fileInputRef.current?.files?.[0];
@@ -1658,6 +2712,8 @@ export default function PaperReaderPage({
       const formData = new FormData();
       formData.append("pdf", file);
       formData.append("answer_language", language);
+      formData.append("reader_mode", readerMode);
+      formData.append("discipline", discipline);
       formData.append("settings", JSON.stringify(runtimePayload || {}));
       const response = await fetch("/api/paper-reader/session/from-file", {
         method: "POST",
@@ -1676,6 +2732,8 @@ export default function PaperReaderPage({
         throw new Error(t("paperReaderLoadFail"));
       }
       setSession(normalized);
+      setReaderMode(normalized.reader_mode || readerMode);
+      setDiscipline(normalized.discipline_source === "manual" ? normalized.discipline : "auto");
       normalized.pages.forEach((page) => upsertPage(page));
       if (normalized.current_page) {
         upsertPage(normalized.current_page);
@@ -1698,87 +2756,44 @@ export default function PaperReaderPage({
   function goToPage(pageIndex) {
     const normalizedIndex = Math.max(0, toNumber(pageIndex, 0));
     setActivePageIndex(normalizedIndex);
+    setActiveSourceId("");
     if (session?.session_id) {
       setSession((current) => (current ? { ...current, current_page_index: normalizedIndex } : current));
       void ensurePageReady(normalizedIndex, { sessionId: session?.session_id });
     }
   }
 
-  async function handleAskPaper(event) {
-    event.preventDefault();
-    const sessionId = session?.session_id;
-    if (!sessionId) {
-      setBannerError(t("paperReaderNoSession"));
+  function activateDisciplineCard(card) {
+    const nextSourceId = card?.sourceIds?.[0] || "";
+    setActiveSourceId(nextSourceId);
+  }
+
+  function openDisciplineCard(card) {
+    const sourceId = card?.sourceIds?.[0] || "";
+    if (!sourceId) {
       return;
     }
-    const message = String(chatDraft || "").trim();
-    if (!message) {
+    setActiveSourceId(sourceId);
+    const target = document.getElementById(readingBlockElementId(sourceId));
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function exportResearchNotes() {
+    if (!session) {
       return;
     }
-    setChatBusy(true);
-    setBannerError("");
-    updateReaderProgress("chat", "running", t("paperReaderProgressChat"));
-    setChatMessages((current) => [...current, { role: "user", text: message }]);
-    setChatDraft("");
-    try {
-      const response = await fetch(`/api/paper-reader/session/${encodeURIComponent(sessionId)}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message,
-          history: chatMessages.slice(-10).map((entry) => ({ role: entry.role, text: entry.text })),
-          page_index: activePageIndex,
-          answer_language: language,
-          settings: runtimePayload
-        })
-      });
-      const payload = await readJsonWithDetailFallback(response);
-      if (!response.ok) {
-        throw new Error(payload.detail || `${t("paperReaderChatFail")} (HTTP ${response.status})`);
-      }
-      const normalized = normalizeChatResponse(payload);
-      const answerText = firstNonEmpty(normalized.reply_text, t("paperReaderNoContent"));
-      setChatMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          text: answerText,
-          citations: normalized.citations,
-          usedChunks: normalized.used_chunks
-        }
-      ]);
-      if (normalized.citations.length || normalized.used_chunks.length) {
-        setBannerMessage("");
-      }
-      const page = activePage || pagesByIndex[activePageIndex] || null;
-      onScheduleAssistantAutoReply?.({
-        source: "qa_auto",
-        answerContext: answerText,
-        workflowContext: buildPaperReaderWorkflowContext({
-          session,
-          page,
-          answerText,
-          question: message,
-          language
-        })
-      });
-      if (normalized.session_id && normalized.session_id !== session.session_id) {
-        setSession((current) => (current ? { ...current, session_id: normalized.session_id } : current));
-      }
-      updateReaderProgress("chat", "completed", t("paperReaderProgressChat"));
-    } catch (error) {
-      setBannerError(String(error));
-      updateReaderProgress("chat", "interrupted", String(error));
-      setChatMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          text: String(error)
-        }
-      ]);
-    } finally {
-      setChatBusy(false);
-    }
+    const markdown = buildResearchNoteMarkdown({ session, pages: pageEntries, language });
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const safeTitle = firstNonEmpty(session.paper_title, "paper-reader-notes")
+      .replace(/[^\w.-]+/g, "-")
+      .replace(/-+/g, "-")
+      .slice(0, 80);
+    link.href = url;
+    link.download = `${safeTitle || "paper-reader-notes"}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   const manifestSummary = useMemo(() => {
@@ -1793,68 +2808,143 @@ export default function PaperReaderPage({
     return `${title} · ${source}`;
   }, [session, t]);
 
+  const hasSession = Boolean(session?.session_id);
+  const shouldShowProgressTracker =
+    !hasSession || readerProgress.status === "running" || readerProgress.status === "interrupted" || readerProgress.status === "failed";
+
+  const renderReaderModeControls = () => (
+    <div className="reader-mode-row">
+      <div>
+        <p className="eyebrow">{copy.guidedMode}</p>
+        <p className="muted">{readerMode === "guided" ? copy.quickStoryHint : copy.standardMode}</p>
+      </div>
+      <div className="lang-switch" aria-label={copy.guidedMode}>
+        <button type="button" className={readerMode === "guided" ? "active" : "secondary"} onClick={() => setReaderMode("guided")}>
+          {copy.guidedMode}
+        </button>
+        <button type="button" className={readerMode === "standard" ? "active" : "secondary"} onClick={() => setReaderMode("standard")}>
+          {copy.standardMode}
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderDisciplineControls = () => (
+    <div className="reader-mode-row reader-discipline-row">
+      <div>
+        <p className="eyebrow">{copy.disciplineLabel}</p>
+        <p className="muted">{copy.disciplineHelp}</p>
+      </div>
+      <label className="reader-discipline-select">
+        <span>{copy.disciplineLabel}</span>
+        <select value={discipline} onChange={(event) => setDiscipline(normalizeDiscipline(event.target.value, "auto"))}>
+          {PAPER_READER_DISCIPLINE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option[language === "zh" ? "zh" : "en"]}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+
+  const renderPaperLoader = () => (
+    <div className="paper-reader-entry-grid">
+      <form className="paper-reader-input-card" onSubmit={handleLoadArxiv}>
+        <h3>{t("paperReaderArxivUrl")}</h3>
+        <label>
+          {t("paperReaderArxivUrl")}
+          <input
+            value={arxivUrl}
+            onChange={(event) => setArxivUrl(event.target.value)}
+            placeholder="https://arxiv.org/abs/..."
+          />
+        </label>
+        <button type="submit" disabled={sessionBusy}>
+          {sessionBusy ? t("working") : t("paperReaderLoadArxiv")}
+        </button>
+      </form>
+
+      <form className="paper-reader-input-card" onSubmit={handleLoadPdf}>
+        <h3>{t("paperReaderPdfFile")}</h3>
+        <label>
+          {t("paperReaderPdfFile")}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            onChange={(event) => setPdfFile(event.target.files?.[0] || null)}
+          />
+        </label>
+        <div className="field-action-row">
+          <button type="submit" disabled={sessionBusy || !pdfFile}>
+            {sessionBusy ? t("working") : t("paperReaderLoadPdf")}
+          </button>
+          {pdfFile ? <span className="muted">{pdfFile.name}</span> : <span className="muted">{t("paperReaderSelectedFile")}</span>}
+        </div>
+      </form>
+    </div>
+  );
+
   return (
-    <div className="paper-reader-layout">
+    <div className="paper-reader-layout paper-reader-layout-redesigned">
+      <aside className="assistant-column paper-reader-assistant-column">{renderAssistantLayer?.() || null}</aside>
+
       <section className="paper-reader-main">
         <section className="workspace paper-reader-hero">
           <div>
-            <p className="eyebrow">paper-reader</p>
+            <p className="eyebrow">{copy.productEyebrow}</p>
             <h2>{t("paperReaderTitle")}</h2>
             <p className="muted">{t("paperReaderDescription")}</p>
           </div>
           <div className="paper-reader-summary">
             <span className="reader-status-chip">{readerModelSummary}</span>
             <span className="reader-status-chip">{manifestSummary}</span>
+            {session?.discipline ? (
+              <span className="reader-status-chip">
+                {copy.disciplineLabel}: {getDisciplineLabel(session.discipline, language)} (
+                {getDisciplineSourceLabel(session.discipline_source, language)})
+              </span>
+            ) : null}
           </div>
         </section>
 
-        <ProgressTracker
-          title={t("paperReaderProgressTitle")}
-          subtitle={t("paperReaderProgressSubtitle")}
-          steps={readerProgressSteps}
-          currentStep={readerProgress.step}
-          status={readerProgress.status}
-          statusLabel={readerStatusLabels[readerProgress.status] || t("progressIdle")}
-          detail={readerProgress.detail}
-          updatedAt={readerProgress.updatedAt}
-        />
+        {shouldShowProgressTracker ? (
+          <ProgressTracker
+            title={t("paperReaderProgressTitle")}
+            subtitle={t("paperReaderProgressSubtitle")}
+            steps={readerProgressSteps}
+            currentStep={readerProgress.step}
+            status={readerProgress.status}
+            statusLabel={readerStatusLabels[readerProgress.status] || t("progressIdle")}
+            detail={readerProgress.detail}
+            updatedAt={readerProgress.updatedAt}
+          />
+        ) : null}
 
-        <section className="workspace paper-reader-entry">
-          <div className="paper-reader-entry-grid">
-            <form className="paper-reader-input-card" onSubmit={handleLoadArxiv}>
-              <h3>{t("paperReaderArxivUrl")}</h3>
-              <label>
-                {t("paperReaderArxivUrl")}
-                <input
-                  value={arxivUrl}
-                  onChange={(event) => setArxivUrl(event.target.value)}
-                  placeholder="https://arxiv.org/abs/..."
-                />
-              </label>
-              <button type="submit" disabled={sessionBusy}>
-                {sessionBusy ? t("working") : t("paperReaderLoadArxiv")}
-              </button>
-            </form>
-
-            <form className="paper-reader-input-card" onSubmit={handleLoadPdf}>
-              <h3>{t("paperReaderPdfFile")}</h3>
-              <label>
-                {t("paperReaderPdfFile")}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  onChange={(event) => setPdfFile(event.target.files?.[0] || null)}
-                />
-              </label>
-              <div className="field-action-row">
-                <button type="submit" disabled={sessionBusy || !pdfFile}>
-                  {sessionBusy ? t("working") : t("paperReaderLoadPdf")}
-                </button>
-                {pdfFile ? <span className="muted">{pdfFile.name}</span> : <span className="muted">{t("paperReaderSelectedFile")}</span>}
+        <section className={`workspace paper-reader-entry${hasSession ? " paper-reader-entry-compact" : ""}`}>
+          {!hasSession ? (
+            <>
+              {renderReaderModeControls()}
+              {renderDisciplineControls()}
+              {renderPaperLoader()}
+            </>
+          ) : (
+            <details className="paper-reader-load-drawer">
+              <summary>
+                <span>{language === "zh" ? "载入另一篇论文" : "Load another paper"}</span>
+                <small>
+                  {readerMode === "guided" ? copy.quickStoryHint : copy.standardMode} ·{" "}
+                  {discipline === "auto" ? getDisciplineLabel("auto", language) : getDisciplineLabel(discipline, language)}
+                </small>
+              </summary>
+              <div className="paper-reader-load-drawer-body">
+                {renderReaderModeControls()}
+                {renderDisciplineControls()}
+                {renderPaperLoader()}
               </div>
-            </form>
-          </div>
+            </details>
+          )}
 
           {bannerMessage ? <div className="message">{bannerMessage}</div> : null}
           {bannerError ? <div className="warning-box">{bannerError}</div> : null}
@@ -1865,286 +2955,166 @@ export default function PaperReaderPage({
             <p className="muted">{t("paperReaderEmpty")}</p>
           </section>
         ) : (
-          <>
-            <div className="paper-reader-reader-shell">
-              <section className="workspace paper-reader-outline-card">
-                <div className="paper-reader-outline-head">
-                  <p className="eyebrow">{copy.navigationTitle}</p>
-                  <h3>{firstNonEmpty(session.paper_title, t("paperReaderTitle"))}</h3>
-                  <p className="muted">
-                    {t("paperReaderSessionId")}: {session.session_id || t("none")}
-                  </p>
-                  <p className="muted">
-                    {firstNonEmpty(session.arxiv_id, session.file_name, session.source || t("none"))}
-                  </p>
-                  <div className="paper-reader-outline-meta">
-                    <span className="reader-status-chip">{`${t("paperReaderPageCount")}: ${pageCount || "-"}`}</span>
-                    <span className="reader-status-chip">{`${t("paperReaderCurrentStatus")}: ${getStatusLabel(currentPageStatus, t)}`}</span>
-                  </div>
-                </div>
-
-                <div className="paper-reader-outline-groups">
-                  {pageBuckets.length ? (
-                    pageBuckets.map((bucket) => (
-                      <section key={bucket.key} className="paper-reader-outline-group">
-                        <div className="paper-reader-outline-group-head">
-                          <span className="paper-reader-outline-label">{copy.bucketLabel}</span>
-                          <h4>{bucket.label}</h4>
-                        </div>
-                        <div className="paper-reader-outline-list">
-                          {bucket.pages.map((page) => (
-                            <button
-                              key={page.page_index}
-                              type="button"
-                              className={`reader-page-pill${page.page_index === activePageIndex ? " active" : ""}`}
-                              onClick={() => goToPage(page.page_index)}
-                            >
-                              <span className="reader-page-pill-title">
-                                {stripPageCountSuffix(page.title || `${t("paperReaderPageLabel")} ${page.page_index + 1}`)}
-                              </span>
-                              <span className="reader-page-pill-meta">
-                                <span className="reader-page-pill-status">{getStatusLabel(page.status, t)}</span>
-                                {extractPageCounter(page.title) ? (
-                                  <span className="reader-page-pill-counter">{extractPageCounter(page.title)}</span>
-                                ) : null}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      </section>
-                    ))
-                  ) : (
-                    <p className="muted">{t("paperReaderNoContent")}</p>
-                  )}
-                </div>
-              </section>
-
-              <div className="paper-reader-reading-column">
-                <section className="workspace paper-reader-page-card paper-reader-page-card-refined">
-                  <div className="paper-reader-meta-bar">
-                    <div className="paper-reader-meta-copy">
-                      <p className="eyebrow">{copy.pageFocusLabel}</p>
-                      <h3>{activeTitleBase}</h3>
+          <div className="paper-reader-reader-shell">
+            <div className="paper-reader-reading-column">
+              <section className="workspace paper-reader-page-card paper-reader-page-card-refined" ref={pageCardRef}>
+                <div className="paper-reader-meta-bar">
+                  <div className="paper-reader-meta-copy">
+                    <p className="eyebrow">{copy.pageFocusLabel}</p>
+                    <h3>{activeTitleBase}</h3>
+                    <div className="reader-current-page-line">
                       <p className="muted">
                         {t("paperReaderCurrentPage")}: {activePageIndex + 1}
                         {pageCount ? ` / ${pageCount}` : ""}
                         {activeTitleCounter ? ` · ${activeTitleCounter}` : ""}
                       </p>
-                    </div>
-                    <div className="paper-reader-meta-chips">
-                      <span className="reader-status-chip">{firstNonEmpty(activePage?.bucket_label, deriveBucketLabel(activePage), activeTitleBase)}</span>
-                      <span className="reader-status-chip">{getStatusLabel(activePage?.status || "queued", t)}</span>
-                      <span className={`reader-status-chip reader-status-chip-structured reader-status-chip-${activeStructuredState}`}>
-                        {getStructuredStatusLabel(activeStructuredState, language)}
-                      </span>
-                      {activePage?.coverage ? <span className="reader-status-chip">{activePage.coverage}</span> : null}
+                      <div className="reader-page-icon-nav" aria-label={t("paperReaderCurrentPage")}>
+                        <button
+                          type="button"
+                          className="reader-icon-button"
+                          onClick={() => goToPage(activePageIndex - 1)}
+                          disabled={activePageIndex <= 0}
+                          aria-label={t("paperReaderPreviousPage")}
+                        >
+                          ‹
+                        </button>
+                        <button
+                          type="button"
+                          className="reader-icon-button"
+                          onClick={() => goToPage(activePageIndex + 1)}
+                          disabled={pageCount ? activePageIndex >= pageCount - 1 : false}
+                          aria-label={t("paperReaderNextPage")}
+                        >
+                          ›
+                        </button>
+                      </div>
                     </div>
                   </div>
-
-                  {activePage?.status === "error" && activeStructuredState !== "failed" ? (
-                    <div className="warning-box">{activePage.error || t("paperReaderPageLoadFail")}</div>
-                  ) : null}
-
-                  {activePage?.status === "generating" || pageBusyMap[activePageIndex] ? (
-                    <div className="reader-loading-state">
-                      <span className="progress-liveness progress-liveness-running">
-                        <span className="progress-liveness-dot" aria-hidden="true" />
-                        <span>{t("loading")}</span>
-                      </span>
-                    </div>
-                  ) : null}
-
-                  {activeStructuredState === "failed" ? (
-                    <section className="reader-structured-failure">
-                      <h4>{copy.structuredFailureTitle}</h4>
-                      <p>{activeStructuredMessage || copy.structuredFailureBody}</p>
-                    </section>
-                  ) : null}
-
-                  {activeOverview ? (
-                    <section className="reader-overview-card">
-                      <div className="reader-block-head">
-                        <div>
-                          <p className="reader-block-label">{copy.overviewTitle}</p>
-                          <h4>{activeTitleBase}</h4>
-                        </div>
-                        {activeOverview.display_text ? <p className="muted reader-overview-summary">{activeOverview.display_text}</p> : null}
-                      </div>
-                      <div className="reader-tone-stack">
-                        <div className="reader-tone-card reader-tone-original">
-                          <span className="reader-tone-label">{copy.originalLabel}</span>
-                          <p>{firstNonEmpty(activeOverview.original_en, copy.noOriginal)}</p>
-                        </div>
-                        <div className="reader-tone-card reader-tone-explanation">
-                          <span className="reader-tone-label">{copy.explanationLabel}</span>
-                          <p>{firstNonEmpty(activeOverview.explanation, activeOverview.display_text, copy.noExplanation)}</p>
-                        </div>
-                      </div>
-                    </section>
-                  ) : null}
-
-                  {activeSourceSections.length ? (
-                    <section className="reader-source-section-block">
-                      <p className="reader-block-label">{copy.sourceSectionsTitle}</p>
-                      <div className="reader-source-chip-list">
-                        {activeSourceSections.map((section, index) => (
-                          <span key={`${section.label}-${index}`} className="reader-source-chip">
-                            <span>{section.label}</span>
-                            {formatPageRange(section.page_start, section.page_end, copy) ? (
-                              <small>{formatPageRange(section.page_start, section.page_end, copy)}</small>
-                            ) : null}
-                          </span>
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
-
-                  <div className="reader-insight-grid">
-                    {activeInsights.length ? (
-                      activeInsights.map((card, index) => (
-                        <article key={card.id || `${activePageIndex}-${index}`} className="reader-insight-card">
-                          <div className="reader-insight-head">
-                            <div>
-                              {firstNonEmpty(card.eyebrow, card.source_section_labels?.[0]) ? (
-                                <p className="reader-insight-eyebrow">{firstNonEmpty(card.eyebrow, card.source_section_labels?.[0])}</p>
-                              ) : null}
-                              <h4>{card.title}</h4>
-                            </div>
-                            {card.source_section_labels?.length ? (
-                              <div className="reader-inline-chip-list">
-                                {card.source_section_labels.slice(0, 2).map((label) => (
-                                  <span key={label} className="reader-inline-chip">
-                                    {label}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
-
-                          <div className="reader-tone-stack reader-tone-stack-tight">
-                            <div className="reader-tone-card reader-tone-original">
-                              <span className="reader-tone-label">{copy.originalLabel}</span>
-                              <p>{firstNonEmpty(card.original_text, copy.noOriginal)}</p>
-                            </div>
-                            <div className="reader-tone-card reader-tone-explanation">
-                              <span className="reader-tone-label">{copy.explanationLabel}</span>
-                              <p>{firstNonEmpty(card.explanation_text, copy.noExplanation)}</p>
-                            </div>
-                          </div>
-
-                          <div className="reader-insight-footer">
-                            {card.supporting_points?.length ? (
-                              <div className="reader-support-list">
-                                <p className="reader-block-label">{copy.evidenceLabel}</p>
-                                {card.supporting_points.slice(0, 3).map((item, itemIndex) => (
-                                  <p key={`${card.id || index}-support-${itemIndex}`} className="reader-support-item">
-                                    {item}
-                                  </p>
-                                ))}
-                              </div>
-                            ) : null}
-
-                            {card.why_it_matters?.length ? (
-                              <div className="reader-why-stack">
-                                <p className="reader-block-label">{copy.whyLabel}</p>
-                                {card.why_it_matters.slice(0, 2).map((item, itemIndex) => (
-                                  <div key={`${card.id || index}-why-${itemIndex}`} className="reader-why-item">
-                                    <p>{firstNonEmpty(item.explanation, item.original)}</p>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
-
-                            {card.citations?.length ? (
-                              <div className="reader-citation-list">
-                                {card.citations.slice(0, 4).map((citation, citationIndex) => (
-                                  <span key={`${card.id || index}-citation-${citationIndex}`} className="reader-citation-chip">
-                                    {formatCitationLabel(citation, copy, citationIndex)}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
-                        </article>
-                      ))
-                    ) : activePage?.status === "ready" && activeStructuredState !== "failed" ? (
-                      <div className="reader-structured-empty">
-                        <p>{copy.noInsights}</p>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="reader-navigation">
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() => goToPage(activePageIndex - 1)}
-                      disabled={activePageIndex <= 0}
-                    >
-                      {t("paperReaderPreviousPage")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => goToPage(activePageIndex + 1)}
-                      disabled={pageCount ? activePageIndex >= pageCount - 1 : false}
-                    >
-                      {t("paperReaderNextPage")}
-                    </button>
-                  </div>
-                </section>
-
-                <section className="workspace paper-reader-chat-card">
-                  <div className="paper-reader-chat-head">
-                    <div>
-                      <h3>{t("paperReaderChatTitle")}</h3>
-                      <p className="muted">{activeTitleBase}</p>
-                    </div>
+                  <div className="paper-reader-meta-chips">
+                    <span className="reader-status-chip">
+                      {localizeReaderLabel(firstNonEmpty(activePage?.bucket_label, deriveBucketLabel(activePage), activeTitleBase), language)}
+                    </span>
                     <span className="reader-status-chip">{getStatusLabel(activePage?.status || "queued", t)}</span>
+                    <span className={`reader-status-chip reader-status-chip-structured reader-status-chip-${activeStructuredState}`}>
+                      {getStructuredStatusLabel(activeStructuredState, language)}
+                    </span>
+                    {activeStoryStage ? <span className="reader-status-chip">{activeStoryStage.title}</span> : null}
+                    {session?.discipline ? <span className="reader-status-chip">{getDisciplineLabel(session.discipline, language)}</span> : null}
+                    {activePage?.coverage ? <span className="reader-status-chip">{activePage.coverage}</span> : null}
                   </div>
-                  <form className="reader-chat-composer" onSubmit={handleAskPaper}>
-                    <label>
-                      {t("paperReaderQuestionTitle")}
-                      <textarea
-                        value={chatDraft}
-                        onChange={(event) => setChatDraft(event.target.value)}
-                        rows={4}
-                        placeholder={t("paperReaderQuestionPlaceholder")}
-                      />
-                    </label>
-                    <button type="submit" disabled={chatBusy || !chatDraft.trim() || !session?.session_id}>
-                      {chatBusy ? t("working") : t("paperReaderAsk")}
-                    </button>
-                  </form>
+                </div>
 
-                  <div className="reader-chat-thread">
-                    {chatMessages.length ? (
-                      chatMessages.map((entry, index) => (
-                        <article key={`${entry.role}-${index}-${entry.text}`} className={`reader-chat-message reader-chat-message-${entry.role}`}>
-                          <p>{entry.text}</p>
-                          {entry.citations?.length ? (
-                            <div className="tag-list">
-                              {entry.citations.map((citation, citationIndex) => (
-                                <span key={`${citation.label || "citation"}-${citationIndex}`} className="tag">
-                                  {formatCitationLabel(citation, copy, citationIndex)}
-                                </span>
-                              ))}
-                            </div>
-                          ) : null}
-                          {entry.usedChunks?.length ? <p className="muted">{`${entry.usedChunks.length} chunks`}</p> : null}
-                        </article>
-                      ))
-                    ) : (
-                      <p className="muted">{t("paperReaderNoContent")}</p>
-                    )}
+                {activePage?.status === "error" && activeStructuredState !== "failed" ? (
+                  <div className="warning-box">{activePage.error || t("paperReaderPageLoadFail")}</div>
+                ) : null}
+
+                {activePage?.status === "generating" || pageBusyMap[activePageIndex] ? (
+                  <div className="reader-loading-state">
+                    <span className="progress-liveness progress-liveness-running">
+                      <span className="progress-liveness-dot" aria-hidden="true" />
+                      <span>{t("loading")}</span>
+                    </span>
                   </div>
-                </section>
-              </div>
+                ) : null}
+
+                {activeStructuredState === "failed" ? (
+                  <section className="reader-structured-failure">
+                    <h4>{copy.structuredFailureTitle}</h4>
+                    <p>{activeStructuredMessage || copy.structuredFailureBody}</p>
+                  </section>
+                ) : null}
+
+                {activeOverview ? (
+                  <section className="reader-overview-card reader-module-section" id="reader-module-overview">
+                    <div className="reader-block-head">
+                      <div>
+                        <p className="reader-block-label">{copy.overviewTitle}</p>
+                        <h4>{activeTitleBase}</h4>
+                      </div>
+                      {activeOverview.display_text ? <p className="muted reader-overview-summary">{activeOverview.display_text}</p> : null}
+                    </div>
+                    <BilingualReaderBlock block={activeOverview} copy={copy} />
+                  </section>
+                ) : null}
+
+                <ReadingBlocks blocks={activeReadingBlocks} activeSourceId={activeSourceId} copy={copy} />
+
+                <div className="reader-navigation">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => goToPage(activePageIndex - 1)}
+                    disabled={activePageIndex <= 0}
+                  >
+                    {t("paperReaderPreviousPage")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => goToPage(activePageIndex + 1)}
+                    disabled={pageCount ? activePageIndex >= pageCount - 1 : false}
+                  >
+                    {t("paperReaderNextPage")}
+                  </button>
+                </div>
+              </section>
             </div>
-          </>
+
+            <aside className="paper-reader-card-column">
+              <section className="workspace paper-reader-session-card">
+                <div>
+                  <p className="eyebrow">{copy.navigationTitle}</p>
+                  <h3>{firstNonEmpty(session.paper_title, t("paperReaderTitle"))}</h3>
+                  <p className="muted">
+                    {t("paperReaderSessionId")}: {session.session_id || t("none")}
+                  </p>
+                  <p className="muted">{firstNonEmpty(session.arxiv_id, session.file_name, session.source || t("none"))}</p>
+                </div>
+                <div className="paper-reader-outline-meta">
+                  <span className="reader-status-chip">{`${t("paperReaderPageCount")}: ${pageCount || "-"}`}</span>
+                  <span className="reader-status-chip">{`${t("paperReaderCurrentStatus")}: ${getStatusLabel(currentPageStatus, t)}`}</span>
+                  <span className="reader-status-chip">{`${copy.disciplineLabel}: ${getDisciplineLabel(session.discipline, language)}`}</span>
+                </div>
+                <div className="paper-reader-page-jump-list">
+                  {pageEntries.map((page) => (
+                    <button
+                      key={page.page_index}
+                      type="button"
+                      className={`reader-page-subanchor${page.page_index === activePageIndex ? " active" : ""}`}
+                      onClick={() => goToPage(page.page_index)}
+                    >
+                      {page.page_index + 1}
+                    </button>
+                  ))}
+                </div>
+                {activeSourceSections.length ? (
+                  <div className="reader-source-chip-list">
+                    {activeSourceSections.slice(0, 4).map((section, index) => (
+                      <span key={`${section.label}-${index}`} className="reader-source-chip">
+                        <span>{section.label}</span>
+                        {formatPageRange(section.page_start, section.page_end, copy) ? (
+                          <small>{formatPageRange(section.page_start, section.page_end, copy)}</small>
+                        ) : null}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                <button type="button" className="secondary" onClick={exportResearchNotes} disabled={!pageEntries.length}>
+                  {copy.exportNotes}
+                </button>
+              </section>
+
+              <DisciplineCards
+                cards={activeDisciplineCards}
+                activeSourceId={activeSourceId}
+                onActivate={activateDisciplineCard}
+                onClear={() => setActiveSourceId("")}
+                onOpen={openDisciplineCard}
+                copy={copy}
+              />
+            </aside>
+          </div>
         )}
       </section>
-
-      <aside className="assistant-column">{renderAssistantLayer?.() || null}</aside>
     </div>
   );
 }

@@ -63,6 +63,7 @@ Configuration precedence is:
 
 API keys are write-only in the UI. The backend only returns `has_api_key: true/false`.
 For safety, commit only [`config/runtime_settings.example.json`](config/runtime_settings.example.json); keep the real `config/runtime_settings.json` local.
+Paper Reader uses `paper_reader_chat` for structured reading pages and `paper_reader_translation` only for original source-card translations.
 
 ## Repository Structure
 
@@ -287,7 +288,11 @@ Default dev URLs:
 - Backend: `http://127.0.0.1:9178`
 - Frontend: `http://127.0.0.1:5173`
 
-### 6. Production frontend build
+### 6. Read one paper in Paper Reader
+
+Open the `Paper Reader` tab in the web app, then load an arXiv URL or upload a local PDF. The reader can auto-detect or manually accept a paper discipline, then presents a three-column reading workspace: a sticky Live2D paper assistant, a central original-text plus page-language interpretation stream, and discipline-specific guide cards that highlight the matching original block on hover. Original source-card translations are generated through the separate `paper_reader_translation` runtime config instead of the main Paper Reader model. Follow-up questions in this page go through the Live2D assistant with the current page text injected as context; the frontend no longer embeds the user's question for a separate Paper Reader chat retrieval step.
+
+### 7. Production frontend build
 
 ```bash
 cd frontend
