@@ -74,6 +74,24 @@ class CitationTraceServiceTest(unittest.TestCase):
                 self.assertIn("Last Useful Paper", entries[-1].raw_text)
                 self.assertNotIn(trailing_text, entries[-1].raw_text)
 
+    def test_extract_reference_entries_keeps_year_continuation_lines(self):
+        text = """
+        Abstract
+        We study useful things.
+
+        References
+        [1] First Paper. Important Work.
+        2017. pages 1-2.
+        [2] Second Paper. Another Work.
+        """
+
+        entries = cts.extract_reference_entries(text)
+
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0].raw_label, "[1]")
+        self.assertIn("2017. pages 1-2.", entries[0].raw_text)
+        self.assertEqual(entries[1].raw_label, "[2]")
+
     def test_unresolved_reference_stays_visible_as_node_and_ledger_entry(self):
         reference = cts.ReferenceEntry(
             reference_id="ref-1",
