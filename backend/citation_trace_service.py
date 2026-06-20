@@ -14,11 +14,15 @@ EvidenceLevel = Literal["strong", "medium", "weak"]
 RoundStatus = Literal["pending", "running", "completed", "partial", "failed"]
 
 REFERENCE_HEADING_PATTERN = re.compile(r"^\s*(references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE)
-NEXT_SECTION_PATTERN = re.compile(r"^\s*(appendix|supplementary material|acknowledg(?:e)?ments)\b", re.IGNORECASE)
+NEXT_SECTION_PATTERN = re.compile(
+    r"^\s*(?:\d+(?:\.\d+)*\.?\s+)?(appendix|supplementary materials?|acknowledg(?:e)?ments?)\b",
+    re.IGNORECASE,
+)
 ARXIV_ID_PATTERN = re.compile(r"\barxiv\s*:\s*(\d{4}\.\d{4,5})(?:v\d+)?\b", re.IGNORECASE)
 DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
 YEAR_PATTERN = re.compile(r"\b(19\d{2}|20\d{2})\b")
 REFERENCE_SPLIT_PATTERN = re.compile(r"(?m)^\s*(?P<label>\[\d+\]|\d+\.)\s+")
+REFERENCE_SENTENCE_SPLIT_PATTERN = re.compile(r"(?<!\b[A-Z])\.\s+")
 
 
 @dataclass(slots=True)
@@ -98,7 +102,7 @@ def _title_hint_from_reference(text: str) -> str | None:
     if not normalized:
         return None
     without_label = re.sub(r"^(\[\d+\]|\d+\.)\s*", "", normalized).strip()
-    pieces = [piece.strip() for piece in re.split(r"\.\s+", without_label) if piece.strip()]
+    pieces = [piece.strip() for piece in REFERENCE_SENTENCE_SPLIT_PATTERN.split(without_label) if piece.strip()]
     for piece in pieces[1:4]:
         if len(piece.split()) >= 3 and not YEAR_PATTERN.fullmatch(piece):
             return piece[:240]

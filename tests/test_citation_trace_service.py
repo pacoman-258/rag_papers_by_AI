@@ -3,6 +3,29 @@ import unittest
 from backend import citation_trace_service as cts
 
 
+def _top_paper(
+    rank,
+    paper_id,
+    *,
+    evidence_level="strong",
+    is_exploratory=False,
+    is_explicitly_cited=True,
+):
+    return cts.CitationTraceTopPaper(
+        rank=rank,
+        paper_id=paper_id,
+        title=paper_id.upper(),
+        influence_area="method",
+        reason=f"{paper_id} reason",
+        evidence_level=evidence_level,
+        is_explicitly_cited=is_explicitly_cited,
+        is_exploratory=is_exploratory,
+        why_worth_reading=f"{paper_id} reading",
+        uncertainty="weak evidence" if evidence_level == "weak" else "",
+        supporting_edge_ids=[],
+    )
+
+
 class CitationTraceServiceTest(unittest.TestCase):
     def test_extract_reference_entries_from_references_section(self):
         text = """
@@ -24,7 +47,32 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertIn("Attention Is All You Need", entries[0].raw_text)
         self.assertEqual(entries[0].arxiv_id, "1706.03762")
         self.assertIn("Bahdanau", entries[1].raw_text)
+        self.assertIn("Neural Machine Translation", entries[1].title_hint)
         self.assertIsNone(entries[2].arxiv_id)
+
+    def test_extract_reference_entries_stops_at_numbered_or_plural_next_sections(self):
+        for heading, trailing_text in (
+            ("6 Acknowledgements", "We thank careful reviewers."),
+            ("Supplementary Materials", "Extra experiment tables."),
+        ):
+            with self.subTest(heading=heading):
+                text = f"""
+                Abstract
+                We study useful things.
+
+                References
+                [1] A. Example. First Useful Paper. 2020.
+                [2] B. Example. Last Useful Paper. 2021.
+                {heading}
+                {trailing_text}
+                """
+
+                entries = cts.extract_reference_entries(text)
+
+                self.assertEqual(len(entries), 2)
+                self.assertEqual(entries[-1].raw_label, "[2]")
+                self.assertIn("Last Useful Paper", entries[-1].raw_text)
+                self.assertNotIn(trailing_text, entries[-1].raw_text)
 
     def test_unresolved_reference_stays_visible_as_node_and_ledger_entry(self):
         reference = cts.ReferenceEntry(
@@ -47,15 +95,20 @@ class CitationTraceServiceTest(unittest.TestCase):
 
     def test_final_top5_limits_low_evidence_exploratory_entries_to_two(self):
         items = [
-            cts.CitationTraceTopPaper(rank=1, paper_id="p1", title="P1", influence_area="method", reason="strong", evidence_level="strong", is_explicitly_cited=True, is_exploratory=False, why_worth_reading="core", uncertainty="", supporting_edge_ids=[]),
-            cts.CitationTraceTopPaper(rank=2, paper_id="p2", title="P2", influence_area="theory", reason="weak one", evidence_level="weak", is_explicitly_cited=False, is_exploratory=True, why_worth_reading="explore", uncertainty="weak evidence", supporting_edge_ids=[]),
-            cts.CitationTraceTopPaper(rank=3, paper_id="p3", title="P3", influence_area="problem", reason="weak two", evidence_level="weak", is_explicitly_cited=False, is_exploratory=True, why_worth_reading="explore", uncertainty="weak evidence", supporting_edge_ids=[]),
-            cts.CitationTraceTopPaper(rank=4, paper_id="p4", title="P4", influence_area="dataset", reason="weak three", evidence_level="weak", is_explicitly_cited=False, is_exploratory=True, why_worth_reading="explore", uncertainty="weak evidence", supporting_edge_ids=[]),
+            _top_paper(7, "p7"),
+            _top_paper(4, "p4", evidence_level="weak", is_exploratory=True, is_explicitly_cited=False),
+            _top_paper(2, "p2", evidence_level="weak", is_exploratory=True, is_explicitly_cited=False),
+            _top_paper(1, "p1"),
+            _top_paper(6, "p6"),
+            _top_paper(3, "p3", evidence_level="weak", is_exploratory=True, is_explicitly_cited=False),
+            _top_paper(5, "p5"),
         ]
 
         trimmed = cts.enforce_final_top5_policy(items)
 
-        self.assertEqual([item.paper_id for item in trimmed], ["p1", "p2", "p3"])
+        self.assertEqual([item.paper_id for item in trimmed], ["p1", "p2", "p3", "p5", "p6"])
+        self.assertEqual([item.rank for item in trimmed], [1, 2, 3, 4, 5])
+        self.assertEqual(len(trimmed), 5)
         self.assertLessEqual(sum(1 for item in trimmed if item.is_exploratory and item.evidence_level == "weak"), 2)
 
 
