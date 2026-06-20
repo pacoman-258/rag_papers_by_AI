@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from backend import paper_reader_service as prs
 from backend.config_store import runtime_settings_to_response, runtime_settings_to_storage, storage_to_runtime_settings
+from backend.schemas import PaperReaderSelectionTranslateRequest
 from local_paper_db.app.search_service import (
     AssistantMemoryConfig,
     ChatConfig,
@@ -182,6 +183,62 @@ class PaperReaderTranslationTest(unittest.TestCase):
         self.assertEqual(called_models, ["reader-model", "translator-model"])
         self.assertEqual(content.reading_blocks[0].explanation, translation_output["translations"][0]["explanation"])
         self.assertEqual(content.reading_blocks[0].display_text, translation_output["translations"][0]["explanation"])
+
+    def test_selected_text_translation_uses_translation_config_only(self):
+        settings = _settings()
+        session = _session(settings)
+        request = PaperReaderSelectionTranslateRequest(
+            text="Attention mechanisms connect any two positions with a constant number of operations.",
+            answer_language="zh",
+        )
+        called_models: list[str] = []
+        captured_prompts: list[str] = []
+
+        def fake_chat_completion(messages, config, _timeout):
+            called_models.append(config.model)
+            captured_prompts.append(messages[-1]["content"])
+            return json.dumps({"translation": "注意力机制用常数次操作连接任意两个位置。"}, ensure_ascii=False)
+
+        with patch.dict(prs._SESSION_CACHE, {session.session_id: session}, clear=True):
+            with patch("backend.paper_reader_service.chat_completion", side_effect=fake_chat_completion):
+                response = prs.translate_selected_text(session.session_id, request, settings)
+
+        self.assertEqual(called_models, ["translator-model"])
+        self.assertIn("Translate only", captured_prompts[0])
+        self.assertIn("Do not explain", captured_prompts[0])
+        self.assertEqual(response.translation, "注意力机制用常数次操作连接任意两个位置。")
+        self.assertEqual(response.source_text, request.text)
+
+    def test_selected_text_translation_can_use_google_translate_mode(self):
+        settings = _settings()
+        settings.paper_reader_translation = ChatConfig(
+            provider="google_translate",
+            model="",
+            base_url=None,
+            api_key=None,
+        )
+        session = _session(settings)
+        request = PaperReaderSelectionTranslateRequest(
+            text="Attention mechanisms connect any two positions with a constant number of operations.",
+            answer_language="zh",
+        )
+
+        with patch.dict(prs._SESSION_CACHE, {session.session_id: session}, clear=True):
+            with patch("backend.paper_reader_service.chat_completion") as chat_completion_mock:
+                with patch(
+                    "backend.paper_reader_service.google_translate_text",
+                    return_value="注意力机制用常数次操作连接任意两个位置。",
+                ) as google_translate_mock:
+                    response = prs.translate_selected_text(session.session_id, request, settings)
+
+        chat_completion_mock.assert_not_called()
+        google_translate_mock.assert_called_once_with(
+            request.text,
+            "zh",
+            timeout=settings.retrieval.request_timeout,
+        )
+        self.assertEqual(response.translation, "注意力机制用常数次操作连接任意两个位置。")
+        self.assertEqual(response.source_text, request.text)
 
 
 if __name__ == "__main__":

@@ -97,6 +97,21 @@ const PAPER_READER_DISCIPLINE_OPTIONS = [
   { value: "philosophy_humanities", zh: "哲学/人文文章", en: "Philosophy / humanities" },
   { value: "policy_law", zh: "政策/法律文章", en: "Policy / law" }
 ];
+const PDF_ZOOM_MIN = 0.75;
+const PDF_ZOOM_MAX = 2;
+const PDF_ZOOM_STEP = 0.15;
+
+function clampPdfZoom(value) {
+  const zoom = Number(value);
+  if (!Number.isFinite(zoom)) {
+    return 1;
+  }
+  return Math.min(PDF_ZOOM_MAX, Math.max(PDF_ZOOM_MIN, Math.round(zoom * 100) / 100));
+}
+
+function formatPdfZoomLabel(value) {
+  return `${Math.round(clampPdfZoom(value) * 100)}%`;
+}
 
 function normalizeDiscipline(value, fallback = "general") {
   const normalized = String(value || "").trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
@@ -416,6 +431,65 @@ function normalizeReadingBlocks(raw) {
     .filter(Boolean);
 }
 
+function normalizeSourcePageText(value) {
+  if (typeof value !== "string") {
+    return sanitizeText(value);
+  }
+  const text = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  return looksLikeStructuredText(text) ? "" : text;
+}
+
+function normalizeSourcePagesPayload(raw, fallbackPageIndex = 0) {
+  if (!isPlainObject(raw)) {
+    return null;
+  }
+  const pages = toArray(raw.pages)
+    .map((item, index) => {
+      if (!isPlainObject(item)) {
+        const text = normalizeSourcePageText(item);
+        return text ? { page_number: index + 1, text } : null;
+      }
+      const pageNumber = toNumber(item.page_number ?? item.pageNumber ?? item.number ?? index + 1, index + 1);
+      const text = normalizeSourcePageText(item.text ?? item.content ?? item.source_text ?? item.sourceText);
+      const spans = toArray(item.spans)
+        .map((span) => {
+          if (!isPlainObject(span)) {
+            return null;
+          }
+          const spanText = normalizeSourcePageText(span.text);
+          if (!spanText) {
+            return null;
+          }
+          return {
+            text: spanText,
+            x: toNumber(span.x, 0),
+            y: toNumber(span.y, 0),
+            font_size: Math.max(1, toNumber(span.font_size ?? span.fontSize, 10)),
+            font_weight: firstNonEmpty(span.font_weight, span.fontWeight, "400"),
+            font_style: firstNonEmpty(span.font_style, span.fontStyle, "normal")
+          };
+        })
+        .filter(Boolean);
+      return text || spans.length
+        ? {
+            page_number: pageNumber,
+            text,
+            width: toNumber(item.width, 0) || null,
+            height: toNumber(item.height, 0) || null,
+            spans
+          }
+        : null;
+    })
+    .filter(Boolean);
+  return {
+    session_id: firstNonEmpty(raw.session_id, raw.sessionId),
+    reader_page_index: toNumber(raw.reader_page_index ?? raw.readerPageIndex, fallbackPageIndex),
+    page_start: raw.page_start ?? raw.pageStart ?? null,
+    page_end: raw.page_end ?? raw.pageEnd ?? null,
+    pages
+  };
+}
+
 function normalizeStructuredStatus(raw) {
   if (!isPlainObject(raw)) {
     return {
@@ -674,6 +748,14 @@ function firstSentence(text, maxLength = 180) {
   }
   const first = normalized.split(/(?<=[。！？.!?])\s+/)[0] || normalized;
   return first.length > maxLength ? `${first.slice(0, maxLength).trim()}...` : first;
+}
+
+function clipDisplayText(text, maxLength = 520) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength).trim()}...` : normalized;
 }
 
 function exactTextKey(value) {
@@ -1585,6 +1667,24 @@ function getPaperReaderCopy(language, t) {
       readingBlocksTitle: "论文原文与解读",
       rightCardsTitle: "学科讲解卡片",
       cardHoverHint: "悬停卡片会高亮对应原文，点击可跳转。",
+      sourcePdfTitle: "PDF 原文",
+      sourcePdfFallbackTitle: "当前原文页",
+      sourcePdfFallbackRange: "原文页码待同步",
+      sourcePdfPageLabel: "原文页",
+      sourcePdfLoading: "载入原文",
+      sourcePdfEmpty: "当前阅读页还没有可展示的 PDF 原文。",
+      selectionReady: "已选中原文",
+      zoomControlsLabel: "缩放 PDF",
+      zoomInLabel: "放大 PDF",
+      zoomOutLabel: "缩小 PDF",
+      zoomResetLabel: "重置 PDF 缩放",
+      selectionTranslationTitle: "选区翻译",
+      selectionTranslationHeading: "翻译卡片",
+      selectionTranslationEmpty: "选中 PDF 原文后可翻译。",
+      selectedOriginalLabel: "选中原文",
+      translationOnlyLabel: "译文",
+      translateSelectionButton: "翻译选区",
+      selectionTranslationRunning: "翻译中",
       evidenceLabel: "证据线索",
       structuredFailureTitle: "本页结构化解析失败",
       structuredFailureBody: "我没有展示原始模型文本，而是保留了安全失败态。你可以重试本页，或跳到下一页继续阅读。",
@@ -1636,6 +1736,24 @@ function getPaperReaderCopy(language, t) {
     readingBlocksTitle: "Original and reading translation",
     rightCardsTitle: "Discipline cards",
     cardHoverHint: "Hover a card to highlight the matching original text; click to jump.",
+    sourcePdfTitle: "PDF Original",
+    sourcePdfFallbackTitle: "Current source pages",
+    sourcePdfFallbackRange: "Source page range pending",
+    sourcePdfPageLabel: "Source page",
+    sourcePdfLoading: "Loading source",
+    sourcePdfEmpty: "No PDF source text is available for this reader page yet.",
+    selectionReady: "Original selected",
+    zoomControlsLabel: "PDF zoom",
+    zoomInLabel: "Zoom PDF in",
+    zoomOutLabel: "Zoom PDF out",
+    zoomResetLabel: "Reset PDF zoom",
+    selectionTranslationTitle: "Selection translation",
+    selectionTranslationHeading: "Translation card",
+    selectionTranslationEmpty: "Select text in the PDF original to translate it.",
+    selectedOriginalLabel: "Selected original",
+    translationOnlyLabel: "Translation",
+    translateSelectionButton: "Translate selection",
+    selectionTranslationRunning: "Translating",
     evidenceLabel: "Evidence trail",
     structuredFailureTitle: "Structured page parsing failed",
     structuredFailureBody:
@@ -1860,6 +1978,208 @@ function buildDisciplineCards({ page, readingBlocks, sourceSections, language, c
   return cards.filter((card) => card.title || card.body).slice(0, 10);
 }
 
+function sourcePagePdfUrl(sessionId, pageNumber) {
+  if (!sessionId || !pageNumber) {
+    return "";
+  }
+  return `/api/paper-reader/session/${encodeURIComponent(sessionId)}/source-pages/${encodeURIComponent(
+    pageNumber
+  )}/pdf#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
+}
+
+function SourcePdfTextLayer({ page, copy }) {
+  const width = Math.max(1, toNumber(page.width, 612));
+  const height = Math.max(1, toNumber(page.height, 792));
+  const spans = page.spans || [];
+  if (!spans.length) {
+    return (
+      <div className="reader-pdf-page-text-layer reader-pdf-page-fallback-text" aria-label={`${copy.sourcePdfPageLabel} ${page.page_number}`}>
+        {page.text}
+      </div>
+    );
+  }
+  return (
+    <svg
+      className="reader-pdf-page-text-layer"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="xMidYMid meet"
+      aria-label={`${copy.sourcePdfPageLabel} ${page.page_number}`}
+    >
+      {spans.map((span, index) => (
+        <text
+          key={`${page.page_number}-${index}-${span.x}-${span.y}`}
+          x={span.x}
+          y={span.y}
+          fontFamily='"Times New Roman", Times, serif'
+          fontSize={span.font_size}
+          fontWeight={span.font_weight}
+          fontStyle={span.font_style}
+          xmlSpace="preserve"
+        >
+          {span.text}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+function SourcePdfReader({
+  sourcePages,
+  busy,
+  error,
+  activePage,
+  sessionId,
+  pdfZoom,
+  canZoomIn,
+  canZoomOut,
+  selectedText,
+  copy,
+  sourceViewerRef,
+  onZoomIn,
+  onZoomOut,
+  onZoomReset,
+  onMouseUp,
+  onContextMenu,
+  onDoubleClick
+}) {
+  const pages = sourcePages?.pages || [];
+  const resolvedZoom = clampPdfZoom(pdfZoom);
+  const pageRange = formatPageRange(sourcePages?.page_start ?? activePage?.page_start, sourcePages?.page_end ?? activePage?.page_end, copy);
+  return (
+    <section className="reader-pdf-source-shell">
+      <div className="paper-reader-meta-bar reader-pdf-toolbar">
+        <div className="paper-reader-meta-copy">
+          <p className="eyebrow">{copy.sourcePdfTitle}</p>
+          <h3>{activePage?.title || copy.sourcePdfFallbackTitle}</h3>
+          <p className="muted">{pageRange || copy.sourcePdfFallbackRange}</p>
+        </div>
+        <div className="paper-reader-meta-chips reader-pdf-toolbar-actions">
+          <div className="reader-pdf-zoom-controls" aria-label={copy.zoomControlsLabel}>
+            <button
+              type="button"
+              className="secondary reader-pdf-zoom-button"
+              onClick={onZoomOut}
+              disabled={!canZoomOut}
+              title={copy.zoomOutLabel}
+              aria-label={copy.zoomOutLabel}
+            >
+              -
+            </button>
+            <button
+              type="button"
+              className="secondary reader-pdf-zoom-button reader-pdf-zoom-value"
+              onClick={onZoomReset}
+              title={copy.zoomResetLabel}
+              aria-label={copy.zoomResetLabel}
+            >
+              {formatPdfZoomLabel(pdfZoom)}
+            </button>
+            <button
+              type="button"
+              className="secondary reader-pdf-zoom-button"
+              onClick={onZoomIn}
+              disabled={!canZoomIn}
+              title={copy.zoomInLabel}
+              aria-label={copy.zoomInLabel}
+            >
+              +
+            </button>
+          </div>
+          {selectedText ? <span className="reader-status-chip">{copy.selectionReady}</span> : null}
+          {busy ? <span className="reader-status-chip">{copy.sourcePdfLoading}</span> : null}
+        </div>
+      </div>
+
+      {error ? <div className="warning-box">{error}</div> : null}
+      {!pages.length && !busy && !error ? (
+        <div className="reader-structured-empty">
+          <p>{copy.sourcePdfEmpty}</p>
+        </div>
+      ) : null}
+
+      <div
+        className="reader-pdf-page-stack"
+        style={{
+          "--reader-pdf-zoom": resolvedZoom,
+          "--reader-pdf-width": `${Math.round(resolvedZoom * 100)}%`,
+          "--reader-pdf-max-width": `${Math.round(780 * resolvedZoom)}px`
+        }}
+        ref={sourceViewerRef}
+        onMouseUp={onMouseUp}
+        onContextMenu={onContextMenu}
+        onDoubleClick={onDoubleClick}
+      >
+        {pages.map((page) => {
+          const width = Math.max(1, toNumber(page.width, 612));
+          const height = Math.max(1, toNumber(page.height, 792));
+          const pagePdfUrl = sourcePagePdfUrl(sessionId, page.page_number);
+          return (
+            <article
+              className="reader-pdf-page"
+              data-page-number={page.page_number}
+              key={page.page_number}
+              aria-label={`${copy.sourcePdfPageLabel} ${page.page_number}`}
+            >
+              <div className="reader-pdf-page-stage" style={{ "--reader-pdf-aspect": `${width} / ${height}` }}>
+                {pagePdfUrl ? (
+                  <iframe
+                    className="reader-pdf-page-frame"
+                    src={pagePdfUrl}
+                    title={`${copy.sourcePdfPageLabel} ${page.page_number}`}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                  />
+                ) : null}
+                <SourcePdfTextLayer page={page} copy={copy} />
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function SelectionTranslationPanel({ selection, translationState, copy, onTranslate }) {
+  const hasSelection = Boolean(selection?.text);
+  const translating = translationState.status === "running";
+  const translatedText = translationState.translation || "";
+  return (
+    <section className="workspace paper-reader-selection-card">
+      <div className="reader-selection-card-head">
+        <p className="eyebrow">{copy.selectionTranslationTitle}</p>
+        <h3>{copy.selectionTranslationHeading}</h3>
+      </div>
+      {hasSelection ? (
+        <div className="reader-selected-excerpt">
+          <span className="reader-tone-label">{copy.selectedOriginalLabel}</span>
+          <p>{clipDisplayText(selection.text)}</p>
+        </div>
+      ) : (
+        <p className="muted">{copy.selectionTranslationEmpty}</p>
+      )}
+      {translationState.error ? <div className="warning-box">{translationState.error}</div> : null}
+      {translating ? (
+        <div className="reader-loading-state reader-selection-loading">
+          <span className="progress-liveness progress-liveness-running">
+            <span className="progress-liveness-dot" aria-hidden="true" />
+            <span>{copy.selectionTranslationRunning}</span>
+          </span>
+        </div>
+      ) : null}
+      {translatedText ? (
+        <div className="reader-selection-translation">
+          <span className="reader-tone-label">{copy.translationOnlyLabel}</span>
+          <p>{translatedText}</p>
+        </div>
+      ) : null}
+      <button type="button" onClick={onTranslate} disabled={!hasSelection || translating}>
+        {translating ? copy.selectionTranslationRunning : copy.translateSelectionButton}
+      </button>
+    </section>
+  );
+}
+
 function ReadingBlocks({ blocks, activeSourceId, copy }) {
   if (!blocks?.length) {
     return (
@@ -2073,16 +2393,25 @@ export default function PaperReaderPage({
   renderAssistantLayer,
   onAssistantContextChange
 }) {
-  const paperReaderConfig = settings?.paper_reader_chat || {};
   const [arxivUrl, setArxivUrl] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
   const [readerMode, setReaderMode] = useState("guided");
   const [discipline, setDiscipline] = useState("auto");
   const [session, setSession] = useState(null);
   const [pagesByIndex, setPagesByIndex] = useState({});
+  const [sourcePagesByIndex, setSourcePagesByIndex] = useState({});
+  const [sourcePagesBusyMap, setSourcePagesBusyMap] = useState({});
+  const [sourcePagesErrorMap, setSourcePagesErrorMap] = useState({});
   const [activePageIndex, setActivePageIndex] = useState(0);
+  const [pdfZoom, setPdfZoom] = useState(1);
   const [sessionBusy, setSessionBusy] = useState(false);
-  const [pageBusyMap, setPageBusyMap] = useState({});
+  const [pdfSelection, setPdfSelection] = useState(null);
+  const [selectionTranslation, setSelectionTranslation] = useState({
+    status: "idle",
+    sourceText: "",
+    translation: "",
+    error: ""
+  });
   const [bannerMessage, setBannerMessage] = useState("");
   const [bannerError, setBannerError] = useState("");
   const [readerProgress, setReaderProgress] = useState({
@@ -2093,13 +2422,14 @@ export default function PaperReaderPage({
   });
   const [activeModuleId, setActiveModuleId] = useState("");
   const [activeSourceId, setActiveSourceId] = useState("");
-  const streamRefs = useRef(new Map());
-  const pollRefs = useRef(new Map());
   const assistantContextKeyRef = useRef("");
   const activeRequestRef = useRef(0);
   const autoLoadUrlRef = useRef("");
   const fileInputRef = useRef(null);
   const pageCardRef = useRef(null);
+  const sourceViewerRef = useRef(null);
+  const selectionRangeRef = useRef(null);
+  const selectionRequestRef = useRef(0);
 
   const pageEntries = useMemo(() => {
     const manifest = Array.isArray(session?.pages) ? session.pages : [];
@@ -2117,19 +2447,11 @@ export default function PaperReaderPage({
     pagesByIndex[activePageIndex] ||
     session?.current_page ||
     null;
-  const currentPageStatus = activePage?.status || (session ? "queued" : "idle");
-  const readerBudget = Number(paperReaderConfig.max_context_tokens || 0);
-  const readerModelSummary = useMemo(() => {
-    const provider = firstNonEmpty(paperReaderConfig.provider, t("none"));
-    const model = firstNonEmpty(paperReaderConfig.model, t("none"));
-    const budget = readerBudget > 0 ? readerBudget : t("none");
-    return `${provider} / ${model} · ${budget}`;
-  }, [paperReaderConfig.model, paperReaderConfig.provider, readerBudget, t]);
+  const currentPageStatus = activePage?.status || (session ? "ready" : "idle");
   const readerProgressSteps = useMemo(
     () => [
       { key: "load", label: t("paperReaderProgressLoad") },
-      { key: "paginate", label: t("paperReaderProgressPaginate") },
-      { key: "page", label: t("paperReaderProgressPage") }
+      { key: "paginate", label: t("paperReaderProgressPaginate") }
     ],
     [t]
   );
@@ -2150,6 +2472,11 @@ export default function PaperReaderPage({
   const activeOverview = activePage?.page_overview || null;
   const activeReadingBlocks = activePage?.reading_blocks || [];
   const activeSourceSections = activePage?.source_sections || [];
+  const activeSourcePageBundle = sourcePagesByIndex[activePageIndex] || null;
+  const activeSourcePagesBusy = Boolean(sourcePagesBusyMap[activePageIndex]);
+  const activeSourcePagesError = sourcePagesErrorMap[activePageIndex] || "";
+  const canZoomIn = pdfZoom < PDF_ZOOM_MAX;
+  const canZoomOut = pdfZoom > PDF_ZOOM_MIN;
   const indexTree = session?.index_tree || null;
   const activeSourceNodeIds = useMemo(() => new Set(activePage?.source_node_ids || []), [activePage?.source_node_ids]);
   const activeInsights = activePage?.insights || [];
@@ -2217,21 +2544,6 @@ export default function PaperReaderPage({
   }, [initialArxivUrl]);
 
   useEffect(() => {
-    return () => {
-      streamRefs.current.forEach((source) => {
-        try {
-          source.close();
-        } catch (_) {
-          // ignore cleanup failures
-        }
-      });
-      streamRefs.current.clear();
-      pollRefs.current.forEach((timerId) => window.clearInterval(timerId));
-      pollRefs.current.clear();
-    };
-  }, []);
-
-  useEffect(() => {
     if (!session?.session_id) {
       return;
     }
@@ -2239,7 +2551,6 @@ export default function PaperReaderPage({
     if (targetIndex !== activePageIndex) {
       setActivePageIndex(targetIndex);
     }
-    void ensurePageReady(targetIndex, { sessionId: session.session_id });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.session_id, session?.current_page_index, session?.pages?.length]);
 
@@ -2304,6 +2615,11 @@ export default function PaperReaderPage({
       if (isTypingTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
         return;
       }
+      if (event.key?.toLowerCase() === "t" && pdfSelection?.text) {
+        event.preventDefault();
+        void translateSelectedPdfText();
+        return;
+      }
       if (event.key === "ArrowLeft" && activePageIndex > 0) {
         event.preventDefault();
         goToPage(activePageIndex - 1);
@@ -2315,7 +2631,48 @@ export default function PaperReaderPage({
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activePageIndex, pageCount, session?.session_id]);
+  }, [activePageIndex, pageCount, pdfSelection?.text, selectionTranslation.status, session?.session_id, language, runtimePayload]);
+
+  useEffect(() => {
+    clearPdfSelection({ preserveTranslation: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePageIndex, session?.session_id]);
+
+  useEffect(() => {
+    if (!session?.session_id) {
+      return;
+    }
+    void ensureSourcePages(activePageIndex, { sessionId: session.session_id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePageIndex, session?.session_id]);
+
+  useEffect(() => {
+    if (!pdfSelection?.text) {
+      return undefined;
+    }
+    function handleContextMenu() {
+      clearPdfSelection();
+    }
+    function handleDoubleClick(event) {
+      const viewer = sourceViewerRef.current;
+      if (viewer?.contains(event.target)) {
+        window.requestAnimationFrame(() => {
+          if (!capturePdfSelection()) {
+            clearPdfSelection();
+          }
+        });
+        return;
+      }
+      clearPdfSelection();
+    }
+    window.addEventListener("contextmenu", handleContextMenu);
+    window.addEventListener("dblclick", handleDoubleClick);
+    return () => {
+      window.removeEventListener("contextmenu", handleContextMenu);
+      window.removeEventListener("dblclick", handleDoubleClick);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfSelection?.text]);
 
   function updateReaderProgress(step, status, detail = "") {
     setReaderProgress({
@@ -2327,22 +2684,22 @@ export default function PaperReaderPage({
   }
 
   function resetReaderState() {
-    streamRefs.current.forEach((source) => {
-      try {
-        source.close();
-      } catch (_) {
-        // ignore cleanup failures
-      }
-    });
-    streamRefs.current.clear();
-    pollRefs.current.forEach((timerId) => window.clearInterval(timerId));
-    pollRefs.current.clear();
     setSession(null);
     setPagesByIndex({});
+    setSourcePagesByIndex({});
+    setSourcePagesBusyMap({});
+    setSourcePagesErrorMap({});
     setActivePageIndex(0);
+    setPdfZoom(1);
+    clearPdfSelection({ preserveTranslation: false });
     setBannerMessage("");
     setBannerError("");
-    setPageBusyMap({});
+    setSelectionTranslation({
+      status: "idle",
+      sourceText: "",
+      translation: "",
+      error: ""
+    });
     setReaderProgress({
       step: "load",
       status: "idle",
@@ -2394,213 +2751,225 @@ export default function PaperReaderPage({
     }
   }
 
-  function setPageBusy(pageIndex, busy) {
-    setPageBusyMap((current) => {
-      const next = { ...current };
-      if (busy) {
-        next[pageIndex] = true;
-      } else {
-        delete next[pageIndex];
-      }
-      return next;
-    });
-  }
-
-  function stopPageWatch(pageIndex) {
-    const source = streamRefs.current.get(pageIndex);
-    if (source) {
-      try {
-        source.close();
-      } catch (_) {
-        // ignore cleanup failures
-      }
-    }
-    streamRefs.current.delete(pageIndex);
-    const timerId = pollRefs.current.get(pageIndex);
-    if (timerId) {
-      window.clearInterval(timerId);
-    }
-    pollRefs.current.delete(pageIndex);
-    setPageBusy(pageIndex, false);
-  }
-
-  async function fetchSessionState(sessionId) {
-    const response = await fetch(`/api/paper-reader/session/${encodeURIComponent(sessionId)}`);
-    const payload = await readJsonWithDetailFallback(response);
-    if (!response.ok) {
-      throw new Error(payload.detail || `${t("paperReaderFetchFail")} (HTTP ${response.status})`);
-    }
-    const normalized = normalizeSession(payload);
-    if (!normalized) {
-      throw new Error(t("paperReaderFetchFail"));
-    }
-    setSession(normalized);
-    normalized.pages.forEach((page) => upsertPage(page));
-    if (normalized.current_page) {
-      upsertPage(normalized.current_page);
-    }
-    return normalized;
-  }
-
-  async function fetchPageSnapshot(sessionId, pageIndex) {
+  async function fetchSourcePagesSnapshot(sessionId, pageIndex) {
     const response = await fetch(
-      `/api/paper-reader/session/${encodeURIComponent(sessionId)}/pages/${encodeURIComponent(pageIndex)}`
+      `/api/paper-reader/session/${encodeURIComponent(sessionId)}/pages/${encodeURIComponent(pageIndex)}/source`
     );
     const payload = await readJsonWithDetailFallback(response);
     if (!response.ok) {
-      throw new Error(payload.detail || `${t("paperReaderPageLoadFail")} (HTTP ${response.status})`);
+      throw new Error(payload.detail || `${copy.sourcePdfLoading} (HTTP ${response.status})`);
     }
-    const page = normalizePageEntry(payload?.page || payload?.current_page || payload?.content || payload, pageIndex);
-    if (page) {
-      upsertPage(page);
+    const sourcePages = normalizeSourcePagesPayload(payload, pageIndex);
+    if (!sourcePages) {
+      throw new Error(copy.sourcePdfEmpty);
     }
-    return page;
+    setSourcePagesByIndex((current) => ({
+      ...current,
+      [pageIndex]: sourcePages
+    }));
+    setSourcePagesErrorMap((current) => {
+      const next = { ...current };
+      delete next[pageIndex];
+      return next;
+    });
+    return sourcePages;
   }
 
-  function watchPage(sessionId, pageIndex, { prefetch = false } = {}) {
-    if (!sessionId && !session?.session_id) {
-      return;
-    }
-    const resolvedSessionId = sessionId || session.session_id;
-    const existing = streamRefs.current.get(pageIndex);
-    if (existing) {
-      return;
-    }
-    setPageBusy(pageIndex, true);
-    updateReaderProgress("page", "running", `${t("paperReaderProgressPage")} ${pageIndex + 1}`);
-    const streamUrl = `/api/paper-reader/session/${encodeURIComponent(resolvedSessionId)}/pages/${encodeURIComponent(
-      pageIndex
-    )}/stream`;
-    const source = new EventSource(streamUrl);
-    streamRefs.current.set(pageIndex, source);
-
-    const finalize = async () => {
-      try {
-        const page = await fetchPageSnapshot(resolvedSessionId, pageIndex);
-        if (page?.status === "ready" || page?.status === "error") {
-          stopPageWatch(pageIndex);
-          updateReaderProgress(
-            "page",
-            page.status === "ready" ? "ready" : "interrupted",
-            page.status === "ready"
-              ? `${t("paperReaderProgressPage")} ${page.page_index + 1}`
-              : page.error || t("paperReaderPageLoadFail")
-          );
-          if (!prefetch && page?.status === "ready" && activePageIndex === pageIndex) {
-            publishAssistantContextForPage(page, "");
-            prefetchNextPage(pageIndex);
-          }
-        }
-      } catch (error) {
-        if (String(error || "").includes("HTTP 404")) {
-          return;
-        }
-        setBannerError(String(error));
-        updateReaderProgress("page", "interrupted", String(error));
-        stopPageWatch(pageIndex);
-      }
-    };
-
-    source.addEventListener("message", async (event) => {
-      if (!event?.data) {
-        return;
-      }
-      try {
-        const payload = JSON.parse(event.data);
-        const page = normalizePageEntry(
-          payload?.page || payload?.current_page || payload?.content || payload?.page_content || payload,
-          pageIndex
-        );
-        if (page) {
-          upsertPage(page);
-          if (page.status === "ready" || page.status === "error") {
-            stopPageWatch(pageIndex);
-            updateReaderProgress(
-              "page",
-              page.status === "ready" ? "ready" : "interrupted",
-              page.status === "ready"
-                ? `${t("paperReaderProgressPage")} ${page.page_index + 1}`
-                : page.error || t("paperReaderPageLoadFail")
-            );
-            if (!prefetch && page.status === "ready" && activePageIndex === pageIndex) {
-              publishAssistantContextForPage(page, "");
-              prefetchNextPage(pageIndex);
-            }
-          }
-        }
-        if (payload?.status === "ready" || payload?.status === "error" || payload?.done) {
-          await finalize();
-        }
-      } catch (_) {
-        // ignore malformed stream payloads and keep polling
-      }
-    });
-
-    source.addEventListener("complete", () => {
-      void finalize();
-    });
-    source.addEventListener("error", () => {
-      void finalize();
-    });
-
-    const timerId = window.setInterval(() => {
-      void finalize();
-    }, prefetch ? 2000 : 1200);
-    pollRefs.current.set(pageIndex, timerId);
-  }
-
-  async function ensurePageReady(pageIndex, { prefetch = false, sessionId = null } = {}) {
+  async function ensureSourcePages(pageIndex, { sessionId = null } = {}) {
     const resolvedSessionId = sessionId || session?.session_id;
     if (!resolvedSessionId) {
-      return;
+      return null;
     }
     const normalizedIndex = Math.max(0, toNumber(pageIndex, 0));
-    const existing = pagesByIndex[normalizedIndex] || session?.pages?.find((page) => page.page_index === normalizedIndex);
-    if (existing?.status === "ready") {
-      updateReaderProgress("page", "ready", `${t("paperReaderProgressPage")} ${normalizedIndex + 1}`);
-      if (!prefetch && normalizedIndex === activePageIndex) {
-        publishAssistantContextForPage(existing, "");
-        prefetchNextPage(normalizedIndex);
-      }
-      return;
+    if (sourcePagesByIndex[normalizedIndex] || sourcePagesBusyMap[normalizedIndex]) {
+      return sourcePagesByIndex[normalizedIndex] || null;
     }
-    if (existing?.status === "error") {
-      updateReaderProgress("page", "interrupted", existing.error || t("paperReaderPageLoadFail"));
-      return;
-    }
-
+    setSourcePagesBusyMap((current) => ({ ...current, [normalizedIndex]: true }));
     try {
-      const snapshot = await fetchPageSnapshot(resolvedSessionId, normalizedIndex);
-      if (snapshot?.status === "ready") {
-        updateReaderProgress("page", "ready", `${t("paperReaderProgressPage")} ${snapshot.page_index + 1}`);
-        if (!prefetch && normalizedIndex === activePageIndex) {
-          publishAssistantContextForPage(snapshot, "");
-          prefetchNextPage(normalizedIndex);
-        }
-        return;
-      }
-      if (snapshot?.status === "error") {
-        updateReaderProgress("page", "interrupted", snapshot.error || t("paperReaderPageLoadFail"));
-        return;
-      }
+      return await fetchSourcePagesSnapshot(resolvedSessionId, normalizedIndex);
     } catch (error) {
-      setBannerError(String(error));
-      updateReaderProgress("page", "interrupted", String(error));
-      return;
+      setSourcePagesErrorMap((current) => ({
+        ...current,
+        [normalizedIndex]: String(error)
+      }));
+      return null;
+    } finally {
+      setSourcePagesBusyMap((current) => {
+        const next = { ...current };
+        delete next[normalizedIndex];
+        return next;
+      });
     }
-
-    watchPage(resolvedSessionId, normalizedIndex, { prefetch });
   }
 
-  function prefetchNextPage(pageIndex) {
-    if (!session?.session_id) {
+  function clearPersistedPdfHighlight() {
+    try {
+      window.CSS?.highlights?.delete("paper-reader-selection");
+    } catch (_) {
+      // Highlight API support is optional.
+    }
+    selectionRangeRef.current = null;
+  }
+
+  function clearPdfSelection({ preserveTranslation = true, clearBrowserSelection = true } = {}) {
+    clearPersistedPdfHighlight();
+    if (clearBrowserSelection) {
+      const selection = window.getSelection?.();
+      if (selection && !selection.isCollapsed) {
+        selection.removeAllRanges();
+      }
+    }
+    setPdfSelection(null);
+    if (!preserveTranslation) {
+      setSelectionTranslation({
+        status: "idle",
+        sourceText: "",
+        translation: "",
+        error: ""
+      });
+    }
+  }
+
+  function rangeBelongsToSourceViewer(range) {
+    const viewer = sourceViewerRef.current;
+    if (!viewer || !range) {
+      return false;
+    }
+    const ancestor =
+      range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer?.parentElement;
+    return Boolean(ancestor && viewer.contains(ancestor));
+  }
+
+  function selectedSourcePageNumbers(range) {
+    const viewer = sourceViewerRef.current;
+    if (!viewer || !range) {
+      return [];
+    }
+    return Array.from(viewer.querySelectorAll(".reader-pdf-page"))
+      .filter((pageElement) => {
+        const pageRange = document.createRange();
+        pageRange.selectNodeContents(pageElement);
+        const intersects =
+          range.compareBoundaryPoints(Range.END_TO_START, pageRange) > 0 &&
+          range.compareBoundaryPoints(Range.START_TO_END, pageRange) < 0;
+        pageRange.detach?.();
+        return intersects;
+      })
+      .map((pageElement) => pageElement.getAttribute("data-page-number"))
+      .filter(Boolean);
+  }
+
+  function persistPdfHighlight(range) {
+    clearPersistedPdfHighlight();
+    selectionRangeRef.current = range;
+    try {
+      if (window.CSS?.highlights && window.Highlight) {
+        window.CSS.highlights.set("paper-reader-selection", new window.Highlight(range));
+      }
+    } catch (_) {
+      // Keep the browser selection if persistent highlights are unavailable.
+    }
+  }
+
+  function capturePdfSelection() {
+    const selection = window.getSelection?.();
+    if (!selection || selection.rangeCount < 1 || selection.isCollapsed) {
+      return false;
+    }
+    const selectedText = selection.toString().replace(/\s+/g, " ").trim();
+    if (!selectedText) {
+      return false;
+    }
+    const range = selection.getRangeAt(0).cloneRange();
+    if (!rangeBelongsToSourceViewer(range)) {
+      return false;
+    }
+    persistPdfHighlight(range);
+    setPdfSelection({
+      text: selectedText,
+      pageNumbers: selectedSourcePageNumbers(range),
+      createdAt: new Date().toISOString()
+    });
+    setSelectionTranslation((current) => ({
+      ...current,
+      status: current.status === "running" ? current.status : "idle",
+      error: ""
+    }));
+    return true;
+  }
+
+  function handleSourceMouseUp(event) {
+    if (event.button !== 0) {
       return;
     }
-    const nextIndex = pageIndex + 1;
-    if (pageCount && nextIndex >= pageCount) {
+    window.requestAnimationFrame(() => {
+      capturePdfSelection();
+    });
+  }
+
+  function handleSourceContextMenu() {
+    clearPdfSelection();
+  }
+
+  function handleSourceDoubleClick() {
+    window.requestAnimationFrame(() => {
+      if (!capturePdfSelection()) {
+        clearPdfSelection();
+      }
+    });
+  }
+
+  async function translateSelectedPdfText() {
+    if (!session?.session_id || !pdfSelection?.text || selectionTranslation.status === "running") {
       return;
     }
-    void ensurePageReady(nextIndex, { prefetch: true });
+    selectionRequestRef.current += 1;
+    const requestId = selectionRequestRef.current;
+    setSelectionTranslation({
+      status: "running",
+      sourceText: pdfSelection.text,
+      translation: "",
+      error: ""
+    });
+    try {
+      const response = await fetch(
+        `/api/paper-reader/session/${encodeURIComponent(session.session_id)}/translate-selection`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: pdfSelection.text,
+            answer_language: language,
+            settings: runtimePayload
+          })
+        }
+      );
+      const payload = await readJsonWithDetailFallback(response);
+      if (!response.ok) {
+        throw new Error(payload.detail || `${copy.selectionTranslationRunning} (HTTP ${response.status})`);
+      }
+      if (requestId !== selectionRequestRef.current) {
+        return;
+      }
+      setSelectionTranslation({
+        status: "ready",
+        sourceText: firstNonEmpty(payload.source_text, payload.sourceText, pdfSelection.text),
+        translation: firstNonEmpty(payload.translation, payload.text),
+        error: ""
+      });
+    } catch (error) {
+      if (requestId !== selectionRequestRef.current) {
+        return;
+      }
+      setSelectionTranslation({
+        status: "error",
+        sourceText: pdfSelection.text,
+        translation: "",
+        error: String(error)
+      });
+    }
   }
 
   function publishAssistantContextForPage(page, answerText) {
@@ -2679,7 +3048,6 @@ export default function PaperReaderPage({
       );
       const startIndex = normalized.current_page_index || 0;
       setActivePageIndex(startIndex);
-      void ensurePageReady(startIndex, { sessionId: normalized.session_id });
     } catch (error) {
       setBannerError(String(error));
       updateReaderProgress("load", "interrupted", String(error));
@@ -2742,7 +3110,6 @@ export default function PaperReaderPage({
       setBannerMessage(firstNonEmpty(payload.message, file.name, t("paperReaderLoading")));
       const startIndex = normalized.current_page_index || 0;
       setActivePageIndex(startIndex);
-      void ensurePageReady(startIndex, { sessionId: normalized.session_id });
     } catch (error) {
       setBannerError(String(error));
       updateReaderProgress("load", "interrupted", String(error));
@@ -2757,10 +3124,22 @@ export default function PaperReaderPage({
     const normalizedIndex = Math.max(0, toNumber(pageIndex, 0));
     setActivePageIndex(normalizedIndex);
     setActiveSourceId("");
+    clearPdfSelection({ preserveTranslation: true });
     if (session?.session_id) {
       setSession((current) => (current ? { ...current, current_page_index: normalizedIndex } : current));
-      void ensurePageReady(normalizedIndex, { sessionId: session?.session_id });
     }
+  }
+
+  function handlePdfZoomIn() {
+    setPdfZoom((current) => clampPdfZoom(current + PDF_ZOOM_STEP));
+  }
+
+  function handlePdfZoomOut() {
+    setPdfZoom((current) => clampPdfZoom(current - PDF_ZOOM_STEP));
+  }
+
+  function handlePdfZoomReset() {
+    setPdfZoom(1);
   }
 
   function activateDisciplineCard(card) {
@@ -2898,7 +3277,7 @@ export default function PaperReaderPage({
             <p className="muted">{t("paperReaderDescription")}</p>
           </div>
           <div className="paper-reader-summary">
-            <span className="reader-status-chip">{readerModelSummary}</span>
+            <span className="reader-status-chip">{copy.sourcePdfTitle}</span>
             <span className="reader-status-chip">{manifestSummary}</span>
             {session?.discipline ? (
               <span className="reader-status-chip">
@@ -2957,88 +3336,26 @@ export default function PaperReaderPage({
         ) : (
           <div className="paper-reader-reader-shell">
             <div className="paper-reader-reading-column">
-              <section className="workspace paper-reader-page-card paper-reader-page-card-refined" ref={pageCardRef}>
-                <div className="paper-reader-meta-bar">
-                  <div className="paper-reader-meta-copy">
-                    <p className="eyebrow">{copy.pageFocusLabel}</p>
-                    <h3>{activeTitleBase}</h3>
-                    <div className="reader-current-page-line">
-                      <p className="muted">
-                        {t("paperReaderCurrentPage")}: {activePageIndex + 1}
-                        {pageCount ? ` / ${pageCount}` : ""}
-                        {activeTitleCounter ? ` · ${activeTitleCounter}` : ""}
-                      </p>
-                      <div className="reader-page-icon-nav" aria-label={t("paperReaderCurrentPage")}>
-                        <button
-                          type="button"
-                          className="reader-icon-button"
-                          onClick={() => goToPage(activePageIndex - 1)}
-                          disabled={activePageIndex <= 0}
-                          aria-label={t("paperReaderPreviousPage")}
-                        >
-                          ‹
-                        </button>
-                        <button
-                          type="button"
-                          className="reader-icon-button"
-                          onClick={() => goToPage(activePageIndex + 1)}
-                          disabled={pageCount ? activePageIndex >= pageCount - 1 : false}
-                          aria-label={t("paperReaderNextPage")}
-                        >
-                          ›
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="paper-reader-meta-chips">
-                    <span className="reader-status-chip">
-                      {localizeReaderLabel(firstNonEmpty(activePage?.bucket_label, deriveBucketLabel(activePage), activeTitleBase), language)}
-                    </span>
-                    <span className="reader-status-chip">{getStatusLabel(activePage?.status || "queued", t)}</span>
-                    <span className={`reader-status-chip reader-status-chip-structured reader-status-chip-${activeStructuredState}`}>
-                      {getStructuredStatusLabel(activeStructuredState, language)}
-                    </span>
-                    {activeStoryStage ? <span className="reader-status-chip">{activeStoryStage.title}</span> : null}
-                    {session?.discipline ? <span className="reader-status-chip">{getDisciplineLabel(session.discipline, language)}</span> : null}
-                    {activePage?.coverage ? <span className="reader-status-chip">{activePage.coverage}</span> : null}
-                  </div>
-                </div>
-
-                {activePage?.status === "error" && activeStructuredState !== "failed" ? (
-                  <div className="warning-box">{activePage.error || t("paperReaderPageLoadFail")}</div>
-                ) : null}
-
-                {activePage?.status === "generating" || pageBusyMap[activePageIndex] ? (
-                  <div className="reader-loading-state">
-                    <span className="progress-liveness progress-liveness-running">
-                      <span className="progress-liveness-dot" aria-hidden="true" />
-                      <span>{t("loading")}</span>
-                    </span>
-                  </div>
-                ) : null}
-
-                {activeStructuredState === "failed" ? (
-                  <section className="reader-structured-failure">
-                    <h4>{copy.structuredFailureTitle}</h4>
-                    <p>{activeStructuredMessage || copy.structuredFailureBody}</p>
-                  </section>
-                ) : null}
-
-                {activeOverview ? (
-                  <section className="reader-overview-card reader-module-section" id="reader-module-overview">
-                    <div className="reader-block-head">
-                      <div>
-                        <p className="reader-block-label">{copy.overviewTitle}</p>
-                        <h4>{activeTitleBase}</h4>
-                      </div>
-                      {activeOverview.display_text ? <p className="muted reader-overview-summary">{activeOverview.display_text}</p> : null}
-                    </div>
-                    <BilingualReaderBlock block={activeOverview} copy={copy} />
-                  </section>
-                ) : null}
-
-                <ReadingBlocks blocks={activeReadingBlocks} activeSourceId={activeSourceId} copy={copy} />
-
+              <section className="paper-reader-source-panel" ref={pageCardRef}>
+                <SourcePdfReader
+                  sourcePages={activeSourcePageBundle}
+                  busy={activeSourcePagesBusy}
+                  error={activeSourcePagesError}
+                  activePage={{ ...activePage, title: activeTitleBase }}
+                  sessionId={session.session_id}
+                  pdfZoom={pdfZoom}
+                  canZoomIn={canZoomIn}
+                  canZoomOut={canZoomOut}
+                  selectedText={pdfSelection?.text}
+                  copy={copy}
+                  sourceViewerRef={sourceViewerRef}
+                  onZoomIn={handlePdfZoomIn}
+                  onZoomOut={handlePdfZoomOut}
+                  onZoomReset={handlePdfZoomReset}
+                  onMouseUp={handleSourceMouseUp}
+                  onContextMenu={handleSourceContextMenu}
+                  onDoubleClick={handleSourceDoubleClick}
+                />
                 <div className="reader-navigation">
                   <button
                     type="button"
@@ -3103,13 +3420,11 @@ export default function PaperReaderPage({
                 </button>
               </section>
 
-              <DisciplineCards
-                cards={activeDisciplineCards}
-                activeSourceId={activeSourceId}
-                onActivate={activateDisciplineCard}
-                onClear={() => setActiveSourceId("")}
-                onOpen={openDisciplineCard}
+              <SelectionTranslationPanel
+                selection={pdfSelection}
+                translationState={selectionTranslation}
                 copy={copy}
+                onTranslate={translateSelectedPdfText}
               />
             </aside>
           </div>

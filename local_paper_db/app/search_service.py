@@ -202,7 +202,7 @@ class RetrievalBatch:
 
 def normalize_provider(value: str) -> str:
     provider = value.strip().lower()
-    if provider not in {"ollama", "openai_compatible"}:
+    if provider not in {"ollama", "openai_compatible", "google_translate"}:
         raise ValueError(f"Unsupported provider: {value}")
     return provider
 
@@ -272,6 +272,9 @@ def list_available_models(
             if isinstance(item, dict)
         ]
         return dedupe_model_ids(models)
+
+    if resolved_provider == "google_translate":
+        return []
 
     resolved_base_url = normalize_openai_compatible_base_url(base_url)
     if not resolved_base_url:
@@ -366,6 +369,10 @@ def get_env_default_settings() -> RuntimeSettings:
 
 
 def validate_chat_config(config: ChatConfig, label: str) -> None:
+    if config.provider == "google_translate":
+        if label != "paper_reader_translation":
+            raise RuntimeError(f"{label} cannot use google_translate provider.")
+        return
     if config.provider != "openai_compatible":
         return
     missing: list[str] = []

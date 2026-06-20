@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import requests
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
 from backend.schemas import (
     PaperReaderBlackboardNotesModel,
@@ -35,9 +35,14 @@ from backend.schemas import (
     PaperReaderReadingBlockModel,
     PaperReaderReadingHintModel,
     PaperReaderSectionModel,
+    PaperReaderSelectionTranslateRequest,
+    PaperReaderSelectionTranslateResponse,
     PaperReaderSessionModel,
     PaperReaderSelectedNodeModel,
+    PaperReaderSourcePageModel,
+    PaperReaderSourcePagesResponse,
     PaperReaderSourceSectionModel,
+    PaperReaderSourceTextSpanModel,
     PaperReaderStoryStageModel,
     PaperReaderStructuredStatusModel,
     PaperReaderStructuredTextModel,
@@ -1104,6 +1109,71 @@ def _extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
     return pages
 
 
+def _pdf_font_weight(font_name: str) -> str:
+    normalized = normalize_whitespace(font_name).casefold()
+    if any(marker in normalized for marker in ("bold", "medi", "demi", "black")):
+        return "700"
+    return "400"
+
+
+def _pdf_font_style(font_name: str) -> str:
+    normalized = normalize_whitespace(font_name).casefold()
+    if any(marker in normalized for marker in ("italic", "oblique", "ital", "cmmi")):
+        return "italic"
+    return "normal"
+
+
+def _extract_pdf_source_page_layout(page: Any, page_number: int) -> PaperReaderSourcePageModel:
+    width = float(getattr(page.mediabox, "width", 0) or 0)
+    height = float(getattr(page.mediabox, "height", 0) or 0)
+    spans: list[PaperReaderSourceTextSpanModel] = []
+
+    def visitor_text(text: Any, _cm: Any, tm: Any, font_dict: Any, font_size: Any) -> None:
+        raw_text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not normalize_whitespace(raw_text):
+            return
+        font_name = str((font_dict or {}).get("/BaseFont") or "")
+        try:
+            x = float(tm[4])
+            baseline_y = float(tm[5])
+            resolved_font_size = float(font_size)
+        except Exception:
+            return
+        y = max(0.0, height - baseline_y) if height else max(0.0, baseline_y)
+        line_height = max(resolved_font_size * 1.15, resolved_font_size)
+        for offset, line in enumerate(raw_text.split("\n")):
+            normalized_line = normalize_whitespace(line)
+            if not normalized_line:
+                continue
+            spans.append(
+                PaperReaderSourceTextSpanModel(
+                    text=normalized_line,
+                    x=max(0.0, x),
+                    y=max(0.0, y + offset * line_height),
+                    font_size=max(1.0, resolved_font_size),
+                    font_weight=_pdf_font_weight(font_name),
+                    font_style=_pdf_font_style(font_name),
+                )
+            )
+
+    plain_text = ""
+    try:
+        plain_text = page.extract_text(visitor_text=visitor_text) or ""
+    except Exception:
+        plain_text = ""
+    if not plain_text:
+        with suppress(Exception):
+            plain_text = page.extract_text(extraction_mode="layout") or ""
+
+    return PaperReaderSourcePageModel(
+        page_number=page_number,
+        text=_normalize_multiline_text(plain_text),
+        width=width or None,
+        height=height or None,
+        spans=spans,
+    )
+
+
 def _parse_arxiv_url(url: str) -> str:
     normalized = normalize_whitespace(url)
     match = ARXIV_URL_PATTERN.match(normalized)
@@ -1235,6 +1305,9 @@ class PaperReaderSession:
     updated_at: str = field(default_factory=_now_iso)
     chunks: list[PaperReaderChunk] = field(default_factory=list)
     pages: list[PaperReaderPagePlan] = field(default_factory=list)
+    source_pages: list[tuple[int, str]] = field(default_factory=list)
+    source_page_layouts: dict[int, PaperReaderSourcePageModel] = field(default_factory=dict)
+    source_page_pdf_paths: dict[int, Path] = field(default_factory=dict)
     index_tree: PaperReaderIndexNode | None = None
     index_status: str = "fallback"
     page_contents: dict[int, PaperReaderPageContent] = field(default_factory=dict)
@@ -1872,6 +1945,93 @@ def _extract_reading_block_translation_map(
     return translations
 
 
+def _build_selected_text_translation_messages(text: str, answer_language: str) -> list[dict[str, str]]:
+    target_language = _reader_explanation_language(answer_language)
+    prompt = (
+        "You translate selected source text from a PDF paper reader.\n"
+        "Translate only the selected text into the target language.\n"
+        "Do not explain, summarize, annotate, add citations, or discuss the paper.\n"
+        "Return a single JSON object only with key translation.\n"
+        f"Target language: {target_language}.\n"
+        f"Selected text: {json.dumps(text, ensure_ascii=False)}"
+    )
+    return [{"role": "user", "content": prompt}]
+
+
+def _extract_selected_text_translation(raw_text: str) -> str:
+    parsed, _repair_attempted = _extract_structured_json_object(raw_text)
+    if isinstance(parsed, dict):
+        for key in ("translation", "translated_text", "translatedText", "text"):
+            translated = _normalize_multiline_text(parsed.get(key))
+            if translated:
+                return translated
+    return _normalize_multiline_text(raw_text)
+
+
+def google_translate_text(text: str, target_language: str, timeout: int = 20) -> str:
+    source_text = _normalize_multiline_text(text)
+    if not source_text:
+        return ""
+
+    target = "zh" if target_language == "zh" else "en"
+    try:
+        response = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={
+                "client": "gtx",
+                "sl": "auto",
+                "tl": target,
+                "dt": "t",
+                "q": source_text,
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Google Translate request failed: {exc}") from exc
+
+    payload = response.json()
+    if not isinstance(payload, list) or not payload:
+        return ""
+    translated_parts: list[str] = []
+    for item in payload[0] or []:
+        if isinstance(item, list) and item:
+            translated = _normalize_multiline_text(item[0])
+            if translated:
+                translated_parts.append(translated)
+    return _normalize_multiline_text("".join(translated_parts))
+
+
+def translate_selected_text(
+    session_id: str,
+    request: PaperReaderSelectionTranslateRequest,
+    settings: RuntimeSettings,
+) -> PaperReaderSelectionTranslateResponse:
+    source_text = _normalize_multiline_text(request.text)
+    if not source_text:
+        raise ValueError("Selected text is empty.")
+
+    with _SESSION_LOCK:
+        session = _get_session(session_id)
+        answer_language = _normalize_answer_language(request.answer_language, session.paper_title) or session.answer_language
+        _touch_session(session)
+
+    translation_config = _default_paper_reader_translation_config(settings)
+    if translation_config.provider == "google_translate":
+        translation = google_translate_text(source_text, answer_language, timeout=settings.retrieval.request_timeout)
+    else:
+        messages = _build_selected_text_translation_messages(source_text, answer_language)
+        raw_text = chat_completion(messages, translation_config, settings.retrieval.request_timeout)
+        translation = _extract_selected_text_translation(raw_text)
+    if not translation:
+        raise RuntimeError("Selected text translation returned no content.")
+    return PaperReaderSelectionTranslateResponse(
+        session_id=session_id,
+        source_text=source_text,
+        translation=translation,
+    )
+
+
 def _fill_missing_reading_block_translations(
     session: PaperReaderSession,
     content: PaperReaderPageContent,
@@ -1884,12 +2044,27 @@ def _fill_missing_reading_block_translations(
         return content
 
     translation_config = _default_paper_reader_translation_config(settings)
-    messages = _build_reading_block_translation_messages(missing_blocks, session.answer_language)
-    try:
-        raw_text = chat_completion(messages, translation_config, settings.retrieval.request_timeout)
-        translations = _extract_reading_block_translation_map(raw_text, missing_blocks)
-    except Exception:
-        return content
+    if translation_config.provider == "google_translate":
+        translations = {}
+        try:
+            for block in missing_blocks:
+                translated = google_translate_text(
+                    block.original_en,
+                    session.answer_language,
+                    timeout=settings.retrieval.request_timeout,
+                )
+                cleaned = _clean_reading_block_localized_text(translated, block.original_en)
+                if cleaned:
+                    translations[block.chunk_id] = cleaned
+        except Exception:
+            return content
+    else:
+        messages = _build_reading_block_translation_messages(missing_blocks, session.answer_language)
+        try:
+            raw_text = chat_completion(messages, translation_config, settings.retrieval.request_timeout)
+            translations = _extract_reading_block_translation_map(raw_text, missing_blocks)
+        except Exception:
+            return content
 
     if not translations:
         return content
@@ -2867,10 +3042,10 @@ def _build_session(
     discipline: str | None = None,
     record: Any | None = None,
 ) -> PaperReaderSession:
-    max_context_tokens = settings.paper_reader_chat.max_context_tokens
+    max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
     reserved_output_tokens, reserved_scaffold_tokens, page_input_budget = _compute_budget(max_context_tokens)
     if page_input_budget <= 0:
-        raise RuntimeError("paper_reader_chat.max_context_tokens is too small for the configured page budget.")
+        raise RuntimeError("Paper reader page budget is too small for the configured page budget.")
     target_page_budget = _compute_target_page_budget(page_input_budget)
     target_chunk_budget = _compute_target_chunk_budget(page_input_budget)
 
@@ -2948,14 +3123,14 @@ def _build_session(
         settings=settings,
         chunks=chunks,
         pages=page_plans,
+        source_pages=pages,
         index_tree=index_tree,
         index_status=index_status,
-        page_statuses={plan.page_index: "queued" for plan in page_plans},
+        page_statuses={plan.page_index: "ready" for plan in page_plans},
     )
     with _SESSION_LOCK:
         _SESSION_CACHE[session.session_id] = session
 
-    _generate_page_content_internal(session.session_id, 0, settings, stream=False)
     return session
 
 
@@ -3025,6 +3200,83 @@ def get_session_settings(session_id: str) -> RuntimeSettings:
     with _SESSION_LOCK:
         session = _get_session(session_id)
         return session.settings
+
+
+def get_session_pdf_path(session_id: str) -> Path:
+    with _SESSION_LOCK:
+        session = _get_session(session_id)
+        _touch_session(session)
+        return session.pdf_path
+
+
+def get_source_page_pdf_path(session_id: str, page_number: int) -> Path:
+    with _SESSION_LOCK:
+        session = _get_session(session_id)
+        resolved_page_number = max(1, int(page_number))
+        cached_path = session.source_page_pdf_paths.get(resolved_page_number)
+        if cached_path is not None and cached_path.exists():
+            _touch_session(session)
+            return cached_path
+
+        reader = PdfReader(str(session.pdf_path))
+        if resolved_page_number < 1 or resolved_page_number > len(reader.pages):
+            raise IndexError("Requested PDF source page is out of range.")
+        output_dir = session.pdf_path.parent / "source-page-pdfs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"page-{resolved_page_number}.pdf"
+        writer = PdfWriter()
+        writer.add_page(reader.pages[resolved_page_number - 1])
+        with output_path.open("wb") as handle:
+            writer.write(handle)
+        session.source_page_pdf_paths[resolved_page_number] = output_path
+        _touch_session(session)
+        return output_path
+
+
+def get_source_pages_for_reader_page(session_id: str, page_index: int) -> PaperReaderSourcePagesResponse:
+    with _SESSION_LOCK:
+        session = _get_session(session_id)
+        if page_index < 0 or page_index >= len(session.pages):
+            raise IndexError("Requested page is out of range.")
+        plan = session.pages[page_index]
+        source_pages = session.source_pages or _extract_pdf_pages(session.pdf_path)
+        if not session.source_pages:
+            session.source_pages = source_pages
+        page_start = plan.page_start or 1
+        page_end = plan.page_end or page_start
+        selected_page_numbers = [page_number for page_number, _text in source_pages if page_start <= page_number <= page_end]
+        missing_layouts = [page_number for page_number in selected_page_numbers if page_number not in session.source_page_layouts]
+        if missing_layouts:
+            with suppress(Exception):
+                reader = PdfReader(str(session.pdf_path))
+                for page_number in missing_layouts:
+                    if page_number < 1 or page_number > len(reader.pages):
+                        continue
+                    session.source_page_layouts[page_number] = _extract_pdf_source_page_layout(reader.pages[page_number - 1], page_number)
+        text_by_page = {page_number: text for page_number, text in source_pages}
+        selected_pages: list[PaperReaderSourcePageModel] = []
+        for page_number in selected_page_numbers:
+            layout_page = session.source_page_layouts.get(page_number)
+            if layout_page is not None:
+                if not layout_page.text:
+                    layout_page.text = _normalize_multiline_text(text_by_page.get(page_number, ""))
+                selected_pages.append(layout_page)
+            else:
+                selected_pages.append(
+                    PaperReaderSourcePageModel(
+                        page_number=page_number,
+                        text=_normalize_multiline_text(text_by_page.get(page_number, "")),
+                    )
+                )
+        _touch_session(session)
+
+    return PaperReaderSourcePagesResponse(
+        session_id=session_id,
+        reader_page_index=page_index,
+        page_start=page_start,
+        page_end=page_end,
+        pages=selected_pages,
+    )
 
 
 def get_page_content(session_id: str, page_index: int) -> PaperReaderPageContent:

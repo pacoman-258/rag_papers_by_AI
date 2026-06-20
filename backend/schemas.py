@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-Provider = Literal["ollama", "openai_compatible"]
+Provider = Literal["ollama", "openai_compatible", "google_translate"]
 ModelListKind = Literal["chat", "embedding"]
 AnswerLanguage = Literal["zh", "en"]
 PaperReaderMode = Literal["guided", "standard"]
@@ -213,6 +213,43 @@ class PaperReaderReadingBlockModel(BaseModel):
     original_en: str
     explanation: str | None = None
     display_text: str | None = None
+
+
+class PaperReaderSourceTextSpanModel(BaseModel):
+    text: str
+    x: float
+    y: float
+    font_size: float
+    font_weight: str = "400"
+    font_style: str = "normal"
+
+
+class PaperReaderSourcePageModel(BaseModel):
+    page_number: int
+    text: str
+    width: float | None = None
+    height: float | None = None
+    spans: list[PaperReaderSourceTextSpanModel] = Field(default_factory=list)
+
+
+class PaperReaderSourcePagesResponse(BaseModel):
+    session_id: str
+    reader_page_index: int
+    page_start: int
+    page_end: int
+    pages: list[PaperReaderSourcePageModel] = Field(default_factory=list)
+
+
+class PaperReaderSelectionTranslateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=12000)
+    answer_language: AnswerLanguage | None = None
+    settings: RuntimeSettingsRequest | None = None
+
+
+class PaperReaderSelectionTranslateResponse(BaseModel):
+    session_id: str
+    source_text: str
+    translation: str
 
 
 class PaperReaderSourceSectionModel(BaseModel):

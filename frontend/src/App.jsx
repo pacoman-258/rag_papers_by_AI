@@ -39,7 +39,7 @@ const translations = {
     queryChat: "Query Chat",
     answerChat: "Answer Chat",
     paperReaderChatModel: "Paper Reader Chat",
-    paperReaderTranslationModel: "Source Card Translation",
+    paperReaderTranslationModel: "PDF Selection Translation",
     embedding: "Embedding",
     ollamaApiUrl: "Ollama API URL",
     embeddingModel: "Embedding Model",
@@ -142,12 +142,12 @@ const translations = {
     pstProgressExplain: "Stream PST explanation",
     paperReaderMaxContextTokens: "Max Context Tokens",
     paperReaderTitle: "Paper Reader",
-    paperReaderDescription: "Load one arXiv paper or local PDF, then read it through a paper map, evidence nodes, and guided checkpoints.",
+    paperReaderDescription: "Load one arXiv paper or local PDF, then read the original PDF directly with navigation and selected-text translation.",
     paperReaderProgressTitle: "Paper Reader Progress",
-    paperReaderProgressSubtitle: "Track paper loading, page generation, and whether the current reading task is still alive.",
+    paperReaderProgressSubtitle: "Track PDF loading and page-map parsing.",
     paperReaderProgressLoad: "Load source",
     paperReaderProgressPaginate: "Build paper map and pages",
-    paperReaderProgressPage: "Generate current page",
+    paperReaderProgressPage: "Open PDF page",
     paperReaderProgressChat: "Ask this paper",
     paperReaderArxivUrl: "arXiv URL",
     paperReaderPdfFile: "PDF File",
@@ -321,12 +321,12 @@ const translations = {
     pstProgressExplain: "流式生成 PST 解释",
     paperReaderMaxContextTokens: "最大上下文 Token",
     paperReaderTitle: "论文精读",
-    paperReaderDescription: "输入 arXiv 链接或上传本地 PDF，先建立论文地图，再按证据节点和理解检查点逐步精读。",
+    paperReaderDescription: "输入 arXiv 链接或上传本地 PDF，直接阅读原生 PDF，并使用导航与选区翻译。",
     paperReaderProgressTitle: "论文精读进度",
-    paperReaderProgressSubtitle: "跟踪论文载入、分页解析和当前任务是否仍在正常运行。",
+    paperReaderProgressSubtitle: "跟踪 PDF 载入和论文页段解析。",
     paperReaderProgressLoad: "载入论文来源",
     paperReaderProgressPaginate: "构建论文地图与分页",
-    paperReaderProgressPage: "生成当前精读页",
+    paperReaderProgressPage: "打开 PDF 页",
     paperReaderProgressChat: "围绕论文追问",
     paperReaderArxivUrl: "arXiv 链接",
     paperReaderPdfFile: "PDF 文件",
@@ -997,6 +997,8 @@ function ChatConfigSection({
   showApiKeyStatus = true,
   children = null
 }) {
+  const usesGoogleTranslate = config.provider === "google_translate";
+
   return (
     <section className="config-section">
       <h3>{title}</h3>
@@ -1010,42 +1012,46 @@ function ChatConfigSection({
           ))}
         </select>
       </label>
-      <ModelSelectorField
-        listId={modelListId}
-        value={config.model}
-        onChange={(value) => onChange("model", value)}
-        models={modelCatalog.models}
-        loading={modelCatalog.loading}
-        error={modelCatalog.error}
-        onFetch={onFetchModels}
-        t={t}
-        language={language}
-      />
-      <label>
-        {t("baseUrl")}
-        <input
-          value={config.base_url || ""}
-          onChange={(event) => onChange("base_url", event.target.value)}
-          placeholder={config.provider === "ollama" ? t("optionalOllamaBaseUrl") : t("openaiBaseUrl")}
-        />
-      </label>
-      <label>
-        {t("apiKey")}
-        <input
-          type="password"
-          value={config.api_key || ""}
-          onChange={(event) => onChange("api_key", event.target.value)}
-          placeholder={t("keepStoredKeyPlaceholder")}
-        />
-      </label>
-      {showApiKeyStatus ? (
-        <p className="muted">
-          {t("storedKeyPresent")}: {config.has_api_key ? t("yes") : t("no")}
-        </p>
-      ) : null}
-      <button type="button" className="secondary" onClick={() => onChange("clear_api_key", !config.clear_api_key)}>
-        {config.clear_api_key ? t("keepStoredKey") : t("clearStoredKey")}
-      </button>
+      {usesGoogleTranslate ? null : (
+        <>
+          <ModelSelectorField
+            listId={modelListId}
+            value={config.model}
+            onChange={(value) => onChange("model", value)}
+            models={modelCatalog.models}
+            loading={modelCatalog.loading}
+            error={modelCatalog.error}
+            onFetch={onFetchModels}
+            t={t}
+            language={language}
+          />
+          <label>
+            {t("baseUrl")}
+            <input
+              value={config.base_url || ""}
+              onChange={(event) => onChange("base_url", event.target.value)}
+              placeholder={config.provider === "ollama" ? t("optionalOllamaBaseUrl") : t("openaiBaseUrl")}
+            />
+          </label>
+          <label>
+            {t("apiKey")}
+            <input
+              type="password"
+              value={config.api_key || ""}
+              onChange={(event) => onChange("api_key", event.target.value)}
+              placeholder={t("keepStoredKeyPlaceholder")}
+            />
+          </label>
+          {showApiKeyStatus ? (
+            <p className="muted">
+              {t("storedKeyPresent")}: {config.has_api_key ? t("yes") : t("no")}
+            </p>
+          ) : null}
+          <button type="button" className="secondary" onClick={() => onChange("clear_api_key", !config.clear_api_key)}>
+            {config.clear_api_key ? t("keepStoredKey") : t("clearStoredKey")}
+          </button>
+        </>
+      )}
       {children}
     </section>
   );
@@ -1231,6 +1237,13 @@ export default function App() {
       { value: "openai_compatible", label: language === "zh" ? "OpenAI 兼容 API" : "OpenAI Compatible API" }
     ],
     [language]
+  );
+  const translationProviderOptions = useMemo(
+    () => [
+      ...providerOptions,
+      { value: "google_translate", label: language === "zh" ? "Google 翻译" : "Google Translate" }
+    ],
+    [language, providerOptions]
   );
   const runtimePayload = useMemo(() => (settings ? buildRuntimeRequest(settings) : null), [settings]);
   const workspaceProgress = workspaceProgressByMode[workspaceMode] || workspaceProgressByMode.qa;
@@ -2057,33 +2070,12 @@ export default function App() {
               modelListId="answer-chat-models"
             />
             <ChatConfigSection
-              title={t("paperReaderChatModel")}
-              config={settings.paper_reader_chat}
-              onChange={(key, value) => updateNested("paper_reader_chat", key, value)}
-              t={t}
-              language={language}
-              providerOptions={providerOptions}
-              modelCatalog={modelCatalogs.paper_reader_chat}
-              onFetchModels={() => fetchAvailableModels("paper_reader_chat")}
-              modelListId="paper-reader-chat-models"
-            >
-              <label>
-                {t("paperReaderMaxContextTokens")}
-                <input
-                  type="number"
-                  min="1"
-                  value={settings.paper_reader_chat.max_context_tokens}
-                  onChange={(event) => updateNested("paper_reader_chat", "max_context_tokens", event.target.value)}
-                />
-              </label>
-            </ChatConfigSection>
-            <ChatConfigSection
               title={t("paperReaderTranslationModel")}
               config={settings.paper_reader_translation}
               onChange={(key, value) => updateNested("paper_reader_translation", key, value)}
               t={t}
               language={language}
-              providerOptions={providerOptions}
+              providerOptions={translationProviderOptions}
               modelCatalog={modelCatalogs.paper_reader_translation}
               onFetchModels={() => fetchAvailableModels("paper_reader_translation")}
               modelListId="paper-reader-translation-models"

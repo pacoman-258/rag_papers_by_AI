@@ -34,6 +34,48 @@
 - 验证：执行文档自查，确认无占位项、旧 `/api/trace/*` 删除要求明确、低证据探索项最多 2 篇的约束明确；未运行代码测试，因为本次仅新增设计文档。
 - 后续：按该设计进入实施计划，删除旧 PST-lite 前端/API/schema，并实现新的 `citation_trace_service` 与独立标签页。
 
+## 2026-06-20 16:11
+
+- 摘要：在设置页的 `paper_reader_translation` 翻译配置中新增 `Google 翻译` 模式；后端支持 `google_translate` provider 直接调用 Google Translate 进行 PDF 选区翻译，并避免该 provider 被用于非翻译模型。
+- 涉及文件：`backend/schemas.py`、`backend/paper_reader_service.py`、`local_paper_db/app/search_service.py`、`frontend/src/App.jsx`、`tests/test_paper_reader_translation.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：新增 `test_selected_text_translation_can_use_google_translate_mode` 并先看到缺少 `google_translate_text` 适配函数的失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation.PaperReaderTranslationTest.test_selected_text_translation_can_use_google_translate_mode`（通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation`（通过）；执行 `.venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py local_paper_db/app/search_service.py backend/config_store.py tests/test_paper_reader_translation.py`（通过）；执行 `cd frontend && npm run build`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，26 tests）；执行 `git diff --check`（通过）。
+- 后续：Google 翻译模式依赖运行环境能够访问 `translate.googleapis.com`；若网络不可达，选区翻译会返回请求失败。
+
+## 2026-06-20 16:03
+
+- 摘要：在 `Paper Reader` 中间 PDF 原文区增加 `- / 100% / +` 缩放按钮，缩放整页 PDF 容器并同步透明文本选区层，避免放大缩小时选区坐标偏移。
+- 涉及文件：`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`tests/test_paper_reader_source_layout.py`、`PROJECT_LOG.md`
+- 验证：新增 `test_frontend_pdf_reader_has_zoom_controls` 并先看到缺少 `pdfZoom`/缩放控件的失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout.PaperReaderSourceLayoutTest.test_frontend_pdf_reader_has_zoom_controls`（通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout tests.test_paper_reader_translation`（通过）；执行 `cd frontend && npm run build`（通过）；执行 `git diff --check`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，25 tests）；执行 `.venv/bin/python -m py_compile backend/main.py backend/paper_reader_service.py backend/schemas.py tests/test_paper_reader_source_layout.py`（通过）。
+- 后续：无。
+
+## 2026-06-19 13:17
+
+- 摘要：修复原生 PDF iframe 导致选中功能失效的回归；后端新增单页 PDF 暴露接口，前端改为每页原生 PDF 底图叠加透明可选文本层，使鼠标选区、右键清除、双击切换和 `t` 快捷翻译重新回到 React DOM 内工作。
+- 涉及文件：`backend/main.py`、`backend/paper_reader_service.py`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`tests/test_paper_reader_source_layout.py`、`PROJECT_LOG.md`
+- 验证：新增 `test_single_source_page_pdf_is_exposed_for_selectable_overlay_viewer` 与 `test_frontend_pdf_reader_keeps_selectable_page_layer` 并先看到缺少 helper/文本层的失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout.PaperReaderSourceLayoutTest.test_single_source_page_pdf_is_exposed_for_selectable_overlay_viewer tests.test_paper_reader_source_layout.PaperReaderSourceLayoutTest.test_frontend_pdf_reader_keeps_selectable_page_layer`（通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout tests.test_paper_reader_translation`（通过）；执行 `.venv/bin/python -m py_compile backend/main.py backend/paper_reader_service.py backend/schemas.py`（通过）；执行 `cd frontend && npm run build`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，24 tests）；执行 `git diff --check`（通过）；重启后端并用假 session 请求确认 `/api/paper-reader/session/{session_id}/source-pages/{page_number}/pdf` 命中业务层 404。
+- 后续：单页 PDF 由浏览器 PDF 渲染，透明文本层来自 PDF 文本抽取；极复杂公式的可复制文本仍受 PDF 自身文本抽取质量影响，但视觉层不再依赖该抽取结果。
+
+## 2026-06-19 12:49
+
+- 摘要：将 `Paper Reader` 中间阅读区切换为浏览器原生 PDF 渲染，避免自制文本层造成水印、字号、公式和图表错位；同时停用自动精读页生成，创建会话和旧 `/stream` 兼容接口都不再调用 `paper_reader_chat` 生成结构化精读内容。
+- 涉及文件：`backend/main.py`、`backend/paper_reader_service.py`、`frontend/src/App.jsx`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`tests/test_paper_reader_source_layout.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：新增 `test_build_session_does_not_generate_deep_reading_page` 并先看到 `_generate_page_content_internal` 被调用的失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout.PaperReaderSourceLayoutTest.test_build_session_does_not_generate_deep_reading_page tests.test_paper_reader_source_layout.PaperReaderSourceLayoutTest.test_session_pdf_path_is_exposed_for_native_pdf_rendering`（通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout tests.test_paper_reader_translation`（通过）；执行 `.venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py backend/main.py`（通过）；执行 `cd frontend && npm run build`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，22 tests）；执行 `git diff --check`（通过）。
+- 后续：已重启本地后端并用假 session 请求确认 `/api/paper-reader/session/{session_id}/pdf` 路由命中业务层 404；前端 dev server 仍在 `http://127.0.0.1:5173/` 监听。
+
+## 2026-06-19 12:28
+
+- 摘要：修复 `Paper Reader` PDF 原文页显示过度挤压的问题，后端为源页返回 PDF 坐标、字号和字体粗细的 layout spans，前端改用 SVG 按原始版心渲染文本。
+- 涉及文件：`backend/schemas.py`、`backend/paper_reader_service.py`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`tests/test_paper_reader_source_layout.py`、`PROJECT_LOG.md`
+- 验证：新增 `test_pdf_source_layout_preserves_positions_and_font_weight` 并先看到缺少 layout 提取函数的失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout`（通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout tests.test_paper_reader_translation`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，20 tests）；执行 `.venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py backend/main.py`（通过）；执行 `cd frontend && npm run build`（通过）；执行 `git diff --check`（通过）。
+- 后续：当前方案用 PDF 文本坐标渲染正文和标题，能保留段落、字号和粗体；暂不栅格化图片/图表，后续若要完全像 Chrome PDF Viewer 一样显示图像，需要引入 Poppler/PyMuPDF 或前端 PDF.js。
+
+## 2026-06-18 11:47
+
+- 摘要：重设计 `Paper Reader` 中间阅读区为 PDF 原文页阅读面，移除中间原文/解读卡片流；新增持久原文选区与右侧选区翻译卡，按 `paper_reader_translation` 配置只翻译选中文本。
+- 涉及文件：`backend/schemas.py`、`backend/main.py`、`backend/paper_reader_service.py`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`tests/test_paper_reader_translation.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：新增 `test_selected_text_translation_uses_translation_config_only` 并先看到缺少 schema 的失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation.PaperReaderTranslationTest.test_selected_text_translation_uses_translation_config_only`（通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，19 tests）；执行 `.venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py backend/main.py`（通过）；执行 `cd frontend && npm run build`（通过）；执行 `git diff --check`（通过）。
+- 后续：当前已运行的后端进程需要重载后才会暴露 `/source` 和 `/translate-selection` 新接口；建议在真实 PDF 会话里人工检查浏览器原文选区高亮与 `t` 快捷翻译体验。
+
 ## 2026-06-17 11:06
 
 - 摘要：修复旧配置中缺少 `paper_reader_translation` 时原文卡片翻译仍回退到默认本地模型的问题；现在未显式配置翻译模型时会继承当前保存的 `paper_reader_chat` provider/model/base_url/key，避免页面卡片解读持续为空。

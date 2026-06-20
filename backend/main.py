@@ -40,10 +40,13 @@ from backend.paper_reader_service import (
     create_session_from_pdf_bytes,
     get_page_content,
     get_session,
+    get_session_pdf_path,
     get_session_settings,
+    get_source_pages_for_reader_page,
+    get_source_page_pdf_path,
     page_content_to_model,
     session_to_model,
-    stream_page_content_tokens,
+    translate_selected_text,
 )
 from backend.ingest_manager import IngestManager
 from backend.schemas import (
@@ -63,8 +66,11 @@ from backend.schemas import (
     PaperReaderChatRequest,
     PaperReaderChatResponse,
     PaperReaderPageContentModel,
+    PaperReaderSelectionTranslateRequest,
+    PaperReaderSelectionTranslateResponse,
     PaperReaderSessionFromArxivRequest,
     PaperReaderSessionModel,
+    PaperReaderSourcePagesResponse,
     QueryPlanModel,
     RetrievalConstraintsModel,
     TargetPaperModel,
@@ -461,6 +467,44 @@ def api_paper_reader_session(session_id: str) -> PaperReaderSessionModel:
         raise to_http_detail(exc) from exc
 
 
+@app.get("/api/paper-reader/session/{session_id}/pdf")
+def api_paper_reader_pdf(session_id: str) -> FileResponse:
+    try:
+        pdf_path = get_session_pdf_path(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+    if not pdf_path.exists() or not pdf_path.is_file():
+        raise HTTPException(status_code=404, detail="Paper reader PDF file not found.")
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=pdf_path.name or "paper.pdf",
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/api/paper-reader/session/{session_id}/source-pages/{page_number}/pdf")
+def api_paper_reader_source_page_pdf(session_id: str, page_number: int) -> FileResponse:
+    try:
+        pdf_path = get_source_page_pdf_path(session_id, page_number)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+    if not pdf_path.exists() or not pdf_path.is_file():
+        raise HTTPException(status_code=404, detail="Paper reader source page PDF file not found.")
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=pdf_path.name or f"page-{page_number}.pdf",
+        content_disposition_type="inline",
+    )
+
+
 @app.get("/api/paper-reader/session/{session_id}/pages/{page_index}", response_model=PaperReaderPageContentModel)
 def api_paper_reader_page(session_id: str, page_index: int) -> PaperReaderPageContentModel:
     try:
@@ -473,31 +517,32 @@ def api_paper_reader_page(session_id: str, page_index: int) -> PaperReaderPageCo
         raise to_http_detail(exc) from exc
 
 
+@app.get("/api/paper-reader/session/{session_id}/pages/{page_index}/source", response_model=PaperReaderSourcePagesResponse)
+def api_paper_reader_source_pages(session_id: str, page_index: int) -> PaperReaderSourcePagesResponse:
+    try:
+        return get_source_pages_for_reader_page(session_id, page_index)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+
 @app.get("/api/paper-reader/session/{session_id}/pages/{page_index}/stream")
 def api_paper_reader_page_stream(session_id: str, page_index: int) -> StreamingResponse:
     try:
-        settings = settings_from_optional_payload(session_id=session_id)
+        final_page = page_content_to_model(get_page_content(session_id, page_index))
     except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except IndexError as exc:
         raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
     except Exception as exc:
         raise to_http_detail(exc) from exc
 
     def event_generator():
-        yield sse_event("message", {"status": "generating", "page_index": page_index})
-        try:
-            for chunk in stream_page_content_tokens(session_id, page_index, settings):
-                try:
-                    payload = json.loads(chunk)
-                except Exception:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                yield sse_event("message", payload)
-            final_page = page_content_to_model(get_page_content(session_id, page_index))
-            yield sse_event("message", final_page.model_dump())
-            yield sse_event("complete", {"page_index": page_index})
-        except Exception as exc:
-            yield sse_event("error", {"message": str(exc), "page_index": page_index})
+        yield sse_event("message", final_page.model_dump())
+        yield sse_event("complete", {"page_index": page_index})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -510,6 +555,23 @@ def api_paper_reader_chat(session_id: str, payload: PaperReaderChatRequest) -> P
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
     except IndexError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+
+@app.post(
+    "/api/paper-reader/session/{session_id}/translate-selection",
+    response_model=PaperReaderSelectionTranslateResponse,
+)
+def api_paper_reader_translate_selection(
+    session_id: str,
+    payload: PaperReaderSelectionTranslateRequest,
+) -> PaperReaderSelectionTranslateResponse:
+    try:
+        settings = settings_from_optional_payload(payload.settings, session_id=session_id)
+        return translate_selected_text(session_id, payload, settings)
+    except KeyError as exc:
         raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
     except Exception as exc:
         raise to_http_detail(exc) from exc
