@@ -20,6 +20,13 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-20 22:58
+
+- 摘要：记录 `Citation Trace / 论文溯源` 设计方案，明确其将彻底替代旧 PST-lite，并以证据账本、两轮引用/探索扩展和 LLM 启发价值 top5 为核心。
+- 涉及文件：`docs/superpowers/specs/2026-06-20-citation-trace-design.md`、`.gitignore`、`PROJECT_LOG.md`
+- 验证：执行文档自查，确认无占位项、旧 `/api/trace/*` 删除要求明确、低证据探索项最多 2 篇的约束明确；未运行代码测试，因为本次仅新增设计文档。
+- 后续：按该设计进入实施计划，删除旧 PST-lite 前端/API/schema，并实现新的 `citation_trace_service` 与独立标签页。
+
 ## 2026-06-17 11:06
 
 - 摘要：修复旧配置中缺少 `paper_reader_translation` 时原文卡片翻译仍回退到默认本地模型的问题；现在未显式配置翻译模型时会继承当前保存的 `paper_reader_chat` provider/model/base_url/key，避免页面卡片解读持续为空。
