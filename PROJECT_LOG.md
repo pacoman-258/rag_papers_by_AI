@@ -20,6 +20,13 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-20 23:32
+
+- 摘要：新增 `Citation Trace / 论文溯源` 实现计划，将旧 PST-lite 删除、新 `citation_trace_service`、API、前端、助手联动、测试和文档迁移拆成可执行任务。
+- 涉及文件：`docs/superpowers/plans/2026-06-20-citation-trace-implementation.md`、`PROJECT_LOG.md`
+- 验证：执行计划文档占位词/类型一致性自查；执行 `git diff --check -- docs/superpowers/plans/2026-06-20-citation-trace-implementation.md PROJECT_LOG.md`（通过）；未运行代码测试，因为本次仅新增实现计划文档。
+- 后续：按计划选择执行模式后开始逐任务实现。
+
 ## 2026-06-20 22:58
 
 - 摘要：记录 `Citation Trace / 论文溯源` 设计方案，明确其将彻底替代旧 PST-lite，并以证据账本、两轮引用/探索扩展和 LLM 启发价值 top5 为核心。
