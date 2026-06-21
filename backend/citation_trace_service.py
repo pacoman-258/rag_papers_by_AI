@@ -194,6 +194,114 @@ def build_unresolved_reference_record(
     return node, entry
 
 
+def _token_set(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", normalize_whitespace(text).casefold())
+        if len(token) > 2
+    }
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _date_plausibility(seed_date: str | None, candidate_date: str | None) -> float:
+    if not seed_date or not candidate_date:
+        return 0.25
+    return 1.0 if candidate_date <= seed_date else 0.0
+
+
+def _score_to_level(score: float, relation_type: CitationRelationType) -> EvidenceLevel:
+    if relation_type == "explicit_reference" and score >= 0.55:
+        return "strong"
+    if score >= 0.7:
+        return "strong"
+    if score >= 0.4:
+        return "medium"
+    return "weak"
+
+
+def score_candidate_relationship(
+    seed: CitationTracePaperNode,
+    candidate: CitationTracePaperNode,
+    *,
+    round_number: int,
+    relation_type: CitationRelationType,
+    reference_text: str | None = None,
+) -> CitationTraceLedgerEntry:
+    title_overlap = _jaccard(_token_set(seed.title), _token_set(candidate.title))
+    abstract_similarity = _jaccard(_token_set(seed.abstract), _token_set(candidate.abstract))
+    keyword_overlap = _jaccard(
+        {item.casefold() for item in seed.keywords},
+        {item.casefold() for item in candidate.keywords},
+    )
+    author_overlap = _jaccard(
+        {item.casefold() for item in seed.authors},
+        {item.casefold() for item in candidate.authors},
+    )
+    date_score = _date_plausibility(seed.published_date, candidate.published_date)
+    reference_match = 1.0 if relation_type == "explicit_reference" else 0.0
+    total = (
+        abstract_similarity * 0.15
+        + title_overlap * 0.1
+        + keyword_overlap * 0.15
+        + author_overlap * 0.15
+        + date_score * 0.1
+        + reference_match * 0.35
+    )
+    breakdown = CitationTraceScoreBreakdown(
+        abstract_similarity=round(abstract_similarity, 4),
+        title_overlap=round(title_overlap, 4),
+        keyword_overlap=round(keyword_overlap, 4),
+        author_overlap=round(author_overlap, 4),
+        date_plausibility=round(date_score, 4),
+        reference_match=round(reference_match, 4),
+    )
+    metadata_evidence = []
+    if candidate.arxiv_id:
+        metadata_evidence.append(f"arXiv:{candidate.arxiv_id}")
+    if candidate.doi:
+        metadata_evidence.append(f"DOI:{candidate.doi}")
+    if candidate.published_date:
+        metadata_evidence.append(f"published:{candidate.published_date}")
+    score_total = round(total, 4)
+    return CitationTraceLedgerEntry(
+        entry_id=_new_id("ledger"),
+        candidate_paper=candidate,
+        seed_paper=seed,
+        round=round_number,
+        relation_type=relation_type,
+        evidence_level=_score_to_level(score_total, relation_type),
+        score_total=score_total,
+        score_breakdown=breakdown,
+        reference_text=reference_text,
+        metadata_evidence=metadata_evidence,
+    )
+
+
+def select_round_candidates(
+    seed: CitationTracePaperNode,
+    candidates: list[CitationTracePaperNode],
+    *,
+    round_number: int,
+    limit: int,
+) -> list[CitationTraceLedgerEntry]:
+    entries = [
+        score_candidate_relationship(
+            seed,
+            candidate,
+            round_number=round_number,
+            relation_type="retrieved_similar",
+        )
+        for candidate in candidates
+    ]
+    entries.sort(key=lambda item: item.score_total, reverse=True)
+    return entries[:limit]
+
+
 def enforce_final_top5_policy(items: list[CitationTraceTopPaper]) -> list[CitationTraceTopPaper]:
     selected: list[CitationTraceTopPaper] = []
     weak_exploratory_count = 0

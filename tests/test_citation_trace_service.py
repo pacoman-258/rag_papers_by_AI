@@ -129,6 +129,73 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertEqual(len(trimmed), 5)
         self.assertLessEqual(sum(1 for item in trimmed if item.is_exploratory and item.evidence_level == "weak"), 2)
 
+    def test_score_candidate_marks_explicit_reference_as_strong_when_metadata_matches(self):
+        seed = cts.CitationTracePaperNode(
+            paper_id="target",
+            source="target",
+            source_id="target",
+            canonical_id="target",
+            title="Transformer Translation",
+            abstract="Attention models improve neural machine translation.",
+            authors=["Ashish Vaswani", "Noam Shazeer"],
+            published_date="2017-06-01",
+            keywords=["attention", "translation"],
+        )
+        candidate = cts.CitationTracePaperNode(
+            paper_id="paper-1",
+            source="arxiv",
+            source_id="1706.03762",
+            canonical_id="arxiv:1706.03762",
+            title="Attention Is All You Need",
+            abstract="The Transformer relies entirely on attention mechanisms for translation.",
+            authors=["Ashish Vaswani", "Noam Shazeer"],
+            published_date="2017-05-01",
+            keywords=["attention", "translation"],
+            arxiv_id="1706.03762",
+        )
+
+        entry = cts.score_candidate_relationship(
+            seed,
+            candidate,
+            round_number=1,
+            relation_type="explicit_reference",
+            reference_text="Attention Is All You Need. arXiv:1706.03762",
+        )
+
+        self.assertEqual(entry.evidence_level, "strong")
+        self.assertGreater(entry.score_total, 0.7)
+        self.assertEqual(entry.score_breakdown.reference_match, 1.0)
+
+    def test_select_round_candidates_uses_all_when_fewer_than_limit(self):
+        seed = cts.CitationTracePaperNode("target", "target", "target", "target", "Target")
+        candidates = [
+            cts.CitationTracePaperNode("p1", "arxiv", "p1", "p1", "First", abstract="alpha"),
+            cts.CitationTracePaperNode("p2", "arxiv", "p2", "p2", "Second", abstract="beta"),
+        ]
+
+        selected = cts.select_round_candidates(seed, candidates, round_number=1, limit=10)
+
+        self.assertEqual([entry.candidate_paper.paper_id for entry in selected], ["p1", "p2"])
+
+    def test_select_round_candidates_caps_round_two_at_three_per_seed(self):
+        seed = cts.CitationTracePaperNode("seed", "arxiv", "seed", "seed", "Seed")
+        candidates = [
+            cts.CitationTracePaperNode(
+                f"p{index}",
+                "arxiv",
+                f"p{index}",
+                f"p{index}",
+                f"Paper {index}",
+                abstract="shared method",
+            )
+            for index in range(5)
+        ]
+
+        selected = cts.select_round_candidates(seed, candidates, round_number=2, limit=3)
+
+        self.assertEqual(len(selected), 3)
+        self.assertTrue(all(entry.round == 2 for entry in selected))
+
 
 if __name__ == "__main__":
     unittest.main()
