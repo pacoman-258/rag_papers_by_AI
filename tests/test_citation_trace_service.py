@@ -166,6 +166,51 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertGreater(entry.score_total, 0.7)
         self.assertEqual(entry.score_breakdown.reference_match, 1.0)
 
+    def test_score_candidate_promotes_sparse_exact_arxiv_reference_match(self):
+        seed = cts.CitationTracePaperNode("target", "target", "target", "target", "Target")
+        candidate = cts.CitationTracePaperNode(
+            paper_id="paper-1",
+            source="arxiv",
+            source_id="1706.03762",
+            canonical_id="arxiv:1706.03762",
+            title="",
+            arxiv_id="1706.03762",
+        )
+
+        entry = cts.score_candidate_relationship(
+            seed,
+            candidate,
+            round_number=1,
+            relation_type="explicit_reference",
+            reference_text="Unknown Authors. Sparse Reference. arXiv:1706.03762.",
+        )
+
+        self.assertEqual(entry.evidence_level, "strong")
+        self.assertGreater(entry.score_total, 0.7)
+        self.assertEqual(entry.score_breakdown.reference_match, 1.0)
+
+    def test_score_candidate_does_not_mark_unmatched_explicit_reference_as_metadata_match(self):
+        seed = cts.CitationTracePaperNode("target", "target", "target", "target", "Target")
+        candidate = cts.CitationTracePaperNode(
+            paper_id="paper-1",
+            source="arxiv",
+            source_id="1706.03762",
+            canonical_id="arxiv:1706.03762",
+            title="",
+            arxiv_id="1706.03762",
+        )
+
+        entry = cts.score_candidate_relationship(
+            seed,
+            candidate,
+            round_number=1,
+            relation_type="explicit_reference",
+            reference_text="Unknown Authors. Different Sparse Reference. arXiv:1901.00001.",
+        )
+
+        self.assertEqual(entry.score_breakdown.reference_match, 0.0)
+        self.assertNotEqual(entry.evidence_level, "strong")
+
     def test_select_round_candidates_uses_all_when_fewer_than_limit(self):
         seed = cts.CitationTracePaperNode("target", "target", "target", "target", "Target")
         candidates = [
@@ -195,6 +240,18 @@ class CitationTraceServiceTest(unittest.TestCase):
 
         self.assertEqual(len(selected), 3)
         self.assertTrue(all(entry.round == 2 for entry in selected))
+
+    def test_select_round_candidates_uses_deterministic_tie_break_before_limit(self):
+        seed = cts.CitationTracePaperNode("seed", "arxiv", "seed", "seed", "Seed")
+        candidates = [
+            cts.CitationTracePaperNode("p3", "arxiv", "p3", "p3", "Paper", abstract="shared method"),
+            cts.CitationTracePaperNode("p1", "arxiv", "p1", "p1", "Paper", abstract="shared method"),
+            cts.CitationTracePaperNode("p2", "arxiv", "p2", "p2", "Paper", abstract="shared method"),
+        ]
+
+        selected = cts.select_round_candidates(seed, candidates, round_number=2, limit=2)
+
+        self.assertEqual([entry.candidate_paper.paper_id for entry in selected], ["p1", "p2"])
 
 
 if __name__ == "__main__":

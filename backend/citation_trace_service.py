@@ -214,6 +214,51 @@ def _date_plausibility(seed_date: str | None, candidate_date: str | None) -> flo
     return 1.0 if candidate_date <= seed_date else 0.0
 
 
+def _normalize_arxiv_id(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = re.search(r"(\d{4}\.\d{4,5})(?:v\d+)?", value, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _normalize_doi(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = normalize_whitespace(value).casefold()
+    normalized = re.sub(r"^(doi:\s*|https?://(?:dx\.)?doi\.org/)", "", normalized)
+    match = DOI_PATTERN.search(normalized)
+    doi = match.group(0) if match else normalized
+    return doi.rstrip(".,;") or None
+
+
+def _candidate_arxiv_ids(candidate: CitationTracePaperNode) -> set[str]:
+    values = [
+        candidate.arxiv_id,
+        candidate.source_id if candidate.source == "arxiv" else None,
+        candidate.canonical_id,
+    ]
+    return {arxiv_id for value in values if (arxiv_id := _normalize_arxiv_id(value))}
+
+
+def _candidate_dois(candidate: CitationTracePaperNode) -> set[str]:
+    values = [candidate.doi, candidate.source_id, candidate.canonical_id]
+    return {doi for value in values if (doi := _normalize_doi(value)) and doi.startswith("10.")}
+
+
+def _reference_metadata_match(candidate: CitationTracePaperNode, reference_text: str | None) -> float:
+    if not reference_text:
+        return 0.0
+    reference_arxiv_ids = {
+        arxiv_id for value in ARXIV_ID_PATTERN.findall(reference_text) if (arxiv_id := _normalize_arxiv_id(value))
+    }
+    reference_dois = {doi for value in DOI_PATTERN.findall(reference_text) if (doi := _normalize_doi(value))}
+    if _candidate_arxiv_ids(candidate) & reference_arxiv_ids:
+        return 1.0
+    if _candidate_dois(candidate) & reference_dois:
+        return 1.0
+    return 0.0
+
+
 def _score_to_level(score: float, relation_type: CitationRelationType) -> EvidenceLevel:
     if relation_type == "explicit_reference" and score >= 0.55:
         return "strong"
@@ -243,14 +288,18 @@ def score_candidate_relationship(
         {item.casefold() for item in candidate.authors},
     )
     date_score = _date_plausibility(seed.published_date, candidate.published_date)
-    reference_match = 1.0 if relation_type == "explicit_reference" else 0.0
+    reference_match = (
+        _reference_metadata_match(candidate, reference_text)
+        if relation_type == "explicit_reference"
+        else 0.0
+    )
     total = (
-        abstract_similarity * 0.15
-        + title_overlap * 0.1
-        + keyword_overlap * 0.15
-        + author_overlap * 0.15
-        + date_score * 0.1
-        + reference_match * 0.35
+        abstract_similarity * 0.1
+        + title_overlap * 0.07
+        + keyword_overlap * 0.05
+        + author_overlap * 0.05
+        + date_score * 0.03
+        + reference_match * 0.7
     )
     breakdown = CitationTraceScoreBreakdown(
         abstract_similarity=round(abstract_similarity, 4),
@@ -298,7 +347,16 @@ def select_round_candidates(
         )
         for candidate in candidates
     ]
-    entries.sort(key=lambda item: item.score_total, reverse=True)
+    entries.sort(
+        key=lambda item: (
+            -item.score_total,
+            item.candidate_paper.canonical_id.casefold(),
+            item.candidate_paper.source.casefold(),
+            item.candidate_paper.source_id.casefold(),
+            item.candidate_paper.paper_id.casefold(),
+            item.candidate_paper.title.casefold(),
+        )
+    )
     return entries[:limit]
 
 
