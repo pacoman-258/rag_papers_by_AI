@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import tempfile
 import uuid
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterator, Literal
@@ -107,6 +107,10 @@ class CitationTraceTopPaper:
 class CitationTraceRoundSummary:
     round: int
     status: RoundStatus
+    seed_count: int = 0
+    candidate_count: int = 0
+    selected_count: int = 0
+    summary_text: str | None = None
     seed_paper_ids: list[str] = field(default_factory=list)
     ledger_entries: list[CitationTraceLedgerEntry] = field(default_factory=list)
     top_papers: list[CitationTraceTopPaper] = field(default_factory=list)
@@ -296,27 +300,6 @@ def get_session(session_id: str) -> CitationTraceSession:
         return _SESSION_CACHE[session_id]
     except KeyError as exc:
         raise KeyError("Citation trace session not found.") from exc
-
-
-def run_citation_trace_events(
-    session: CitationTraceSession,
-    settings: Any,
-) -> Iterator[tuple[str, dict[str, Any]]]:
-    session.status = "running"
-    yield "stage_start", {"session_id": session.session_id, "stage": "round_1"}
-
-    if not session.rounds:
-        session.rounds.append(
-            CitationTraceRoundSummary(
-                round=1,
-                status="completed",
-                seed_paper_ids=[session.target_paper.paper_id],
-            )
-        )
-    round_summary = session.rounds[0]
-    session.status = "completed"
-    yield "round_summary", asdict(round_summary)
-    yield "complete", {"session_id": session.session_id, "status": session.status}
 
 
 def _title_hint_from_reference(text: str) -> str | None:
@@ -580,6 +563,229 @@ def select_round_candidates(
         )
     )
     return entries[:limit]
+
+
+def resolve_reference_to_node(reference: ReferenceEntry, settings: Any) -> CitationTracePaperNode | None:
+    if not reference.arxiv_id:
+        return None
+    record = fetch_arxiv_record(reference.arxiv_id)
+    if record is None:
+        return None
+    arxiv_id = (
+        _normalize_arxiv_id(getattr(record, "arxiv_id", None))
+        or _normalize_arxiv_id(getattr(record, "source_id", None))
+        or reference.arxiv_id
+    )
+    authors = [normalize_whitespace(author) for author in list(getattr(record, "authors", []) or [])]
+    title = normalize_whitespace(getattr(record, "title", "") or reference.title_hint or arxiv_id)
+    abstract = normalize_whitespace(getattr(record, "summary", "") or "")
+    published_date = getattr(record, "published_date", None)
+    doi = getattr(record, "doi", None)
+    return CitationTracePaperNode(
+        paper_id=arxiv_id,
+        source="arxiv",
+        source_id=getattr(record, "source_id", None) or arxiv_id,
+        canonical_id=build_canonical_paper_id(
+            title=title,
+            authors=authors,
+            published_date=published_date,
+            arxiv_id=arxiv_id,
+            doi=doi,
+        ),
+        title=title,
+        abstract=abstract,
+        authors=authors,
+        published_date=published_date,
+        arxiv_id=arxiv_id,
+        doi=doi,
+        external_url=getattr(record, "external_url", None),
+    )
+
+
+def expand_seed_candidates(seed: CitationTracePaperNode, settings: Any) -> list[CitationTracePaperNode]:
+    return []
+
+
+def _round_summary_payload(summary: CitationTraceRoundSummary) -> dict[str, Any]:
+    return {
+        "round": summary.round,
+        "status": summary.status,
+        "seed_count": summary.seed_count,
+        "candidate_count": summary.candidate_count,
+        "selected_count": summary.selected_count,
+        "summary_text": summary.summary_text,
+        "seed_paper_ids": list(summary.seed_paper_ids),
+        "warnings": list(summary.warnings),
+    }
+
+
+def run_round_one(session: CitationTraceSession, settings: Any) -> CitationTraceRoundSummary:
+    entries: list[CitationTraceLedgerEntry] = []
+    warnings: list[str] = []
+    for reference in session.reference_entries:
+        try:
+            node = resolve_reference_to_node(reference, settings)
+        except Exception as exc:
+            node = None
+            warnings.append(f"{reference.title_hint or reference.reference_id}: {exc}")
+        if node is None:
+            _node, entry = build_unresolved_reference_record(
+                reference,
+                seed_paper_id=session.target_paper.paper_id,
+            )
+            entries.append(entry)
+            continue
+        entries.append(
+            score_candidate_relationship(
+                session.target_paper,
+                node,
+                round_number=1,
+                relation_type="explicit_reference",
+                reference_text=reference.raw_text,
+            )
+        )
+    entries.sort(
+        key=lambda item: (
+            -item.score_total,
+            item.candidate_paper.canonical_id.casefold(),
+            item.candidate_paper.paper_id.casefold(),
+        )
+    )
+    selected = entries[:10]
+    return CitationTraceRoundSummary(
+        round=1,
+        status="completed" if selected else "partial",
+        seed_count=1,
+        candidate_count=len(entries),
+        selected_count=len(selected),
+        summary_text="Round 1 selected explicit references and unresolved reference records.",
+        seed_paper_ids=[session.target_paper.paper_id],
+        ledger_entries=selected,
+        warnings=warnings,
+    )
+
+
+def run_round_two(
+    session: CitationTraceSession,
+    settings: Any,
+    round_one: CitationTraceRoundSummary,
+) -> CitationTraceRoundSummary:
+    entries: list[CitationTraceLedgerEntry] = []
+    warnings: list[str] = []
+    candidate_count = 0
+    seeds = [
+        entry.candidate_paper
+        for entry in round_one.ledger_entries[:10]
+        if entry.candidate_paper.source != "unresolved"
+    ]
+    for seed in seeds:
+        try:
+            candidates = expand_seed_candidates(seed, settings)
+            candidate_count += len(candidates)
+            entries.extend(select_round_candidates(seed, candidates, round_number=2, limit=3))
+        except Exception as exc:
+            warnings.append(f"{seed.title}: {exc}")
+    status: RoundStatus = "completed"
+    if warnings and entries:
+        status = "partial"
+    elif warnings and not entries:
+        status = "failed"
+    return CitationTraceRoundSummary(
+        round=2,
+        status=status,
+        seed_count=len(seeds),
+        candidate_count=candidate_count,
+        selected_count=len(entries),
+        summary_text="Round 2 expanded each resolved round 1 seed independently.",
+        seed_paper_ids=[seed.paper_id for seed in seeds],
+        ledger_entries=entries,
+        warnings=warnings,
+    )
+
+
+def synthesize_final_top5(session: CitationTraceSession, settings: Any) -> list[CitationTraceTopPaper]:
+    items: list[CitationTraceTopPaper] = []
+    for index, entry in enumerate(session.ledger_entries[:5], start=1):
+        relation_is_explicit = entry.relation_type == "explicit_reference"
+        items.append(
+            CitationTraceTopPaper(
+                rank=index,
+                paper_id=entry.candidate_paper.paper_id,
+                title=entry.candidate_paper.title,
+                influence_area="unknown",
+                reason=entry.llm_assessment or "Selected from the current evidence ledger.",
+                evidence_level=entry.evidence_level,
+                is_explicitly_cited=relation_is_explicit,
+                is_exploratory=not relation_is_explicit,
+                why_worth_reading="It is one of the strongest currently available provenance candidates.",
+                uncertainty="LLM synthesis fallback used until model ranking is configured.",
+                supporting_edge_ids=[entry.entry_id],
+            )
+        )
+    return enforce_final_top5_policy(items)
+
+
+def run_synthesis_stage(session: CitationTraceSession, settings: Any) -> Iterator[tuple[str, dict[str, Any]]]:
+    yield "stage_start", {"stage": "synthesis", "session_id": session.session_id}
+    try:
+        session.final_top5 = synthesize_final_top5(session, settings)
+    except Exception as exc:
+        session.final_top5 = []
+        message = f"Synthesis failed: {exc}"
+        session.warnings.append(message)
+        yield "warning", {"message": message}
+        return
+    yield "synthesis_complete", {"session_id": session.session_id, "final_top5_count": len(session.final_top5)}
+
+
+def run_citation_trace_events(
+    session: CitationTraceSession,
+    settings: Any,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    session.status = "running"
+    yield "stage_start", {"session_id": session.session_id, "stage": "reference_resolution"}
+
+    round_one = run_round_one(session, settings)
+    session.rounds = [round_one]
+    session.ledger_entries = list(round_one.ledger_entries)
+    yield "round_summary", _round_summary_payload(round_one)
+    for entry in round_one.ledger_entries:
+        yield "ledger_entry", {
+            "entry_id": entry.entry_id,
+            "round": entry.round,
+            "title": entry.candidate_paper.title,
+        }
+    for warning in round_one.warnings:
+        yield "warning", {"message": warning}
+
+    yield "stage_start", {"session_id": session.session_id, "stage": "round_two"}
+    round_two = run_round_two(session, settings, round_one)
+    session.rounds.append(round_two)
+    session.ledger_entries.extend(round_two.ledger_entries)
+    yield "round_summary", _round_summary_payload(round_two)
+    for entry in round_two.ledger_entries:
+        yield "ledger_entry", {
+            "entry_id": entry.entry_id,
+            "round": entry.round,
+            "title": entry.candidate_paper.title,
+        }
+    for warning in round_two.warnings:
+        yield "warning", {"message": warning}
+
+    for event_name, payload in run_synthesis_stage(session, settings):
+        yield event_name, payload
+
+    if round_one.status == "failed" or round_two.status == "failed":
+        session.status = "partial"
+    elif round_one.warnings or round_two.warnings or session.warnings:
+        session.status = "partial"
+    else:
+        session.status = "completed"
+    yield "complete", {
+        "session_id": session.session_id,
+        "status": session.status,
+        "final_top5_count": len(session.final_top5),
+    }
 
 
 def enforce_final_top5_policy(items: list[CitationTraceTopPaper]) -> list[CitationTraceTopPaper]:

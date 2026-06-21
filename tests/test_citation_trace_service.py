@@ -369,6 +369,108 @@ class CitationTraceServiceTest(unittest.TestCase):
 
         self.assertEqual([entry.candidate_paper.paper_id for entry in selected], ["p1", "p2"])
 
+    def test_run_citation_trace_keeps_round_one_when_round_two_seed_fails(self):
+        session = cts.CitationTraceSession(
+            session_id="run-session",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode(
+                "target",
+                "target",
+                "paper.pdf",
+                "file:paper.pdf",
+                "Target",
+                abstract="attention method",
+            ),
+            answer_language="en",
+            reference_entries=[
+                cts.ReferenceEntry(
+                    "ref-1",
+                    "Good reference. arXiv:1601.00001",
+                    arxiv_id="1601.00001",
+                    title_hint="Good reference",
+                ),
+                cts.ReferenceEntry(
+                    "ref-2",
+                    "Bad reference. arXiv:1601.00002",
+                    arxiv_id="1601.00002",
+                    title_hint="Bad reference",
+                ),
+            ],
+        )
+        original_resolve = cts.resolve_reference_to_node
+        original_expand = cts.expand_seed_candidates
+        try:
+            cts.resolve_reference_to_node = lambda reference, settings: cts.CitationTracePaperNode(
+                reference.arxiv_id or reference.reference_id,
+                "arxiv",
+                reference.arxiv_id or reference.reference_id,
+                reference.reference_id,
+                reference.title_hint or "Paper",
+                abstract="attention method",
+                arxiv_id=reference.arxiv_id,
+            )
+
+            def expand(seed, settings):
+                if seed.paper_id == "1601.00002":
+                    raise RuntimeError("seed failed")
+                return [
+                    cts.CitationTracePaperNode(
+                        "prior",
+                        "arxiv",
+                        "prior",
+                        "prior",
+                        "Prior",
+                        abstract="attention",
+                    )
+                ]
+
+            cts.expand_seed_candidates = expand
+            events = list(cts.run_citation_trace_events(session, settings=None))
+        finally:
+            cts.resolve_reference_to_node = original_resolve
+            cts.expand_seed_candidates = original_expand
+
+        self.assertTrue(any(name == "round_summary" and payload["round"] == 1 for name, payload in events))
+        self.assertEqual(session.rounds[0].status, "completed")
+        self.assertEqual(session.rounds[1].status, "partial")
+        self.assertTrue(session.rounds[1].warnings)
+        self.assertGreaterEqual(len(session.ledger_entries), 2)
+        self.assertTrue(any(name == "complete" for name, _payload in events))
+
+    def test_synthesis_failure_leaves_ledger_available(self):
+        session = cts.CitationTraceSession(
+            session_id="synthesis-fail",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode("target", "target", "paper.pdf", "file:paper.pdf", "Target"),
+            answer_language="en",
+            ledger_entries=[
+                cts.CitationTraceLedgerEntry(
+                    "entry",
+                    cts.CitationTracePaperNode("paper", "arxiv", "paper", "paper", "Paper"),
+                    None,
+                    1,
+                    "retrieved_similar",
+                    "medium",
+                    0.5,
+                    cts.CitationTraceScoreBreakdown(),
+                )
+            ],
+        )
+        original = cts.synthesize_final_top5
+        try:
+            cts.synthesize_final_top5 = lambda session, settings: (_ for _ in ()).throw(RuntimeError("model failed"))
+            events = list(cts.run_synthesis_stage(session, settings=None))
+        finally:
+            cts.synthesize_final_top5 = original
+
+        self.assertEqual(session.final_top5, [])
+        self.assertTrue(any(name == "warning" and "model failed" in payload["message"] for name, payload in events))
+        self.assertEqual(len(session.ledger_entries), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

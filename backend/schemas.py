@@ -552,6 +552,10 @@ class CitationTraceLedgerEntryModel(BaseModel):
 class CitationTraceRoundSummaryModel(BaseModel):
     round: int
     status: Literal["pending", "running", "completed", "partial", "failed"]
+    seed_count: int = 0
+    candidate_count: int = 0
+    selected_count: int = 0
+    summary_text: str | None = None
     seed_paper_ids: list[str] = Field(default_factory=list)
     ledger_entries: list[CitationTraceLedgerEntryModel] = Field(default_factory=list)
     top_papers: list["CitationTraceTopPaperModel"] = Field(default_factory=list)
