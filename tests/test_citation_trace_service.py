@@ -27,6 +27,9 @@ def _top_paper(
 
 
 class CitationTraceServiceTest(unittest.TestCase):
+    def tearDown(self):
+        cts._SESSION_CACHE.clear()
+
     def test_extract_reference_entries_from_references_section(self):
         text = """
         Abstract
@@ -91,6 +94,45 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertEqual(entries[0].raw_label, "[1]")
         self.assertIn("2017. pages 1-2.", entries[0].raw_text)
         self.assertEqual(entries[1].raw_label, "[2]")
+
+    def test_create_session_from_arxiv_uses_resolved_metadata(self):
+        class Record:
+            arxiv_id = "1706.03762"
+            source = "arxiv"
+            source_id = "1706.03762"
+            title = "Attention Is All You Need"
+            summary = "Transformer architecture."
+            authors = ["Ashish Vaswani"]
+            published_date = "2017-06-12"
+            primary_category = "cs.CL"
+            external_url = "https://arxiv.org/abs/1706.03762"
+            doi = None
+
+        original_fetch = cts.fetch_arxiv_record
+        original_download = cts.download_arxiv_pdf_text
+        try:
+            cts.fetch_arxiv_record = lambda arxiv_id: Record()
+            cts.download_arxiv_pdf_text = (
+                lambda arxiv_id, settings: "References\n[1] Prior Work. arXiv:1601.00001"
+            )
+            session = cts.create_session_from_arxiv(
+                "https://arxiv.org/pdf/1706.03762v7.pdf",
+                settings=None,
+                answer_language="en",
+            )
+        finally:
+            cts.fetch_arxiv_record = original_fetch
+            cts.download_arxiv_pdf_text = original_download
+
+        self.assertEqual(session.target_paper.title, "Attention Is All You Need")
+        self.assertEqual(session.target_paper.abstract, "Transformer architecture.")
+        self.assertEqual(session.target_paper.source_id, "1706.03762")
+        self.assertEqual(session.target_paper.canonical_id, "arxiv:1706.03762")
+        self.assertEqual(session.pdf_text, "References\n[1] Prior Work. arXiv:1601.00001")
+        self.assertEqual(len(session.reference_entries), 1)
+        self.assertEqual(session.reference_entries[0].arxiv_id, "1601.00001")
+        self.assertEqual(session.final_top5, [])
+        self.assertIs(cts.get_session(session.session_id), session)
 
     def test_unresolved_reference_stays_visible_as_node_and_ledger_entry(self):
         reference = cts.ReferenceEntry(

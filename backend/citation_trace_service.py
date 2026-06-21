@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import re
+import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field, replace
+from io import BytesIO
+from pathlib import Path
 from typing import Any, Iterator, Literal
 
-from local_paper_db.app.search_service import normalize_whitespace
+from pypdf import PdfReader
+
+from local_paper_db.app.external_sources import fetch_arxiv_record
+from local_paper_db.app.search_service import build_canonical_paper_id, normalize_whitespace
 
 
 PaperNodeSource = Literal["target", "arxiv", "local", "wos", "unresolved"]
@@ -23,6 +29,10 @@ DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
 YEAR_PATTERN = re.compile(r"\b(19\d{2}|20\d{2})\b")
 REFERENCE_SPLIT_PATTERN = re.compile(r"(?m)^\s*(?P<label>\[\d+\]|(?!(?:19|20)\d{2}\.)\d+\.)\s+")
 REFERENCE_SENTENCE_SPLIT_PATTERN = re.compile(r"(?<!\b[A-Z])\.\s+")
+ARXIV_URL_PATTERN = re.compile(
+    r"^https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/(?P<id>\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -114,7 +124,9 @@ class CitationTraceSession:
     status: RoundStatus = "pending"
     rounds: list[CitationTraceRoundSummary] = field(default_factory=list)
     ledger_entries: list[CitationTraceLedgerEntry] = field(default_factory=list)
-    top_papers: list[CitationTraceTopPaper] = field(default_factory=list)
+    final_top5: list[CitationTraceTopPaper] = field(default_factory=list)
+    reference_entries: list[ReferenceEntry] = field(default_factory=list)
+    pdf_text: str = ""
     warnings: list[str] = field(default_factory=list)
 
 
@@ -126,10 +138,77 @@ def _new_id(prefix: str) -> str:
 
 
 def _arxiv_id_from_url(url: str) -> str:
-    value = normalize_whitespace(url).rstrip("/")
-    suffix = value.rsplit("/", 1)[-1] if value else ""
-    arxiv_id = _normalize_arxiv_id(suffix)
-    return arxiv_id or suffix or _new_id("arxiv")
+    value = normalize_whitespace(url)
+    match = ARXIV_URL_PATTERN.match(value)
+    if match is None:
+        raise ValueError("Only arxiv.org/abs or arxiv.org/pdf URLs are supported.")
+    return match.group("id")
+
+
+def _request_timeout(settings: Any) -> int:
+    timeout = getattr(getattr(settings, "retrieval", None), "request_timeout", None)
+    try:
+        parsed = int(timeout)
+    except (TypeError, ValueError):
+        return 30
+    return parsed if parsed > 0 else 30
+
+
+def _pdf_reader_to_text(reader: PdfReader) -> str:
+    page_texts: list[str] = []
+    for page in reader.pages:
+        page_texts.append(page.extract_text() or "")
+    return "\n\n".join(page_texts).strip()
+
+
+def pdf_bytes_to_text(content: bytes) -> str:
+    reader = PdfReader(BytesIO(content))
+    return _pdf_reader_to_text(reader)
+
+
+def download_arxiv_pdf_text(arxiv_id: str, settings: Any) -> str:
+    from backend.paper_reader_service import _download_arxiv_pdf
+
+    with tempfile.TemporaryDirectory(prefix="citation-trace-arxiv-") as temp_dir:
+        pdf_path = _download_arxiv_pdf(arxiv_id, Path(temp_dir), _request_timeout(settings))
+        reader = PdfReader(str(pdf_path))
+        return _pdf_reader_to_text(reader)
+
+
+def _paper_node_from_arxiv_record(record: Any, fallback_arxiv_id: str, source_url: str) -> CitationTracePaperNode:
+    resolved_arxiv_id = (
+        _normalize_arxiv_id(getattr(record, "arxiv_id", None))
+        or _normalize_arxiv_id(getattr(record, "source_id", None))
+        or fallback_arxiv_id
+    )
+    authors = [normalize_whitespace(author) for author in list(getattr(record, "authors", []) or [])]
+    title = normalize_whitespace(getattr(record, "title", "") or f"arXiv {resolved_arxiv_id}")
+    abstract = normalize_whitespace(getattr(record, "summary", "") or "")
+    published_date = getattr(record, "published_date", None)
+    doi = getattr(record, "doi", None)
+    primary_category = getattr(record, "primary_category", None)
+    external_url = getattr(record, "external_url", None) or source_url
+    canonical_id = build_canonical_paper_id(
+        title=title,
+        authors=authors,
+        published_date=published_date,
+        arxiv_id=resolved_arxiv_id,
+        doi=doi,
+    )
+    return CitationTracePaperNode(
+        paper_id="target",
+        source="target",
+        source_id=resolved_arxiv_id,
+        canonical_id=canonical_id,
+        title=title,
+        abstract=abstract,
+        authors=authors,
+        published_date=published_date,
+        keywords=[primary_category] if primary_category else [],
+        arxiv_id=resolved_arxiv_id,
+        doi=doi,
+        external_url=external_url,
+    )
 
 
 def create_session_from_arxiv(
@@ -138,23 +217,57 @@ def create_session_from_arxiv(
     answer_language: str | None = None,
 ) -> CitationTraceSession:
     source_id = _arxiv_id_from_url(url)
-    session_id_suffix = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_id).strip("-") or uuid.uuid4().hex[:12]
-    target_paper = CitationTracePaperNode(
-        paper_id="target",
-        source="target",
-        source_id=source_id,
-        canonical_id=f"arxiv:{source_id}",
-        title=f"arXiv {source_id}",
-        arxiv_id=source_id,
-        external_url=url,
+    record = fetch_arxiv_record(source_id)
+    if record is None:
+        raise RuntimeError("Unable to resolve the requested arXiv paper.")
+    resolved_source_id = (
+        _normalize_arxiv_id(getattr(record, "arxiv_id", None))
+        or _normalize_arxiv_id(getattr(record, "source_id", None))
+        or source_id
     )
+    pdf_text = download_arxiv_pdf_text(resolved_source_id, settings)
+    reference_entries = extract_reference_entries(pdf_text)
+    session_id_suffix = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_id).strip("-") or uuid.uuid4().hex[:12]
+    target_paper = _paper_node_from_arxiv_record(record, source_id, url)
     session = CitationTraceSession(
         session_id=f"citation-trace-{session_id_suffix}",
         source_type="arxiv",
-        source_id=source_id,
+        source_id=resolved_source_id,
         source_url=url,
         target_paper=target_paper,
         answer_language=answer_language or "zh",
+        reference_entries=reference_entries,
+        pdf_text=pdf_text,
+    )
+    _SESSION_CACHE[session.session_id] = session
+    return session
+
+
+def create_session_from_pdf_bytes(
+    filename: str,
+    content: bytes,
+    settings: Any,
+    answer_language: str | None = None,
+) -> CitationTraceSession:
+    normalized_filename = normalize_whitespace(Path(filename or "paper.pdf").name) or "paper.pdf"
+    pdf_text = pdf_bytes_to_text(content)
+    target_paper = CitationTracePaperNode(
+        paper_id="target",
+        source="target",
+        source_id=normalized_filename,
+        canonical_id=f"file:{normalized_filename}",
+        title=normalized_filename,
+        abstract=normalize_whitespace(pdf_text)[:1200],
+    )
+    session = CitationTraceSession(
+        session_id=f"citation-trace-file-{uuid.uuid4().hex[:12]}",
+        source_type="file",
+        source_id=normalized_filename,
+        source_url=None,
+        target_paper=target_paper,
+        answer_language=answer_language or "zh",
+        reference_entries=extract_reference_entries(pdf_text),
+        pdf_text=pdf_text,
     )
     _SESSION_CACHE[session.session_id] = session
     return session

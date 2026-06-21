@@ -515,6 +515,16 @@ class CitationTracePaperNodeModel(BaseModel):
     external_url: str | None = None
 
 
+class CitationTraceReferenceEntryModel(BaseModel):
+    reference_id: str
+    raw_text: str
+    raw_label: str | None = None
+    arxiv_id: str | None = None
+    doi: str | None = None
+    year: str | None = None
+    title_hint: str | None = None
+
+
 class CitationTraceScoreBreakdownModel(BaseModel):
     abstract_similarity: float = 0.0
     title_overlap: float = 0.0
@@ -572,7 +582,8 @@ class CitationTraceSessionModel(BaseModel):
     status: Literal["pending", "running", "completed", "partial", "failed"] = "pending"
     rounds: list[CitationTraceRoundSummaryModel] = Field(default_factory=list)
     ledger_entries: list[CitationTraceLedgerEntryModel] = Field(default_factory=list)
-    top_papers: list[CitationTraceTopPaperModel] = Field(default_factory=list)
+    final_top5: list[CitationTraceTopPaperModel] = Field(default_factory=list)
+    reference_entries: list[CitationTraceReferenceEntryModel] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

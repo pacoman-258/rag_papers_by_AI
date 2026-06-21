@@ -47,6 +47,40 @@ class CitationTraceApiTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["session_id"], "session-1")
         self.assertEqual(payload["target_paper"]["title"], "Attention Is All You Need")
+        self.assertIn("final_top5", payload)
+        self.assertNotIn("top_papers", payload)
+
+    def test_create_citation_trace_session_from_file_accepts_pdf_upload(self):
+        session = cts.CitationTraceSession(
+            session_id="file-session",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode(
+                "target",
+                "target",
+                "paper.pdf",
+                "file:paper.pdf",
+                "paper.pdf",
+            ),
+            answer_language="en",
+        )
+        original = cts.create_session_from_pdf_bytes
+        try:
+            cts.create_session_from_pdf_bytes = lambda filename, content, settings, answer_language: session
+            response = self.client.post(
+                "/api/citation-trace/session/from-file",
+                data={"answer_language": "en"},
+                files={"file": ("paper.pdf", b"%PDF fake", "application/pdf")},
+            )
+        finally:
+            cts.create_session_from_pdf_bytes = original
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["session_id"], "file-session")
+        self.assertIn("final_top5", payload)
+        self.assertNotIn("top_papers", payload)
 
     def test_execute_stream_emits_progress_events(self):
         session = cts.CitationTraceSession(

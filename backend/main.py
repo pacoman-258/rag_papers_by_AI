@@ -621,6 +621,31 @@ def api_create_citation_trace_session_from_arxiv(
         raise to_http_detail(exc) from exc
 
 
+@app.post("/api/citation-trace/session/from-file", response_model=CitationTraceSessionModel)
+async def api_create_citation_trace_session_from_file(
+    file: UploadFile = File(...),
+    answer_language: str | None = Form(default=None),
+    settings: str | None = Form(default=None),
+) -> CitationTraceSessionModel:
+    filename = str(file.filename or "paper.pdf").strip() or "paper.pdf"
+    try:
+        payload_settings = parse_runtime_settings_form(settings)
+        with retrieval_runtime_scope(payload_settings) as (runtime_settings, _sources):
+            session = citation_trace_service.create_session_from_pdf_bytes(
+                filename,
+                await file.read(),
+                runtime_settings,
+                answer_language,
+            )
+        return citation_trace_session_to_model(session)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+    finally:
+        await file.close()
+
+
 @app.get("/api/citation-trace/session/{session_id}", response_model=CitationTraceSessionModel)
 def api_get_citation_trace_session(session_id: str) -> CitationTraceSessionModel:
     try:
