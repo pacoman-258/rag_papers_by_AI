@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend import citation_trace_service
 from backend.config_store import (
     current_retrieval_providers,
     load_runtime_settings,
@@ -55,6 +56,9 @@ from backend.schemas import (
     AssistantMemoryListResponse,
     AssistantMemoryPinRequest,
     AssistantMemoryPinResponse,
+    CitationTraceExecuteRequest,
+    CitationTraceSessionFromArxivRequest,
+    CitationTraceSessionModel,
     IngestJobResponse,
     Live2DBootstrapResponse,
     Live2DChatRequest,
@@ -73,15 +77,10 @@ from backend.schemas import (
     PaperReaderSourcePagesResponse,
     QueryPlanModel,
     RetrievalConstraintsModel,
-    TargetPaperModel,
     SearchExecuteRequest,
     SearchExecuteResponse,
     SearchPlanRequest,
     SearchRefineRequest,
-    TraceExecuteRequest,
-    TraceExecuteResponse,
-    TraceResolveRequest,
-    TraceResolveResponse,
     RankedPaperResponse,
     RuntimeSettingsRequest,
     RuntimeSettingsResponse,
@@ -91,20 +90,13 @@ from local_paper_db.app.search_service import (
     QueryPlan,
     RetrievalConstraints,
     SearchExecution,
-    TargetPaper,
-    TraceExecution,
     execute_search,
-    execute_trace,
-    fetch_target_paper_by_id,
     get_database_overview,
-    infer_user_language,
     list_available_models,
     normalize_openai_compatible_base_url,
     plan_query,
-    resolve_target_paper,
     revise_query_plan,
     stream_answer_tokens,
-    stream_trace_answer_tokens,
     validate_runtime_settings,
 )
 
@@ -171,7 +163,6 @@ app.add_middleware(
 
 ingest_manager = IngestManager(REPO_ROOT)
 search_sessions: dict[str, tuple[SearchExecution, Any]] = {}
-trace_sessions: dict[str, tuple[TraceExecution, Any]] = {}
 
 
 def normalize_session_id(raw_session_id: str | None) -> str:
@@ -276,21 +267,10 @@ def query_plan_model_to_dataclass(model: QueryPlanModel | None) -> QueryPlan | N
     )
 
 
-def target_paper_to_model(target: TargetPaper) -> TargetPaperModel:
-    return TargetPaperModel(
-        id=target.id,
-        source=target.source,
-        source_id=target.source_id,
-        canonical_id=target.canonical_id,
-        arxiv_id=target.arxiv_id,
-        title=target.title,
-        summary=target.summary,
-        authors=list(target.authors),
-        published_date=target.published_date,
-        primary_category=target.primary_category,
-        external_url=target.external_url,
-        matched_sources=list(target.matched_sources),
-    )
+def citation_trace_session_to_model(
+    session: citation_trace_service.CitationTraceSession,
+) -> CitationTraceSessionModel:
+    return CitationTraceSessionModel.model_validate(asdict(session))
 
 
 def prepare_runtime_settings(payload_settings: RuntimeSettingsRequest | None) -> tuple[Any, list[str]]:
@@ -623,53 +603,69 @@ def api_execute_search(payload: SearchExecuteRequest) -> SearchExecuteResponse:
         raise to_http_detail(exc) from exc
 
 
-@app.post("/api/trace/resolve-target", response_model=TraceResolveResponse)
-def api_trace_resolve_target(payload: TraceResolveRequest) -> TraceResolveResponse:
-    try:
-        with retrieval_runtime_scope(None):
-            status, resolved_target, candidates, message = resolve_target_paper(payload.query)
-        return TraceResolveResponse(
-            status=status,
-            query=payload.query,
-            resolved_target=target_paper_to_model(resolved_target) if resolved_target else None,
-            candidates=[target_paper_to_model(candidate) for candidate in candidates],
-            message=message,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise to_http_detail(exc) from exc
-
-
-@app.post("/api/trace/execute", response_model=TraceExecuteResponse)
-def api_trace_execute(payload: TraceExecuteRequest) -> TraceExecuteResponse:
+@app.post("/api/citation-trace/session/from-arxiv", response_model=CitationTraceSessionModel)
+def api_create_citation_trace_session_from_arxiv(
+    payload: CitationTraceSessionFromArxivRequest,
+) -> CitationTraceSessionModel:
     try:
         with retrieval_runtime_scope(payload.settings) as (settings, _sources):
-            target_paper = fetch_target_paper_by_id(payload.target_id)
-            if target_paper is None:
-                raise HTTPException(status_code=404, detail="Target paper not found.")
-            answer_language = payload.answer_language or infer_user_language(target_paper.title)
-            execution = execute_trace(
-                target_paper=target_paper,
-                settings=settings,
-                answer_language=answer_language,
+            session = citation_trace_service.create_session_from_arxiv(
+                payload.url,
+                settings,
+                payload.answer_language,
             )
-        trace_id = uuid.uuid4().hex
-        trace_sessions[trace_id] = (execution, settings)
-        return TraceExecuteResponse(
-            trace_id=trace_id,
-            answer_language=execution.answer_language,
-            retrieval_text=execution.retrieval_text,
-            target_paper=target_paper_to_model(execution.target_paper),
-            papers=[RankedPaperResponse(**asdict(paper)) for paper in execution.papers],
-            warnings=execution.warnings,
-            retrieval_sources=list(execution.retrieval_sources),
-            source_freshness=dict(execution.source_freshness),
-        )
+        return citation_trace_session_to_model(session)
     except HTTPException:
         raise
     except Exception as exc:
         raise to_http_detail(exc) from exc
+
+
+@app.get("/api/citation-trace/session/{session_id}", response_model=CitationTraceSessionModel)
+def api_get_citation_trace_session(session_id: str) -> CitationTraceSessionModel:
+    try:
+        return citation_trace_session_to_model(citation_trace_service.get_session(session_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+
+
+@app.post("/api/citation-trace/session/{session_id}/execute", response_model=CitationTraceSessionModel)
+def api_execute_citation_trace_session(
+    session_id: str,
+    payload: CitationTraceExecuteRequest | None = None,
+) -> CitationTraceSessionModel:
+    try:
+        session = citation_trace_service.get_session(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    try:
+        payload_settings = payload.settings if payload is not None else None
+        with retrieval_runtime_scope(payload_settings) as (settings, _sources):
+            for _event, _data in citation_trace_service.run_citation_trace_events(session, settings):
+                pass
+        return citation_trace_session_to_model(session)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+
+@app.get("/api/citation-trace/session/{session_id}/stream")
+def api_stream_citation_trace_session(session_id: str) -> StreamingResponse:
+    try:
+        session = citation_trace_service.get_session(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+
+    def event_generator():
+        try:
+            with retrieval_runtime_scope(None) as (settings, _sources):
+                for event, data in citation_trace_service.run_citation_trace_events(session, settings):
+                    yield sse_event(event, data)
+        except Exception as exc:
+            yield sse_event("error", {"message": str(exc)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/api/search/{search_id}/answer/stream")
@@ -686,26 +682,6 @@ def api_stream_answer(search_id: str) -> StreamingResponse:
             for token in stream_answer_tokens(execution, settings):
                 yield sse_event("token", {"content": token})
             yield sse_event("complete", {"search_id": search_id})
-        except Exception as exc:
-            yield sse_event("error", {"message": str(exc)})
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
-@app.get("/api/trace/{trace_id}/answer/stream")
-def api_trace_stream_answer(trace_id: str) -> StreamingResponse:
-    session = trace_sessions.get(trace_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Trace session not found.")
-
-    execution, settings = session
-
-    def event_generator():
-        yield sse_event("start", {"trace_id": trace_id})
-        try:
-            for token in stream_trace_answer_tokens(execution, settings):
-                yield sse_event("token", {"content": token})
-            yield sse_event("complete", {"trace_id": trace_id})
         except Exception as exc:
             yield sse_event("error", {"message": str(exc)})
 
@@ -930,6 +906,10 @@ if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
     if FRONTEND_LIVE2D_DIST.exists():
         app.mount("/live2d", StaticFiles(directory=FRONTEND_LIVE2D_DIST), name="live2d")
+
+    @app.api_route("/api/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    def api_fallback(full_path: str) -> None:
+        raise HTTPException(status_code=404, detail="Not found.")
 
     @app.get("/")
     def root() -> FileResponse:

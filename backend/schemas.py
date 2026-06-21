@@ -494,33 +494,90 @@ class SearchExecuteResponse(BaseModel):
     source_freshness: dict[str, str | None] = Field(default_factory=dict)
 
 
-class TraceResolveRequest(BaseModel):
-    query: str
-
-
-class TraceResolveResponse(BaseModel):
-    status: Literal["resolved", "ambiguous", "not_found"]
-    query: str
-    resolved_target: TargetPaperModel | None = None
-    candidates: list[TargetPaperModel] = Field(default_factory=list)
-    message: str | None = None
-
-
-class TraceExecuteRequest(BaseModel):
-    target_id: str
+class CitationTraceSessionFromArxivRequest(BaseModel):
+    url: str
     answer_language: AnswerLanguage | None = None
     settings: RuntimeSettingsRequest | None = None
 
 
-class TraceExecuteResponse(BaseModel):
-    trace_id: str
+class CitationTracePaperNodeModel(BaseModel):
+    paper_id: str
+    source: Literal["target", "arxiv", "local", "wos", "unresolved"]
+    source_id: str
+    canonical_id: str
+    title: str
+    abstract: str = ""
+    authors: list[str] = Field(default_factory=list)
+    published_date: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    arxiv_id: str | None = None
+    doi: str | None = None
+    external_url: str | None = None
+
+
+class CitationTraceScoreBreakdownModel(BaseModel):
+    abstract_similarity: float = 0.0
+    title_overlap: float = 0.0
+    keyword_overlap: float = 0.0
+    author_overlap: float = 0.0
+    date_plausibility: float = 0.0
+    reference_match: float = 0.0
+
+
+class CitationTraceLedgerEntryModel(BaseModel):
+    entry_id: str
+    candidate_paper: CitationTracePaperNodeModel
+    seed_paper: CitationTracePaperNodeModel | None
+    round: int
+    relation_type: Literal["explicit_reference", "retrieved_similar", "llm_inferred_influence"]
+    evidence_level: Literal["strong", "medium", "weak"]
+    score_total: float
+    score_breakdown: CitationTraceScoreBreakdownModel
+    reference_text: str | None = None
+    metadata_evidence: list[str] = Field(default_factory=list)
+    llm_assessment: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class CitationTraceRoundSummaryModel(BaseModel):
+    round: int
+    status: Literal["pending", "running", "completed", "partial", "failed"]
+    seed_paper_ids: list[str] = Field(default_factory=list)
+    ledger_entries: list[CitationTraceLedgerEntryModel] = Field(default_factory=list)
+    top_papers: list["CitationTraceTopPaperModel"] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class CitationTraceTopPaperModel(BaseModel):
+    rank: int
+    paper_id: str
+    title: str
+    influence_area: str
+    reason: str
+    evidence_level: Literal["strong", "medium", "weak"]
+    is_explicitly_cited: bool
+    is_exploratory: bool
+    why_worth_reading: str
+    uncertainty: str
+    supporting_edge_ids: list[str] = Field(default_factory=list)
+
+
+class CitationTraceSessionModel(BaseModel):
+    session_id: str
+    source_type: Literal["arxiv", "file"]
+    source_id: str | None
+    source_url: str | None
+    target_paper: CitationTracePaperNodeModel
     answer_language: AnswerLanguage
-    retrieval_text: str
-    target_paper: TargetPaperModel
-    papers: list[RankedPaperResponse]
-    warnings: list[str]
-    retrieval_sources: list[str] = Field(default_factory=list)
-    source_freshness: dict[str, str | None] = Field(default_factory=dict)
+    status: Literal["pending", "running", "completed", "partial", "failed"] = "pending"
+    rounds: list[CitationTraceRoundSummaryModel] = Field(default_factory=list)
+    ledger_entries: list[CitationTraceLedgerEntryModel] = Field(default_factory=list)
+    top_papers: list[CitationTraceTopPaperModel] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class CitationTraceExecuteRequest(BaseModel):
+    settings: RuntimeSettingsRequest | None = None
 
 
 class IngestJobResponse(BaseModel):
@@ -588,7 +645,7 @@ class UsedMemoryItemModel(BaseModel):
 
 
 class Live2DChatRequest(BaseModel):
-    source: Literal["user", "qa_auto", "pst_auto"]
+    source: Literal["user", "qa_auto", "citation_trace_auto"]
     message: str = ""
     language: AnswerLanguage | None = None
     history: list[Live2DHistoryMessage] = Field(default_factory=list)

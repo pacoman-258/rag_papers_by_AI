@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass, field, replace
-from typing import Iterator, Literal
+from dataclasses import asdict, dataclass, field, replace
+from typing import Any, Iterator, Literal
 
 from local_paper_db.app.search_service import normalize_whitespace
 
@@ -93,8 +93,99 @@ class CitationTraceTopPaper:
     supporting_edge_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class CitationTraceRoundSummary:
+    round: int
+    status: RoundStatus
+    seed_paper_ids: list[str] = field(default_factory=list)
+    ledger_entries: list[CitationTraceLedgerEntry] = field(default_factory=list)
+    top_papers: list[CitationTraceTopPaper] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class CitationTraceSession:
+    session_id: str
+    source_type: Literal["arxiv", "file"]
+    source_id: str | None
+    source_url: str | None
+    target_paper: CitationTracePaperNode
+    answer_language: str = "zh"
+    status: RoundStatus = "pending"
+    rounds: list[CitationTraceRoundSummary] = field(default_factory=list)
+    ledger_entries: list[CitationTraceLedgerEntry] = field(default_factory=list)
+    top_papers: list[CitationTraceTopPaper] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+_SESSION_CACHE: dict[str, CitationTraceSession] = {}
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+def _arxiv_id_from_url(url: str) -> str:
+    value = normalize_whitespace(url).rstrip("/")
+    suffix = value.rsplit("/", 1)[-1] if value else ""
+    arxiv_id = _normalize_arxiv_id(suffix)
+    return arxiv_id or suffix or _new_id("arxiv")
+
+
+def create_session_from_arxiv(
+    url: str,
+    settings: Any,
+    answer_language: str | None = None,
+) -> CitationTraceSession:
+    source_id = _arxiv_id_from_url(url)
+    session_id_suffix = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_id).strip("-") or uuid.uuid4().hex[:12]
+    target_paper = CitationTracePaperNode(
+        paper_id="target",
+        source="target",
+        source_id=source_id,
+        canonical_id=f"arxiv:{source_id}",
+        title=f"arXiv {source_id}",
+        arxiv_id=source_id,
+        external_url=url,
+    )
+    session = CitationTraceSession(
+        session_id=f"citation-trace-{session_id_suffix}",
+        source_type="arxiv",
+        source_id=source_id,
+        source_url=url,
+        target_paper=target_paper,
+        answer_language=answer_language or "zh",
+    )
+    _SESSION_CACHE[session.session_id] = session
+    return session
+
+
+def get_session(session_id: str) -> CitationTraceSession:
+    try:
+        return _SESSION_CACHE[session_id]
+    except KeyError as exc:
+        raise KeyError("Citation trace session not found.") from exc
+
+
+def run_citation_trace_events(
+    session: CitationTraceSession,
+    settings: Any,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    session.status = "running"
+    yield "stage_start", {"session_id": session.session_id, "stage": "round_1"}
+
+    if not session.rounds:
+        session.rounds.append(
+            CitationTraceRoundSummary(
+                round=1,
+                status="completed",
+                seed_paper_ids=[session.target_paper.paper_id],
+            )
+        )
+    round_summary = session.rounds[0]
+    session.status = "completed"
+    yield "round_summary", asdict(round_summary)
+    yield "complete", {"session_id": session.session_id, "status": session.status}
 
 
 def _title_hint_from_reference(text: str) -> str | None:
