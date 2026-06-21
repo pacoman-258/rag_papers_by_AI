@@ -135,10 +135,20 @@ class CitationTraceSession:
 
 
 _SESSION_CACHE: dict[str, CitationTraceSession] = {}
+_SESSION_SETTINGS_CACHE: dict[str, Any] = {}
 
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+def cache_session_settings(session_id: str, settings: Any) -> None:
+    if session_id and settings is not None:
+        _SESSION_SETTINGS_CACHE[session_id] = settings
+
+
+def get_cached_session_settings(session_id: str) -> Any | None:
+    return _SESSION_SETTINGS_CACHE.get(session_id)
 
 
 def _arxiv_id_from_url(url: str) -> str:
@@ -262,6 +272,7 @@ def create_session_from_arxiv(
         pdf_text=pdf_text,
     )
     _SESSION_CACHE[session.session_id] = session
+    cache_session_settings(session.session_id, settings)
     return session
 
 
@@ -292,6 +303,7 @@ def create_session_from_pdf_bytes(
         pdf_text=pdf_text,
     )
     _SESSION_CACHE[session.session_id] = session
+    cache_session_settings(session.session_id, settings)
     return session
 
 

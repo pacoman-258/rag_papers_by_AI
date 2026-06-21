@@ -614,6 +614,7 @@ def api_create_citation_trace_session_from_arxiv(
                 settings,
                 payload.answer_language,
             )
+            citation_trace_service.cache_session_settings(session.session_id, settings)
         return citation_trace_session_to_model(session)
     except HTTPException:
         raise
@@ -637,6 +638,7 @@ async def api_create_citation_trace_session_from_file(
                 runtime_settings,
                 answer_language,
             )
+            citation_trace_service.cache_session_settings(session.session_id, runtime_settings)
         return citation_trace_session_to_model(session)
     except HTTPException:
         raise
@@ -668,6 +670,7 @@ def api_execute_citation_trace_session(
     try:
         payload_settings = payload.settings if payload is not None else None
         with retrieval_runtime_scope(payload_settings) as (settings, _sources):
+            citation_trace_service.cache_session_settings(session.session_id, settings)
             for _event, _data in citation_trace_service.run_citation_trace_events(session, settings):
                 pass
         return citation_trace_session_to_model(session)
@@ -686,6 +689,11 @@ def api_stream_citation_trace_session(session_id: str) -> StreamingResponse:
 
     def event_generator():
         try:
+            cached_settings = citation_trace_service.get_cached_session_settings(session_id)
+            if cached_settings is not None:
+                for event, data in citation_trace_service.run_citation_trace_events(session, cached_settings):
+                    yield sse_event(event, data)
+                return
             with retrieval_runtime_scope(None) as (settings, _sources):
                 for event, data in citation_trace_service.run_citation_trace_events(session, settings):
                     yield sse_event(event, data)

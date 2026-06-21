@@ -27,6 +27,8 @@ class CitationTraceFrontendTest(unittest.TestCase):
         self.assertIn("evidenceLedger", text)
         self.assertIn("exploratorySources", text)
         self.assertIn("citation_trace_auto", text)
+        self.assertIn("parseSseJson", text)
+        self.assertIn("progressStepRef", text)
 
 
 if __name__ == "__main__":

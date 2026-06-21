@@ -12,6 +12,8 @@ class CitationTraceApiTest(unittest.TestCase):
 
     def tearDown(self):
         cts._SESSION_CACHE.clear()
+        if hasattr(cts, "_SESSION_SETTINGS_CACHE"):
+            cts._SESSION_SETTINGS_CACHE.clear()
 
     def test_old_trace_routes_are_removed(self):
         response = self.client.post("/api/trace/resolve-target", json={"query": "1706.03762"})
@@ -125,6 +127,40 @@ class CitationTraceApiTest(unittest.TestCase):
         body = response.text
         self.assertIn("event: stage_start", body)
         self.assertIn("event: complete", body)
+
+    def test_stream_uses_cached_session_settings(self):
+        session = cts.CitationTraceSession(
+            session_id="session-stream-settings",
+            source_type="arxiv",
+            source_id="1706.03762",
+            source_url="https://arxiv.org/abs/1706.03762",
+            target_paper=cts.CitationTracePaperNode(
+                "target",
+                "target",
+                "1706.03762",
+                "arxiv:1706.03762",
+                "Attention",
+            ),
+            answer_language="zh",
+        )
+        cached_settings = object()
+        captured_settings = []
+        cts._SESSION_CACHE[session.session_id] = session
+        cts._SESSION_SETTINGS_CACHE = {session.session_id: cached_settings}
+        original = cts.run_citation_trace_events
+        try:
+            def fake_run_citation_trace_events(stream_session, settings):
+                captured_settings.append(settings)
+                yield "stage_start", {"session_id": stream_session.session_id, "stage": "reference_resolution"}
+                yield "complete", {"session_id": stream_session.session_id, "status": "completed", "final_top5_count": 0}
+
+            cts.run_citation_trace_events = fake_run_citation_trace_events
+            response = self.client.get("/api/citation-trace/session/session-stream-settings/stream")
+        finally:
+            cts.run_citation_trace_events = original
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(captured_settings[0], cached_settings)
 
 
 if __name__ == "__main__":

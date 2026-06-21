@@ -54,6 +54,31 @@ function stageToProgress(stage) {
   }
 }
 
+function progressDetailForStep(step, t) {
+  switch (step) {
+    case "round_one":
+      return t("citationTraceProgressRoundOne");
+    case "round_two":
+      return t("citationTraceProgressRoundTwo");
+    case "synthesis":
+      return t("citationTraceProgressSynthesis");
+    case "top5":
+      return t("citationTraceProgressTop5");
+    case "references":
+      return t("citationTraceProgressReferences");
+    default:
+      return t("citationTraceProgressLoad");
+  }
+}
+
+function parseSseJson(event) {
+  try {
+    return JSON.parse(event?.data || "{}");
+  } catch (_) {
+    return null;
+  }
+}
+
 function buildAssistantAnswerContext(session) {
   const targetTitle = trimText(session?.target_paper?.title) || trimText(session?.source_id);
   const topLines = toArray(session?.final_top5)
@@ -272,6 +297,7 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
   });
   const sourceRef = useRef(null);
   const completedSessionRef = useRef("");
+  const progressStepRef = useRef("load");
 
   useEffect(() => {
     return () => {
@@ -300,6 +326,7 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
   const selectedEntry = evidenceLedger.find((entry) => entry.entry_id === selectedEntryId) || evidenceLedger[0] || null;
 
   function updateProgress(step, status, detail = "") {
+    progressStepRef.current = step;
     setProgress({
       step,
       status,
@@ -349,14 +376,41 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
     updateProgress("references", "running", t("citationTraceProgressReferences"));
     const source = new EventSource(`/api/citation-trace/session/${encodeURIComponent(sessionId)}/stream`);
     sourceRef.current = source;
+    let streamSettled = false;
+
+    function failStream(detail = t("citationTraceFailed")) {
+      if (streamSettled) {
+        return;
+      }
+      streamSettled = true;
+      source.close();
+      setBusy(false);
+      setMessage(detail);
+      updateProgress(progressStepRef.current, "interrupted", detail);
+    }
+
+    function readSsePayload(event) {
+      const payload = parseSseJson(event);
+      if (payload === null) {
+        failStream(t("citationTraceFailed"));
+        return null;
+      }
+      return payload;
+    }
 
     source.addEventListener("stage_start", (event) => {
-      const payload = JSON.parse(event.data);
+      const payload = readSsePayload(event);
+      if (!payload) {
+        return;
+      }
       const step = stageToProgress(payload.stage);
-      updateProgress(step, "running", t(`citationTraceProgress${step === "round_two" ? "RoundTwo" : step === "synthesis" ? "Synthesis" : "References"}`));
+      updateProgress(step, "running", progressDetailForStep(step, t));
     });
     source.addEventListener("round_summary", (event) => {
-      const payload = JSON.parse(event.data);
+      const payload = readSsePayload(event);
+      if (!payload) {
+        return;
+      }
       if (payload.round === 1) {
         updateProgress("round_one", "completed", payload.summary_text || t("citationTraceProgressRoundOne"));
       } else if (payload.round === 2) {
@@ -364,22 +418,35 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
       }
     });
     source.addEventListener("ledger_entry", (event) => {
-      const payload = JSON.parse(event.data);
+      const payload = readSsePayload(event);
+      if (!payload) {
+        return;
+      }
       updateProgress(payload.round === 2 ? "round_two" : "round_one", "running", payload.title || t("evidenceLedger"));
     });
     source.addEventListener("warning", (event) => {
-      const payload = JSON.parse(event.data);
+      const payload = readSsePayload(event);
+      if (!payload) {
+        return;
+      }
       const warning = trimText(payload.message);
       if (warning) {
         setWarnings((current) => [...current, warning]);
       }
     });
     source.addEventListener("synthesis_complete", (event) => {
-      const payload = JSON.parse(event.data);
+      const payload = readSsePayload(event);
+      if (!payload) {
+        return;
+      }
       updateProgress("top5", "running", `${t("finalTop5")}: ${payload.final_top5_count ?? 0}`);
     });
     source.addEventListener("complete", async (event) => {
-      const payload = JSON.parse(event.data);
+      const payload = readSsePayload(event);
+      if (!payload) {
+        return;
+      }
+      streamSettled = true;
       source.close();
       try {
         const nextSession = await fetchSession(payload.session_id || sessionId);
@@ -394,22 +461,15 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
       }
     });
     source.addEventListener("error", (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        setMessage(payload.message || t("citationTraceFailed"));
-      } catch (_) {
-        setMessage(t("citationTraceFailed"));
+      if (streamSettled) {
+        return;
       }
-      source.close();
-      setBusy(false);
-      updateProgress(progress.step, "interrupted", t("citationTraceFailed"));
+      const payload = parseSseJson(event);
+      failStream(payload?.message || t("citationTraceFailed"));
     });
     source.onerror = () => {
-      source.close();
-      setBusy(false);
-      if (!completedSessionRef.current) {
-        setMessage(t("citationTraceFailed"));
-        updateProgress(progress.step, "interrupted", t("citationTraceFailed"));
+      if (!streamSettled && !completedSessionRef.current) {
+        failStream(t("citationTraceFailed"));
       }
     };
   }
