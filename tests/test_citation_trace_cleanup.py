@@ -43,6 +43,15 @@ class CitationTraceCleanupTest(unittest.TestCase):
         self.assertNotIn(legacy_trace_source, joined)
         self.assertNotIn(legacy_workflow_label, joined)
 
+    def test_readmes_document_citation_trace_not_pst(self):
+        readme = (ROOT / "README.md").read_text()
+        zh = (ROOT / "README.zh-CN.md").read_text()
+
+        self.assertIn("Citation Trace", readme)
+        self.assertIn("论文溯源", zh)
+        self.assertNotIn("PST-lite", readme)
+        self.assertNotIn("PST-lite", zh)
+
 
 if __name__ == "__main__":
     unittest.main()

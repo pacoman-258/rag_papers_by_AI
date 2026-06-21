@@ -19,7 +19,7 @@ Chinese documentation: [README.zh-CN.md](README.zh-CN.md)
 - `backend/main.py`
   FastAPI app for config management, search APIs, SSE answer streaming, and ingest management.
 - `frontend/`
-  React + Vite workbench for search, trace, provider toggles, and ingest operations.
+  React + Vite workbench for search, Citation Trace, provider toggles, and ingest operations.
 
 ## Search Pipeline
 
@@ -46,10 +46,12 @@ Fallback behavior:
 
 ## Web Workbench
 
-The FastAPI + React workbench exposes two tabs:
+The FastAPI + React workbench exposes these workspaces:
 
 - `Search Workspace`
   Configure query chat, answer chat, rerank, embedding, and retrieval settings; enable or disable `local`, `arxiv`, and `wos`; generate and refine rewrites; inspect top-10 papers with source badges and external links; and stream the final answer.
+- `Citation Trace`
+  Load an arXiv paper or PDF, extract and resolve references, run two-round provenance expansion, inspect an evidence ledger, and review an LLM-ranked final top 5 of papers that may have inspired the target.
 - `Ingest Manager`
   Start `in.py` as a background job, inspect local-database counts, and watch ingest logs over SSE.
 
@@ -317,7 +319,7 @@ If `frontend/dist` exists, FastAPI serves the built SPA automatically.
 - `local` is now optional rather than mandatory.
 - arXiv retrieval is tuned for broader keyword-based metadata recall instead of exact full-sentence matching.
 - Web of Science is supported as an optional provider and is expected to be quota- and credential-constrained.
-- Search and trace responses now include retrieval provenance such as source badges, matched sources, and freshness hints.
+- Search and Citation Trace responses now include retrieval provenance such as source badges, matched sources, and freshness hints.
 
 ## Main Entry Points
 

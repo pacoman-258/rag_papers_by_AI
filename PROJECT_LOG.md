@@ -20,6 +20,13 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-21 22:01
+
+- 摘要：用新的 `Citation Trace / 论文溯源` 工作台替代旧 PST-lite，新增引用抽取、两轮溯源扩展、证据账本、LLM 启发价值 Top5 的后端/API/前端骨架，并移除旧 `/api/trace/*` 与 `pst_auto` 概念。
+- 涉及文件：`backend/citation_trace_service.py`、`backend/main.py`、`backend/schemas.py`、`backend/live2d_service.py`、`backend/assistant_memory.py`、`local_paper_db/app/search_service.py`、`local_paper_db/app/search.py`、`frontend/src/App.jsx`、`frontend/src/CitationTracePage.jsx`、`frontend/src/styles.css`、`README.md`、`README.zh-CN.md`、`tests/test_citation_trace_service.py`、`tests/test_citation_trace_api.py`、`tests/test_citation_trace_frontend.py`、`tests/test_citation_trace_cleanup.py`
+- 验证：先执行 `.venv/bin/python -m unittest tests.test_citation_trace_cleanup.CitationTraceCleanupTest.test_readmes_document_citation_trace_not_pst`，确认 README 仍缺少 `Citation Trace` 时失败；更新文档后该单测通过。执行 `.venv/bin/python -m unittest tests.test_citation_trace_service tests.test_citation_trace_api tests.test_citation_trace_frontend tests.test_citation_trace_cleanup tests.test_paper_reader_live2d_behavior`（通过，34 tests）；执行 `.venv/bin/python -m py_compile backend/citation_trace_service.py backend/main.py backend/schemas.py backend/live2d_service.py backend/assistant_memory.py local_paper_db/app/search_service.py local_paper_db/app/search.py tests/test_citation_trace_service.py tests/test_citation_trace_api.py tests/test_citation_trace_frontend.py tests/test_citation_trace_cleanup.py tests/test_paper_reader_live2d_behavior.py`（通过）；执行 `cd frontend && npm run build`（通过）；执行 `.venv/bin/python -m unittest tests.test_citation_trace_cleanup`（通过）；执行 `git diff --check -- README.md README.zh-CN.md PROJECT_LOG.md tests/test_citation_trace_cleanup.py`（通过）。
+- 后续：记录真实 arXiv/PDF 端到端人工验收结果，以及需要继续增强的图谱交互或引用解析能力。
+
 ## 2026-06-20 23:32
 
 - 摘要：新增 `Citation Trace / 论文溯源` 实现计划，将旧 PST-lite 删除、新 `citation_trace_service`、API、前端、助手联动、测试和文档迁移拆成可执行任务。
