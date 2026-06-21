@@ -181,18 +181,6 @@ class TargetPaper:
 
 
 @dataclass(slots=True)
-class TraceExecution:
-    target_paper: TargetPaper
-    retrieval_text: str
-    answer_language: str
-    papers: list[RankedPaper]
-    answer_prompt: str
-    warnings: list[str]
-    retrieval_sources: list[str] = field(default_factory=list)
-    source_freshness: dict[str, str | None] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
 class RetrievalBatch:
     papers: list[RetrievedPaper] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -1407,22 +1395,11 @@ def build_retrieval_text(plan: QueryPlan) -> str:
     return f"{plan.retrieval_query_en}; keywords: {', '.join(plan.keywords_en)}"
 
 
-def build_trace_retrieval_text(target_paper: TargetPaper) -> str:
+def build_target_paper_retrieval_text(target_paper: TargetPaper) -> str:
     summary = normalize_whitespace(target_paper.summary)
     if summary:
         return f"{target_paper.title}. {summary}"
     return target_paper.title
-
-
-def build_trace_rerank_query(target_paper: TargetPaper) -> str:
-    return (
-        "Most important prior papers for this target paper. "
-        "Focus on foundational methods, problem framing, and techniques the target paper likely builds on.\n"
-        f"Target paper title: {target_paper.title}\n"
-        f"Target paper published date: {target_paper.published_date or 'Unknown'}\n"
-        f"Target paper category: {target_paper.primary_category or 'Unknown'}\n"
-        f"Target paper summary: {target_paper.summary}"
-    )
 
 
 def embedding_to_vector_literal(query_vec: list[float]) -> str:
@@ -1817,6 +1794,7 @@ def collect_prior_work_candidates(
     sources = normalize_source_list(provider_map=settings.retrieval.providers)
     freshness = get_retrieval_source_freshness(db_config, settings.retrieval.providers)
     prior_constraints = build_prior_constraints(target_paper)
+    target_retrieval_text = build_target_paper_retrieval_text(target_paper)
 
     if "local" in sources:
         try:
@@ -1834,7 +1812,7 @@ def collect_prior_work_candidates(
 
     if "arxiv" in sources:
         try:
-            arxiv_records = search_arxiv_records(build_trace_retrieval_text(target_paper), prior_constraints, limit=min(settings.retrieval.top_k, 12))
+            arxiv_records = search_arxiv_records(target_retrieval_text, prior_constraints, limit=min(settings.retrieval.top_k, 12))
             papers.extend(retrieved_paper_from_external_record(record, query_vec, settings) for record in arxiv_records)
             if arxiv_records:
                 used_sources.append("arxiv")
@@ -1843,7 +1821,7 @@ def collect_prior_work_candidates(
 
     if "wos" in sources:
         try:
-            wos_records = search_wos_records(build_trace_retrieval_text(target_paper), prior_constraints, limit=min(settings.retrieval.top_k, 8))
+            wos_records = search_wos_records(target_retrieval_text, prior_constraints, limit=min(settings.retrieval.top_k, 8))
             papers.extend(retrieved_paper_from_external_record(record, query_vec, settings) for record in wos_records)
             if wos_records:
                 used_sources.append("wos")
@@ -1932,99 +1910,6 @@ Selected papers:
 """
 
 
-def build_trace_generation_prompt(
-    target_paper: TargetPaper,
-    answer_language: str,
-    papers: list[RankedPaper],
-    retrieval_sources: list[str],
-) -> str:
-    language_instruction = "Reply in Chinese." if answer_language == "zh" else "Reply in English."
-    candidate_blocks: list[str] = []
-    for index, paper in enumerate(papers, start=1):
-        authors_text = ", ".join(paper.authors) if paper.authors else "Unknown"
-        matched_sources = ", ".join(paper.matched_sources) if paper.matched_sources else paper.source
-        candidate_blocks.append(
-            "\n".join(
-                [
-                    f"[Paper {index}]",
-                    f"Source: {paper.source}",
-                    f"Matched sources: {matched_sources}",
-                    f"Title: {paper.title}",
-                    f"Published date: {paper.published_date or 'Unknown'}",
-                    f"Primary category: {paper.primary_category or 'Unknown'}",
-                    f"Authors: {authors_text}",
-                    f"Summary: {paper.text}",
-                    f"Method: {paper.method}",
-                ]
-            )
-        )
-
-    return f"""You are a research assistant performing PST-lite prior-work tracing.
-This task returns candidate precursor papers, not verified citations.
-Use only the candidate papers provided below.
-For each candidate paper, explain in 1-2 sentences why it is likely important prior work for the target paper.
-If the evidence is uncertain, explicitly say that the uncertainty comes from the lack of explicit reference/citation data.
-Use labels like [Paper 1].
-{language_instruction}
-
-Target paper:
-Title: {target_paper.title}
-arXiv ID: {target_paper.arxiv_id or 'Unknown'}
-Source: {target_paper.source}
-Published date: {target_paper.published_date or 'Unknown'}
-Primary category: {target_paper.primary_category or 'Unknown'}
-Authors: {", ".join(target_paper.authors) if target_paper.authors else 'Unknown'}
-Summary: {target_paper.summary}
-Candidate retrieval sources: {", ".join(retrieval_sources) if retrieval_sources else 'unknown'}
-
-Candidate prior papers:
-
-{chr(10).join(candidate_blocks)}
-"""
-
-
-def execute_trace(
-    target_paper: TargetPaper,
-    settings: RuntimeSettings,
-    answer_language: str = "zh",
-    db_config: dict[str, str] | None = None,
-) -> TraceExecution:
-    retrieval_text = build_trace_retrieval_text(target_paper)
-    query_vec = get_embedding(retrieval_text, settings)
-    batch = collect_prior_work_candidates(
-        query_vec,
-        target_paper=target_paper,
-        settings=settings,
-        db_config=db_config,
-    )
-    coarse_results = batch.papers
-    warnings = list(batch.warnings)
-    if not coarse_results:
-        message = "No prior paper candidates were found before the target paper's publication date."
-        if warnings:
-            message += " Provider warnings: " + "; ".join(warnings)
-        raise RuntimeError(message)
-
-    rerank_query = build_trace_rerank_query(target_paper)
-    try:
-        papers = rerank_with_api(rerank_query, coarse_results, settings)
-    except Exception as exc:
-        warnings.append(f"Rerank fallback used: {exc}")
-        papers = [build_ranked_paper_fallback(doc) for doc in coarse_results[: settings.retrieval.top_n]]
-
-    prompt = build_trace_generation_prompt(target_paper, answer_language, papers, batch.retrieval_sources)
-    return TraceExecution(
-        target_paper=target_paper,
-        retrieval_text=retrieval_text,
-        answer_language=answer_language,
-        papers=papers,
-        answer_prompt=prompt,
-        warnings=warnings,
-        retrieval_sources=batch.retrieval_sources,
-        source_freshness=batch.source_freshness,
-    )
-
-
 def execute_search(
     original_query: str,
     retrieval_text: str,
@@ -2106,15 +1991,6 @@ def execute_search(
 
 
 def stream_answer_tokens(execution: SearchExecution, settings: RuntimeSettings) -> Iterator[str]:
-    yield from stream_chat_tokens(
-        [{"role": "user", "content": execution.answer_prompt}],
-        settings.answer_chat,
-        settings.retrieval.request_timeout,
-        settings.embedding.api_url,
-    )
-
-
-def stream_trace_answer_tokens(execution: TraceExecution, settings: RuntimeSettings) -> Iterator[str]:
     yield from stream_chat_tokens(
         [{"role": "user", "content": execution.answer_prompt}],
         settings.answer_chat,
