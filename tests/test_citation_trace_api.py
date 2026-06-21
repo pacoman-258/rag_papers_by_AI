@@ -82,6 +82,26 @@ class CitationTraceApiTest(unittest.TestCase):
         self.assertIn("final_top5", payload)
         self.assertNotIn("top_papers", payload)
 
+    def test_create_citation_trace_session_from_file_maps_value_error_to_400(self):
+        original = cts.create_session_from_pdf_bytes
+        try:
+            cts.create_session_from_pdf_bytes = (
+                lambda filename, content, settings, answer_language: (_ for _ in ()).throw(
+                    ValueError("Uploaded PDF has no extractable text.")
+                )
+            )
+            response = self.client.post(
+                "/api/citation-trace/session/from-file",
+                data={"answer_language": "en"},
+                files={"file": ("blank.pdf", b"%PDF fake", "application/pdf")},
+            )
+        finally:
+            cts.create_session_from_pdf_bytes = original
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("extractable text", response.json()["detail"])
+        self.assertEqual(cts._SESSION_CACHE, {})
+
     def test_execute_stream_emits_progress_events(self):
         session = cts.CitationTraceSession(
             session_id="session-stream",

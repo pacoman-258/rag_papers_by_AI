@@ -30,7 +30,7 @@ YEAR_PATTERN = re.compile(r"\b(19\d{2}|20\d{2})\b")
 REFERENCE_SPLIT_PATTERN = re.compile(r"(?m)^\s*(?P<label>\[\d+\]|(?!(?:19|20)\d{2}\.)\d+\.)\s+")
 REFERENCE_SENTENCE_SPLIT_PATTERN = re.compile(r"(?<!\b[A-Z])\.\s+")
 ARXIV_URL_PATTERN = re.compile(
-    r"^https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/(?P<id>\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?(?:[?#].*)?$",
+    r"^https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/(?P<id>\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?/?(?:[?#].*)?$",
     re.IGNORECASE,
 )
 
@@ -162,8 +162,26 @@ def _pdf_reader_to_text(reader: PdfReader) -> str:
 
 
 def pdf_bytes_to_text(content: bytes) -> str:
-    reader = PdfReader(BytesIO(content))
-    return _pdf_reader_to_text(reader)
+    if not content or not content.strip():
+        raise ValueError("Uploaded PDF is empty.")
+    if b"%%EOF" not in content:
+        raise ValueError("Uploaded file is not a valid PDF.")
+    try:
+        reader = PdfReader(BytesIO(content))
+        text = _pdf_reader_to_text(reader)
+    except Exception as exc:
+        raise ValueError("Uploaded file is not a valid PDF.") from exc
+    if not normalize_whitespace(text):
+        raise ValueError("Uploaded PDF has no extractable text.")
+    return text
+
+
+def _safe_uploaded_filename(filename: str | None) -> str:
+    normalized = normalize_whitespace(filename or "paper.pdf").replace("\\", "/")
+    basename = Path(normalized).name.strip()
+    if not basename or basename in {".", ".."}:
+        return "paper.pdf"
+    return basename
 
 
 def download_arxiv_pdf_text(arxiv_id: str, settings: Any) -> str:
@@ -249,7 +267,7 @@ def create_session_from_pdf_bytes(
     settings: Any,
     answer_language: str | None = None,
 ) -> CitationTraceSession:
-    normalized_filename = normalize_whitespace(Path(filename or "paper.pdf").name) or "paper.pdf"
+    normalized_filename = _safe_uploaded_filename(filename)
     pdf_text = pdf_bytes_to_text(content)
     target_paper = CitationTracePaperNode(
         paper_id="target",

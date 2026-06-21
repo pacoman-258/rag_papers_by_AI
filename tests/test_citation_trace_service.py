@@ -1,4 +1,7 @@
+from io import BytesIO
 import unittest
+
+from pypdf import PdfWriter
 
 from backend import citation_trace_service as cts
 
@@ -29,6 +32,13 @@ def _top_paper(
 class CitationTraceServiceTest(unittest.TestCase):
     def tearDown(self):
         cts._SESSION_CACHE.clear()
+
+    def _blank_pdf_bytes(self):
+        buffer = BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.write(buffer)
+        return buffer.getvalue()
 
     def test_extract_reference_entries_from_references_section(self):
         text = """
@@ -133,6 +143,70 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertEqual(session.reference_entries[0].arxiv_id, "1601.00001")
         self.assertEqual(session.final_top5, [])
         self.assertIs(cts.get_session(session.session_id), session)
+
+    def test_create_session_from_arxiv_accepts_supported_url_with_trailing_slash(self):
+        class Record:
+            arxiv_id = "1706.03762"
+            source = "arxiv"
+            source_id = "1706.03762"
+            title = "Attention Is All You Need"
+            summary = "Transformer architecture."
+            authors = ["Ashish Vaswani"]
+            published_date = "2017-06-12"
+            primary_category = "cs.CL"
+            external_url = "https://arxiv.org/abs/1706.03762"
+            doi = None
+
+        original_fetch = cts.fetch_arxiv_record
+        original_download = cts.download_arxiv_pdf_text
+        try:
+            cts.fetch_arxiv_record = lambda arxiv_id: Record()
+            cts.download_arxiv_pdf_text = lambda arxiv_id, settings: "References\n[1] Prior Work."
+            session = cts.create_session_from_arxiv(
+                "https://arxiv.org/abs/1706.03762/",
+                settings=None,
+                answer_language="en",
+            )
+        finally:
+            cts.fetch_arxiv_record = original_fetch
+            cts.download_arxiv_pdf_text = original_download
+
+        self.assertEqual(session.source_id, "1706.03762")
+        self.assertEqual(session.target_paper.canonical_id, "arxiv:1706.03762")
+
+    def test_create_session_from_pdf_bytes_rejects_empty_invalid_and_textless_pdf(self):
+        cases = (
+            ("empty.pdf", b"", "empty"),
+            ("fake.pdf", b"%PDF fake", "valid PDF"),
+            ("blank.pdf", self._blank_pdf_bytes(), "extractable text"),
+        )
+        for filename, content, expected_message in cases:
+            with self.subTest(filename=filename):
+                with self.assertRaisesRegex(ValueError, expected_message):
+                    cts.create_session_from_pdf_bytes(filename, content, settings=None, answer_language="en")
+                self.assertEqual(cts._SESSION_CACHE, {})
+
+    def test_create_session_from_pdf_bytes_uses_safe_basename_for_uploaded_filename(self):
+        original = cts.pdf_bytes_to_text
+        try:
+            cts.pdf_bytes_to_text = lambda content: "Paper body with extractable text."
+            for raw_filename, expected in (
+                ("..\\secret.pdf", "secret.pdf"),
+                ("C:\\tmp\\paper.pdf", "paper.pdf"),
+                ("../nested/local.pdf", "local.pdf"),
+            ):
+                with self.subTest(raw_filename=raw_filename):
+                    session = cts.create_session_from_pdf_bytes(
+                        raw_filename,
+                        b"ignored",
+                        settings=None,
+                        answer_language="en",
+                    )
+                    self.assertEqual(session.source_id, expected)
+                    self.assertEqual(session.target_paper.title, expected)
+                    self.assertEqual(session.target_paper.canonical_id, f"file:{expected}")
+        finally:
+            cts.pdf_bytes_to_text = original
 
     def test_unresolved_reference_stays_visible_as_node_and_ledger_entry(self):
         reference = cts.ReferenceEntry(

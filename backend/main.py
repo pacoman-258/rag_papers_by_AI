@@ -640,6 +640,8 @@ async def api_create_citation_trace_session_from_file(
         return citation_trace_session_to_model(session)
     except HTTPException:
         raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=detail_from_exception(exc)) from exc
     except Exception as exc:
         raise to_http_detail(exc) from exc
     finally:
