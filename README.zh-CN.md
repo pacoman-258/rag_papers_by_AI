@@ -51,7 +51,7 @@ FastAPI + React 工作台包含这些主区域：
 - `Search Workspace`
   可配置 query chat、answer chat、rerank、embedding 和 retrieval 参数；可启用或关闭 `local`、`arxiv`、`wos`；支持 rewrite 确认、论文结果查看、来源徽标与外链展示，以及最终回答流式输出。
 - `论文溯源`
-  输入 arXiv 链接或上传 PDF，抽取并解析 references，执行两轮溯源扩展，查看证据账本，并由 LLM 给出按启发价值排序的最终 Top5。
+  输入 arXiv 链接或上传 PDF，抽取并解析 references，执行两轮溯源扩展，查看证据账本，并在模型排序接入前基于当前证据账本生成兜底最终 Top5。
 - `Ingest Manager`
   可在前端启动 `in.py` 入库任务、查看本地数据库概览，并通过 SSE 查看实时日志。
 

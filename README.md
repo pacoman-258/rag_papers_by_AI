@@ -51,7 +51,7 @@ The FastAPI + React workbench exposes these workspaces:
 - `Search Workspace`
   Configure query chat, answer chat, rerank, embedding, and retrieval settings; enable or disable `local`, `arxiv`, and `wos`; generate and refine rewrites; inspect top-10 papers with source badges and external links; and stream the final answer.
 - `Citation Trace`
-  Load an arXiv paper or PDF, extract and resolve references, run two-round provenance expansion, inspect an evidence ledger, and review an LLM-ranked final top 5 of papers that may have inspired the target.
+  Load an arXiv paper or PDF, extract and resolve references, run two-round provenance expansion, inspect an evidence ledger, and review a fallback final top 5 assembled from the current evidence ledger until model ranking is wired in.
 - `Ingest Manager`
   Start `in.py` as a background job, inspect local-database counts, and watch ingest logs over SSE.
 
