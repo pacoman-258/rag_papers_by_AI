@@ -1,4 +1,5 @@
 from io import BytesIO
+from types import SimpleNamespace
 import unittest
 
 from pypdf import PdfWriter
@@ -32,6 +33,7 @@ def _top_paper(
 class CitationTraceServiceTest(unittest.TestCase):
     def tearDown(self):
         cts._SESSION_CACHE.clear()
+        cts._SESSION_SETTINGS_CACHE.clear()
 
     def _blank_pdf_bytes(self):
         buffer = BytesIO()
@@ -173,6 +175,46 @@ class CitationTraceServiceTest(unittest.TestCase):
 
         self.assertEqual(session.source_id, "1706.03762")
         self.assertEqual(session.target_paper.canonical_id, "arxiv:1706.03762")
+
+    def test_create_session_from_arxiv_uses_unique_session_ids_for_same_paper(self):
+        class Record:
+            arxiv_id = "1706.03762"
+            source = "arxiv"
+            source_id = "1706.03762"
+            title = "Attention Is All You Need"
+            summary = "Transformer architecture."
+            authors = ["Ashish Vaswani"]
+            published_date = "2017-06-12"
+            primary_category = "cs.CL"
+            external_url = "https://arxiv.org/abs/1706.03762"
+            doi = None
+
+        settings_one = object()
+        settings_two = object()
+        original_fetch = cts.fetch_arxiv_record
+        original_download = cts.download_arxiv_pdf_text
+        try:
+            cts.fetch_arxiv_record = lambda arxiv_id: Record()
+            cts.download_arxiv_pdf_text = lambda arxiv_id, settings: "References\n[1] Prior Work."
+            first = cts.create_session_from_arxiv(
+                "https://arxiv.org/abs/1706.03762",
+                settings=settings_one,
+                answer_language="en",
+            )
+            second = cts.create_session_from_arxiv(
+                "https://arxiv.org/abs/1706.03762",
+                settings=settings_two,
+                answer_language="zh",
+            )
+        finally:
+            cts.fetch_arxiv_record = original_fetch
+            cts.download_arxiv_pdf_text = original_download
+
+        self.assertNotEqual(first.session_id, second.session_id)
+        self.assertIs(cts.get_session(first.session_id), first)
+        self.assertIs(cts.get_session(second.session_id), second)
+        self.assertIs(cts.get_cached_session_settings(first.session_id), settings_one)
+        self.assertIs(cts.get_cached_session_settings(second.session_id), settings_two)
 
     def test_create_session_from_pdf_bytes_rejects_empty_invalid_and_textless_pdf(self):
         cases = (
@@ -369,6 +411,68 @@ class CitationTraceServiceTest(unittest.TestCase):
 
         self.assertEqual([entry.candidate_paper.paper_id for entry in selected], ["p1", "p2"])
 
+    def test_expand_seed_candidates_uses_prior_work_search_results(self):
+        seed = cts.CitationTracePaperNode(
+            paper_id="seed",
+            source="arxiv",
+            source_id="1706.03762",
+            canonical_id="arxiv:1706.03762",
+            title="Attention Is All You Need",
+            abstract="Transformer attention for translation.",
+            authors=["Ashish Vaswani"],
+            published_date="2017-06-12",
+            keywords=["cs.CL"],
+            arxiv_id="1706.03762",
+            external_url="https://arxiv.org/abs/1706.03762",
+        )
+        settings = object()
+        captured = {}
+        original_get_embedding = cts.get_embedding
+        original_collect = cts.collect_prior_work_candidates
+        try:
+            def get_embedding(text, runtime_settings):
+                captured["embedding_text"] = text
+                return [0.1, 0.2]
+
+            cts.get_embedding = get_embedding
+
+            def collect(query_vec, target_paper, runtime_settings):
+                captured["query_vec"] = query_vec
+                captured["target_paper"] = target_paper
+                captured["settings"] = runtime_settings
+                return SimpleNamespace(
+                    papers=[
+                        SimpleNamespace(
+                            id="arxiv:1601.00001",
+                            source="arxiv",
+                            source_id="1601.00001",
+                            canonical_id="arxiv:1601.00001",
+                            title="Prior Attention Work",
+                            text="Earlier attention mechanisms.",
+                            authors=["D. Author"],
+                            published_date="2016-01-01",
+                            primary_category="cs.CL",
+                            external_url="https://arxiv.org/abs/1601.00001",
+                            arxiv_id="1601.00001",
+                        )
+                    ],
+                )
+
+            cts.collect_prior_work_candidates = collect
+
+            candidates = cts.expand_seed_candidates(seed, settings)
+        finally:
+            cts.get_embedding = original_get_embedding
+            cts.collect_prior_work_candidates = original_collect
+
+        self.assertIn("Attention Is All You Need", captured["embedding_text"])
+        self.assertEqual(captured["query_vec"], [0.1, 0.2])
+        self.assertIs(captured["settings"], settings)
+        self.assertEqual(captured["target_paper"].title, "Attention Is All You Need")
+        self.assertEqual([candidate.paper_id for candidate in candidates], ["arxiv:1601.00001"])
+        self.assertEqual(candidates[0].source, "arxiv")
+        self.assertEqual(candidates[0].abstract, "Earlier attention mechanisms.")
+
     def test_run_citation_trace_keeps_round_one_when_round_two_seed_fails(self):
         session = cts.CitationTraceSession(
             session_id="run-session",
@@ -528,6 +632,7 @@ class CitationTraceServiceTest(unittest.TestCase):
             warnings=["Synthesis failed: previous run"],
         )
         original_resolve = cts.resolve_reference_to_node
+        original_expand = cts.expand_seed_candidates
         try:
             cts.resolve_reference_to_node = lambda reference, settings: cts.CitationTracePaperNode(
                 "1601.00001",
@@ -537,9 +642,11 @@ class CitationTraceServiceTest(unittest.TestCase):
                 "Good reference",
                 arxiv_id="1601.00001",
             )
+            cts.expand_seed_candidates = lambda seed, settings: []
             list(cts.run_citation_trace_events(session, settings=None))
         finally:
             cts.resolve_reference_to_node = original_resolve
+            cts.expand_seed_candidates = original_expand
 
         self.assertEqual(session.warnings, [])
         self.assertEqual(session.status, "completed")

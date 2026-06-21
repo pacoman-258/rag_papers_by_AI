@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the old PST-lite trace workflow with a standalone `Citation Trace / 论文溯源` workspace backed by a new citation trace service, evidence ledger, two-round expansion, and LLM-ranked inspirational top 5.
+**Goal:** Replace the old PST-lite trace workflow with a standalone `Citation Trace / 论文溯源` workspace backed by a new citation trace service, evidence ledger, two-round expansion, and an evidence-ledger fallback top 5 until model ranking is wired in.
 
 **Architecture:** Add `backend/citation_trace_service.py` as the new orchestration boundary and expose it through `/api/citation-trace/*`. Remove user-visible PST routes, frontend mode, and assistant source naming instead of keeping compatibility. Keep reusable search primitives such as `TargetPaper`, `RetrievedPaper`, external source lookup, embeddings, rerank, and chat model calls.
 
@@ -2287,14 +2287,14 @@ In `README.md`, replace references to trace/PST with Citation Trace. Use this pa
 
 ```md
 - `Citation Trace`
-  Load an arXiv paper or PDF, extract and resolve references, run two-round provenance expansion, inspect an evidence ledger, and review an LLM-ranked final top 5 of papers that may have inspired the target.
+  Load an arXiv paper or PDF, extract and resolve references, run two-round provenance expansion, inspect an evidence ledger, and review a fallback final top 5 assembled from the current evidence ledger until model ranking is wired in.
 ```
 
 In `README.zh-CN.md`, use:
 
 ```md
 - `论文溯源`
-  输入 arXiv 链接或上传 PDF，抽取并解析 references，执行两轮溯源扩展，查看证据账本，并由 LLM 给出按启发价值排序的最终 Top5。
+  输入 arXiv 链接或上传 PDF，抽取并解析 references，执行两轮溯源扩展，查看证据账本，并在模型排序接入前基于当前证据账本生成兜底最终 Top5。
 ```
 
 Replace source provenance notes with "search and Citation Trace responses" / "搜索和论文溯源返回结果".
@@ -2311,7 +2311,7 @@ Expected: prints the local timestamp for the log entry.
 
 Add a new top entry with the timestamp returned by the command above. Use this exact summary and file list, and write the verification line from the commands that passed in this implementation run:
 
-- 摘要：用新的 `Citation Trace / 论文溯源` 工作台替代旧 PST-lite，新增引用抽取、两轮溯源扩展、证据账本、LLM 启发价值 Top5 的后端/API/前端骨架，并移除旧 `/api/trace/*` 与 `pst_auto` 概念。
+- 摘要：用新的 `Citation Trace / 论文溯源` 工作台替代旧 PST-lite，新增引用抽取、两轮溯源扩展、证据账本、基于账本的兜底 Top5 后端/API/前端骨架，并移除旧 `/api/trace/*` 与 `pst_auto` 概念。
 - 涉及文件：`backend/citation_trace_service.py`、`backend/main.py`、`backend/schemas.py`、`backend/live2d_service.py`、`backend/assistant_memory.py`、`local_paper_db/app/search_service.py`、`local_paper_db/app/search.py`、`frontend/src/App.jsx`、`frontend/src/CitationTracePage.jsx`、`frontend/src/styles.css`、`README.md`、`README.zh-CN.md`、`tests/test_citation_trace_service.py`、`tests/test_citation_trace_api.py`、`tests/test_citation_trace_frontend.py`、`tests/test_citation_trace_cleanup.py`
 - 后续：记录真实 arXiv/PDF 端到端人工验收结果，以及需要继续增强的图谱交互或引用解析能力。
 

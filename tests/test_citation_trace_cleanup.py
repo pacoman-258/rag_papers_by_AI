@@ -52,6 +52,20 @@ class CitationTraceCleanupTest(unittest.TestCase):
         self.assertNotIn("P" + "ST-lite", readme)
         self.assertNotIn("P" + "ST-lite", zh)
 
+    def test_design_docs_do_not_overpromise_llm_ranked_top5(self):
+        docs = "\n".join(
+            path.read_text()
+            for path in (
+                ROOT / "docs/superpowers/specs/2026-06-20-citation-trace-design.md",
+                ROOT / "docs/superpowers/plans/2026-06-20-citation-trace-implementation.md",
+            )
+        )
+
+        self.assertNotIn("LLM-ranked inspirational top 5", docs)
+        self.assertNotIn("final top 5 is selected by the LLM", docs)
+        self.assertNotIn("LLM-ranked final top 5", docs)
+        self.assertNotIn("由 LLM 给出按启发价值排序", docs)
+
 
 if __name__ == "__main__":
     unittest.main()

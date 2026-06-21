@@ -11,7 +11,14 @@ from typing import Any, Iterator, Literal
 from pypdf import PdfReader
 
 from local_paper_db.app.external_sources import fetch_arxiv_record
-from local_paper_db.app.search_service import build_canonical_paper_id, normalize_whitespace
+from local_paper_db.app.search_service import (
+    TargetPaper,
+    build_canonical_paper_id,
+    build_target_paper_retrieval_text,
+    collect_prior_work_candidates,
+    get_embedding,
+    normalize_whitespace,
+)
 
 
 PaperNodeSource = Literal["target", "arxiv", "local", "wos", "unresolved"]
@@ -259,10 +266,10 @@ def create_session_from_arxiv(
     )
     pdf_text = download_arxiv_pdf_text(resolved_source_id, settings)
     reference_entries = extract_reference_entries(pdf_text)
-    session_id_suffix = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_id).strip("-") or uuid.uuid4().hex[:12]
+    session_id_suffix = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_id).strip("-") or "arxiv"
     target_paper = _paper_node_from_arxiv_record(record, source_id, url)
     session = CitationTraceSession(
-        session_id=f"citation-trace-{session_id_suffix}",
+        session_id=f"citation-trace-{session_id_suffix}-{uuid.uuid4().hex[:12]}",
         source_type="arxiv",
         source_id=resolved_source_id,
         source_url=url,
@@ -614,8 +621,76 @@ def resolve_reference_to_node(reference: ReferenceEntry, settings: Any) -> Citat
     )
 
 
+def _search_source_for_node(node: CitationTracePaperNode) -> str:
+    return node.source if node.source in {"arxiv", "local", "wos"} else "arxiv"
+
+
+def _target_paper_from_node(node: CitationTracePaperNode) -> TargetPaper:
+    source = _search_source_for_node(node)
+    source_id = normalize_whitespace(node.source_id or node.arxiv_id or node.paper_id)
+    primary_category = node.keywords[0] if node.keywords else None
+    return TargetPaper(
+        id=f"{source}:{source_id}",
+        source=source,
+        source_id=source_id,
+        canonical_id=node.canonical_id,
+        title=node.title,
+        summary=node.abstract or node.title,
+        authors=list(node.authors),
+        published_date=node.published_date,
+        primary_category=primary_category,
+        arxiv_id=node.arxiv_id,
+        external_url=node.external_url,
+        matched_sources=[source],
+    )
+
+
+def _candidate_node_from_retrieved_paper(paper: Any) -> CitationTracePaperNode:
+    source = str(getattr(paper, "source", "local") or "local")
+    if source not in {"arxiv", "local", "wos"}:
+        source = "local"
+    source_id = normalize_whitespace(str(getattr(paper, "source_id", "") or getattr(paper, "id", "")))
+    title = normalize_whitespace(str(getattr(paper, "title", "") or source_id or "Untitled paper"))
+    authors = [normalize_whitespace(str(author)) for author in list(getattr(paper, "authors", []) or [])]
+    published_date = getattr(paper, "published_date", None)
+    arxiv_id = getattr(paper, "arxiv_id", None)
+    primary_category = getattr(paper, "primary_category", None)
+    canonical_id = getattr(paper, "canonical_id", None) or build_canonical_paper_id(
+        title=title,
+        authors=authors,
+        published_date=published_date,
+        arxiv_id=arxiv_id,
+    )
+    return CitationTracePaperNode(
+        paper_id=normalize_whitespace(str(getattr(paper, "id", "") or f"{source}:{source_id}")),
+        source=source,
+        source_id=source_id,
+        canonical_id=canonical_id,
+        title=title,
+        abstract=normalize_whitespace(str(getattr(paper, "text", "") or "")),
+        authors=authors,
+        published_date=published_date,
+        keywords=[primary_category] if primary_category else [],
+        arxiv_id=arxiv_id,
+        external_url=getattr(paper, "external_url", None),
+    )
+
+
 def expand_seed_candidates(seed: CitationTracePaperNode, settings: Any) -> list[CitationTracePaperNode]:
-    return []
+    target_paper = _target_paper_from_node(seed)
+    retrieval_text = build_target_paper_retrieval_text(target_paper)
+    query_vec = get_embedding(retrieval_text, settings)
+    batch = collect_prior_work_candidates(query_vec, target_paper, settings)
+    candidates: list[CitationTracePaperNode] = []
+    seen: set[str] = {seed.canonical_id.casefold()}
+    for paper in batch.papers:
+        node = _candidate_node_from_retrieved_paper(paper)
+        dedupe_key = node.canonical_id.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        candidates.append(node)
+    return candidates
 
 
 def _round_summary_payload(summary: CitationTraceRoundSummary) -> dict[str, Any]:

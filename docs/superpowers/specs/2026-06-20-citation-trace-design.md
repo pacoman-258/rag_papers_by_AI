@@ -4,7 +4,7 @@
 
 Build a standalone `Citation Trace / 论文溯源` workspace that replaces the old PST-lite trace feature.
 
-The new workflow is a reference-first, exploration-friendly citation provenance tool. It starts from a user-provided paper, follows explicit references where possible, supplements sparse or unresolved references with retrieval from enabled paper sources, and produces an auditable evidence ledger plus an LLM-ranked inspirational top 5.
+The new workflow is a reference-first, exploration-friendly citation provenance tool. It starts from a user-provided paper, follows explicit references where possible, supplements sparse or unresolved references with retrieval from enabled paper sources, and produces an auditable evidence ledger plus a final top 5 assembled from the current evidence package until model ranking is wired in.
 
 ## Product Decisions
 
@@ -12,7 +12,7 @@ The new workflow is a reference-first, exploration-friendly citation provenance 
 - Add one standalone frontend tab: `Citation Trace` in English and `论文溯源` in Chinese.
 - Use an evidence-first interface. The evidence ledger is the primary surface; the graph and final top 5 are summary views.
 - Allow exploratory candidates, but label them clearly. Do not present inferred influence as confirmed citation.
-- Rank the final top 5 primarily by LLM-judged inspirational value, with reasons. Low-evidence exploratory entries may appear in the final top 5, but at most two.
+- Assemble the current final top 5 from the evidence ledger with clear reasons and uncertainty. Low-evidence exploratory entries may appear in the final top 5, but at most two. A later model-ranking pass can replace this fallback once it is wired and tested.
 
 ## Architecture
 
@@ -24,7 +24,7 @@ Add `backend/citation_trace_service.py` as the owner of the new workflow:
 4. Round 1 candidate selection from the target paper.
 5. Round 2 candidate expansion from the round 1 seeds.
 6. Evidence ledger assembly.
-7. LLM synthesis for the main graph, possible inspiration sources, provenance narrative, and final top 5.
+7. Evidence-ledger fallback synthesis for possible inspiration sources, provenance narrative, and final top 5; later model ranking can refine this stage.
 
 The service may reuse existing lower-level helpers where they still fit:
 
@@ -110,7 +110,7 @@ Round 1 must be useful on its own. If round 2 or final synthesis fails, the firs
 
 ### Final Top 5
 
-The final top 5 is selected by the LLM from the evidence package:
+The current final top 5 is assembled from the evidence package:
 
 - `rank`
 - `paper_id`
@@ -124,7 +124,7 @@ The final top 5 is selected by the LLM from the evidence package:
 - `uncertainty`
 - `supporting_edge_ids`
 
-The LLM must explain why each paper is worth reading. Low-evidence exploratory entries are allowed, but at most two can appear in the final top 5.
+Each item must explain why the paper is worth reading. Low-evidence exploratory entries are allowed, but at most two can appear in the final top 5.
 
 ## Execution Flow
 
@@ -145,7 +145,7 @@ If references are sparse or cannot be resolved, continue with exploration mode a
 
 ### 3. Round 1
 
-Use the target paper as the seed. Score explicit references and supplement with retrieval candidates from enabled providers when references are unresolved or too sparse. Build round 1 ledger entries, select up to 10 candidates, and ask the LLM for a first-round explanation of how each selected paper may have inspired the target.
+Use the target paper as the seed. Score explicit references and supplement with retrieval candidates from enabled providers when references are unresolved or too sparse. Build round 1 ledger entries and select up to 10 candidates with audit-ready metadata about how each selected paper may have inspired the target.
 
 If fewer than 10 usable candidates exist, use all available candidates.
 
@@ -155,12 +155,12 @@ Use the round 1 top 10 as seeds. For each seed, repeat candidate selection and k
 
 ### 5. Synthesis
 
-Ask the LLM to read the round 1 top 10, round 2 candidates, and evidence ledger. It outputs:
+Read the round 1 top 10, round 2 candidates, and evidence ledger. The current fallback outputs:
 
 - High-confidence main graph.
 - Exploratory possible inspiration sources.
 - Natural-language provenance chain.
-- Final top 5 ranked by inspirational value, with evidence level and uncertainty.
+- Final top 5 ordered from the evidence ledger, with evidence level and uncertainty.
 
 ### 6. Progress Events
 
@@ -182,7 +182,7 @@ The frontend should show partial results as soon as they are available.
 - arXiv, WoS, or local source failure: record a warning and continue with remaining sources.
 - Reference parse failure: preserve the raw entry as unresolved.
 - Round 2 partial failure: keep round 1 and all successful round 2 seed results.
-- LLM synthesis failure: show the evidence ledger and algorithmic candidates, and mark final top 5 as unavailable.
+- Synthesis failure: show the evidence ledger and algorithmic candidates, and mark final top 5 as unavailable.
 - Complete reference failure: continue in exploration mode, with a clear warning that explicit citation evidence is missing.
 
 ## Frontend
@@ -194,8 +194,8 @@ The first version has these sections:
 1. Input area: arXiv URL, PDF upload, output language, provider toggles, and one run button.
 2. Progress rail: `Load paper`, `Parse references`, `Round 1 top10`, `Round 2 expansion`, `Synthesis`, `Final top5`.
 3. Summary area: final top 5, main graph summary, and exploratory inspiration sources.
-4. Evidence ledger: the primary table/list view with relation type, evidence level, score breakdown, LLM assessment, and warnings.
-5. Detail panel: selected entry metadata, original reference text, abstract, score breakdown, LLM reason, uncertainty, and external links.
+4. Evidence ledger: the primary table/list view with relation type, evidence level, score breakdown, assessment, and warnings.
+5. Detail panel: selected entry metadata, original reference text, abstract, score breakdown, reason, uncertainty, and external links.
 
 The first version should keep graph rendering modest. A chain list or lightweight graph summary is enough until the evidence ledger is stable.
 
@@ -223,7 +223,7 @@ Add focused backend tests for:
 - Round 1 using all candidates when fewer than 10 exist.
 - Round 2 keeping at most 3 candidates per seed.
 - Final top 5 containing at most two low-evidence exploratory entries.
-- LLM synthesis failure still returning the evidence ledger.
+- Synthesis failure still returning the evidence ledger.
 
 Add API tests for:
 

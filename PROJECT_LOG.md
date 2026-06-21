@@ -20,6 +20,13 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-21 23:01
+
+- 摘要：根据最终审查补齐 Citation Trace 的真实第二轮 prior-work 检索扩展，为 arXiv 会话 ID 增加唯一后缀避免缓存串用，并同步设计/计划文档中的兜底 Top5 表述。
+- 涉及文件：`backend/citation_trace_service.py`、`tests/test_citation_trace_service.py`、`tests/test_citation_trace_cleanup.py`、`docs/superpowers/specs/2026-06-20-citation-trace-design.md`、`docs/superpowers/plans/2026-06-20-citation-trace-implementation.md`、`PROJECT_LOG.md`
+- 验证：新增回归测试先观察到同一 arXiv 论文复用 session id、`expand_seed_candidates` 未接入检索函数、设计文档仍有 LLM-ranked Top5 旧表述；修复后执行 `.venv/bin/python -m unittest tests.test_citation_trace_service tests.test_citation_trace_api tests.test_citation_trace_frontend tests.test_citation_trace_cleanup`（通过，35 tests）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，61 tests）；执行 `.venv/bin/python -m py_compile backend/citation_trace_service.py backend/main.py backend/schemas.py backend/live2d_service.py backend/assistant_memory.py local_paper_db/app/search_service.py local_paper_db/app/search.py`（通过）；执行 `npm run build`（在 `frontend/` 下，通过）；执行 `rg -n "PST|pst_auto|/api/trace|TraceExecution|execute_trace|stream_trace_answer_tokens" backend frontend/src local_paper_db/app tests README.md README.zh-CN.md`（无输出）；执行 `rg -n "LLM-ranked inspirational top 5|final top 5 is selected by the LLM|LLM-ranked final top 5|由 LLM 给出按启发价值排序|LLM 启发价值 Top5" docs/superpowers/specs/2026-06-20-citation-trace-design.md docs/superpowers/plans/2026-06-20-citation-trace-implementation.md README.md README.zh-CN.md PROJECT_LOG.md`（无输出）；执行 `git diff --check`（通过）。
+- 后续：模型排序/LLM 主判仍是后续增强项；当前最终 Top5 为证据账本兜底生成。
+
 ## 2026-06-21 22:49
 
 - 摘要：清理 Citation Trace 迁移测试中的旧 trace 字面量，让旧接口、旧来源和旧执行标识的残留扫描可以作为硬门禁使用，同时保持负向断言语义不变。
