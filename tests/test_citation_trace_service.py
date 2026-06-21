@@ -471,6 +471,79 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertTrue(any(name == "warning" and "model failed" in payload["message"] for name, payload in events))
         self.assertEqual(len(session.ledger_entries), 1)
 
+    def test_run_citation_trace_marks_empty_reference_run_partial(self):
+        session = cts.CitationTraceSession(
+            session_id="empty-run",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode("target", "target", "paper.pdf", "file:paper.pdf", "Target"),
+            answer_language="en",
+        )
+
+        events = list(cts.run_citation_trace_events(session, settings=None))
+        complete_payload = [payload for name, payload in events if name == "complete"][-1]
+
+        self.assertEqual(session.rounds[0].status, "partial")
+        self.assertEqual(session.status, "partial")
+        self.assertEqual(complete_payload["status"], "partial")
+
+    def test_run_round_one_uses_extraction_order_for_unresolved_ties(self):
+        references = [
+            cts.ReferenceEntry(
+                reference_id=f"ref-{99 - index:02d}",
+                raw_text=f"Reference {index}.",
+                raw_label=f"[{index}]",
+                title_hint=f"Reference {index}",
+            )
+            for index in range(1, 13)
+        ]
+        session = cts.CitationTraceSession(
+            session_id="tie-run",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode("target", "target", "paper.pdf", "file:paper.pdf", "Target"),
+            answer_language="en",
+            reference_entries=references,
+        )
+
+        summary = cts.run_round_one(session, settings=None)
+
+        self.assertEqual([entry.reference_text for entry in summary.ledger_entries], [
+            f"Reference {index}." for index in range(1, 11)
+        ])
+
+    def test_rerun_citation_trace_clears_stale_warnings(self):
+        session = cts.CitationTraceSession(
+            session_id="rerun",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode("target", "target", "paper.pdf", "file:paper.pdf", "Target"),
+            answer_language="en",
+            reference_entries=[
+                cts.ReferenceEntry("ref-1", "Good reference. arXiv:1601.00001", arxiv_id="1601.00001")
+            ],
+            warnings=["Synthesis failed: previous run"],
+        )
+        original_resolve = cts.resolve_reference_to_node
+        try:
+            cts.resolve_reference_to_node = lambda reference, settings: cts.CitationTracePaperNode(
+                "1601.00001",
+                "arxiv",
+                "1601.00001",
+                "arxiv:1601.00001",
+                "Good reference",
+                arxiv_id="1601.00001",
+            )
+            list(cts.run_citation_trace_events(session, settings=None))
+        finally:
+            cts.resolve_reference_to_node = original_resolve
+
+        self.assertEqual(session.warnings, [])
+        self.assertEqual(session.status, "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

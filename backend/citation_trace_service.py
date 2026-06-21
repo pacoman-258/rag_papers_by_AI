@@ -620,9 +620,9 @@ def _round_summary_payload(summary: CitationTraceRoundSummary) -> dict[str, Any]
 
 
 def run_round_one(session: CitationTraceSession, settings: Any) -> CitationTraceRoundSummary:
-    entries: list[CitationTraceLedgerEntry] = []
+    indexed_entries: list[tuple[int, CitationTraceLedgerEntry]] = []
     warnings: list[str] = []
-    for reference in session.reference_entries:
+    for reference_index, reference in enumerate(session.reference_entries):
         try:
             node = resolve_reference_to_node(reference, settings)
         except Exception as exc:
@@ -633,30 +633,32 @@ def run_round_one(session: CitationTraceSession, settings: Any) -> CitationTrace
                 reference,
                 seed_paper_id=session.target_paper.paper_id,
             )
-            entries.append(entry)
+            indexed_entries.append((reference_index, entry))
             continue
-        entries.append(
-            score_candidate_relationship(
-                session.target_paper,
-                node,
-                round_number=1,
-                relation_type="explicit_reference",
-                reference_text=reference.raw_text,
+        indexed_entries.append(
+            (
+                reference_index,
+                score_candidate_relationship(
+                    session.target_paper,
+                    node,
+                    round_number=1,
+                    relation_type="explicit_reference",
+                    reference_text=reference.raw_text,
+                ),
             )
         )
-    entries.sort(
+    indexed_entries.sort(
         key=lambda item: (
-            -item.score_total,
-            item.candidate_paper.canonical_id.casefold(),
-            item.candidate_paper.paper_id.casefold(),
+            -item[1].score_total,
+            item[0],
         )
     )
-    selected = entries[:10]
+    selected = [entry for _reference_index, entry in indexed_entries[:10]]
     return CitationTraceRoundSummary(
         round=1,
         status="completed" if selected else "partial",
         seed_count=1,
-        candidate_count=len(entries),
+        candidate_count=len(indexed_entries),
         selected_count=len(selected),
         summary_text="Round 1 selected explicit references and unresolved reference records.",
         seed_paper_ids=[session.target_paper.paper_id],
@@ -743,6 +745,8 @@ def run_citation_trace_events(
     settings: Any,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     session.status = "running"
+    session.warnings = []
+    session.final_top5 = []
     yield "stage_start", {"session_id": session.session_id, "stage": "reference_resolution"}
 
     round_one = run_round_one(session, settings)
@@ -775,7 +779,7 @@ def run_citation_trace_events(
     for event_name, payload in run_synthesis_stage(session, settings):
         yield event_name, payload
 
-    if round_one.status == "failed" or round_two.status == "failed":
+    if round_one.status in {"partial", "failed"} or round_two.status in {"partial", "failed"}:
         session.status = "partial"
     elif round_one.warnings or round_two.warnings or session.warnings:
         session.status = "partial"
