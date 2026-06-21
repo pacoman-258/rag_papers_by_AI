@@ -180,6 +180,84 @@ select {
   align-items: start;
 }
 
+.citation-trace-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(360px, 30vw, 500px);
+  gap: 24px;
+  align-items: start;
+}
+
+.citation-trace-main {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.citation-trace-inputs {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.citation-trace-summary,
+.citation-trace-detail {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 18px;
+  backdrop-filter: blur(8px);
+}
+
+.citation-trace-summary {
+  display: grid;
+  gap: 12px;
+}
+
+.citation-ledger {
+  display: grid;
+  gap: 10px;
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-soft);
+  color: #2f261f;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.ledger-row strong,
+.ledger-row small {
+  display: block;
+}
+
+.ledger-row small {
+  margin-top: 4px;
+  color: var(--text-soft);
+}
+
+.ledger-row.compact {
+  grid-template-columns: minmax(0, 1fr);
+  background: rgba(255, 252, 246, 0.78);
+}
+
+.ledger-row.selected {
+  border-color: rgba(183, 94, 27, 0.42);
+  box-shadow: 0 0 0 4px rgba(183, 94, 27, 0.1);
+}
+
+.citation-trace-detail {
+  display: grid;
+  gap: 12px;
+}
+
 .search-main,
 .assistant-column,
 .settings-page {
@@ -2030,6 +2108,16 @@ select {
 }
 
 @media (max-width: 900px) {
+  .citation-trace-layout,
+  .citation-trace-inputs,
+  .ledger-row {
+    grid-template-columns: 1fr;
+  }
+
+  .citation-trace-layout > .assistant-column {
+    position: static;
+  }
+
   .assistant-shell {
     gap: 14px;
   }

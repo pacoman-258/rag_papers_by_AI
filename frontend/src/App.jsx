@@ -1,4 +1,5 @@
 import { Component, useEffect, useMemo, useRef, useState } from "react";
+import CitationTracePage from "./CitationTracePage.jsx";
 import PaperReaderPage from "./PaperReaderPage.jsx";
 import ProgressTracker from "./ProgressTracker.jsx";
 
@@ -6,11 +7,11 @@ const translations = {
   en: {
     appTitle: "FastAPI + React Workbench",
     searchTab: "Search Workspace",
+    citationTraceTab: "Citation Trace",
     paperReaderTab: "Paper Reader",
     ingestTab: "Ingest Manager",
     settingsTab: "Settings",
     qaMode: "QA",
-    pstMode: "PST",
     saveDefaults: "Save Defaults",
     defaultsSaved: "Defaults saved.",
     settingsTitle: "Model & Runtime Settings",
@@ -23,7 +24,6 @@ const translations = {
     progressInterrupted: "Interrupted",
     noLogs: "No logs yet.",
     noPapers: "No papers selected yet.",
-    noCandidates: "No target candidates.",
     vector: "Vector",
     rerank: "Rerank",
     method: "Method",
@@ -85,9 +85,7 @@ const translations = {
     improvePlaceholder: "For example: narrow it to cs.IR, or focus on the latest 12 months.",
     improveRewrite: "Improve Rewrite",
     topPapers: "Top Papers",
-    priorPaperCandidates: "Candidate Prior Papers",
     answerStream: "Answer Stream",
-    traceExplanation: "PST Explanation",
     answerPlaceholder: "The answer will stream here.",
     databaseOverview: "Local Database Overview",
     papers: "Papers",
@@ -97,13 +95,10 @@ const translations = {
     status: "Status",
     idle: "idle",
     pleaseEnterQuestion: "Please enter a question.",
-    pleaseEnterTarget: "Please enter an arXiv ID or title.",
     failedSaveDefaults: "Failed to save defaults.",
     failedGeneratePlan: "Failed to generate a query plan.",
     failedRefinePlan: "Failed to refine the query plan.",
     failedExecuteSearch: "Failed to execute search.",
-    failedResolveTarget: "Failed to resolve the target paper.",
-    failedExecuteTrace: "Failed to execute PST tracing.",
     answerStreamFailed: "Answer stream failed.",
     failedStartIngest: "Failed to start ingest.",
     optionalOllamaBaseUrl: "Optional Ollama base URL",
@@ -120,26 +115,40 @@ const translations = {
     implicitLatest: "Implicit latest window",
     publishedDate: "Published",
     primaryCategory: "Primary Category",
-    targetPaperQuery: "Target Paper",
-    targetPaperPlaceholder: "Enter an arXiv ID or paper title.",
-    resolveTargetPaper: "Resolve Target Paper",
-    targetPaperCard: "Target Paper",
-    candidatePapers: "Choose Target Paper",
-    useThisPaper: "Use This Paper",
-    arxivId: "arXiv ID",
     summary: "Summary",
-    runPst: "Run PST-lite",
-    candidateNotice: "Candidate prior papers, not verified citations.",
     workspaceProgressTitle: "Workspace Progress",
     workspaceProgressSubtitle: "Follow the current pipeline stage and whether the process is still alive.",
     qaProgressPlan: "Draft query plan",
     qaProgressReview: "Confirm rewrite",
     qaProgressSearch: "Retrieve papers",
     qaProgressAnswer: "Stream answer",
-    pstProgressResolve: "Resolve target paper",
-    pstProgressConfirm: "Confirm target",
-    pstProgressTrace: "Trace prior work",
-    pstProgressExplain: "Stream PST explanation",
+    citationTraceTitle: "Citation Trace",
+    citationTraceRun: "Run Citation Trace",
+    citationTraceArxivUrl: "arXiv URL",
+    citationTracePdfFile: "PDF File",
+    citationTraceLoadArxiv: "Load arXiv Paper",
+    citationTraceLoadPdf: "Load PDF",
+    citationTraceProgressTitle: "Citation Trace Progress",
+    citationTraceProgressSubtitle: "Track source loading, reference expansion, and final ranking.",
+    citationTraceProgressLoad: "Load source",
+    citationTraceProgressReferences: "Resolve references",
+    citationTraceProgressRoundOne: "Score explicit references",
+    citationTraceProgressRoundTwo: "Explore related sources",
+    citationTraceProgressSynthesis: "Synthesize evidence",
+    citationTraceProgressTop5: "Finalize top 5",
+    citationTraceReadyToRun: "Load a paper to start citation tracing.",
+    citationTraceCompleted: "Citation trace completed.",
+    citationTraceFailed: "Citation trace failed.",
+    citationTraceWarning: "Warning",
+    citationTraceUrlRequired: "Please enter an arXiv URL.",
+    citationTraceFileRequired: "Please choose a PDF file first.",
+    citationTraceNoSession: "No citation trace session yet.",
+    finalTop5: "Final Top 5",
+    evidenceLedger: "Evidence Ledger",
+    exploratorySources: "Exploratory Sources",
+    citationTraceNoTop5: "No final top 5 yet.",
+    citationTraceNoExploratory: "No exploratory sources yet.",
+    citationTraceNoLedger: "No evidence ledger entries yet.",
     paperReaderMaxContextTokens: "Max Context Tokens",
     paperReaderTitle: "Paper Reader",
     paperReaderDescription: "Load one arXiv paper or local PDF, then read the original PDF directly with navigation and selected-text translation.",
@@ -185,11 +194,11 @@ const translations = {
   zh: {
     appTitle: "FastAPI + React 可视化工作台",
     searchTab: "搜索工作台",
+    citationTraceTab: "引用溯源",
     paperReaderTab: "论文精读",
     ingestTab: "入库管理",
     settingsTab: "设置",
     qaMode: "QA",
-    pstMode: "PST",
     saveDefaults: "保存默认配置",
     defaultsSaved: "默认配置已保存。",
     settingsTitle: "模型与运行配置",
@@ -202,7 +211,6 @@ const translations = {
     progressInterrupted: "已中断",
     noLogs: "暂时还没有日志。",
     noPapers: "还没有选中的论文。",
-    noCandidates: "没有候选目标论文。",
     vector: "向量分",
     rerank: "重排分",
     method: "方法",
@@ -264,9 +272,7 @@ const translations = {
     improvePlaceholder: "例如：限定成 cs.IR，或者更关注最近 12 个月。",
     improveRewrite: "继续优化改写",
     topPapers: "命中论文",
-    priorPaperCandidates: "候选先驱论文",
     answerStream: "回答流",
-    traceExplanation: "PST 解释",
     answerPlaceholder: "最终回答会显示在这里。",
     databaseOverview: "本地数据库概览",
     papers: "论文数",
@@ -276,13 +282,10 @@ const translations = {
     status: "状态",
     idle: "空闲",
     pleaseEnterQuestion: "请先输入问题。",
-    pleaseEnterTarget: "请输入 arXiv ID 或论文标题。",
     failedSaveDefaults: "保存默认配置失败。",
     failedGeneratePlan: "生成查询改写失败。",
     failedRefinePlan: "优化查询改写失败。",
     failedExecuteSearch: "执行搜索失败。",
-    failedResolveTarget: "解析目标论文失败。",
-    failedExecuteTrace: "执行 PST-lite 失败。",
     answerStreamFailed: "回答流失败。",
     failedStartIngest: "启动入库失败。",
     optionalOllamaBaseUrl: "可选的 Ollama 接口地址",
@@ -299,26 +302,40 @@ const translations = {
     implicitLatest: "隐式最新时间窗",
     publishedDate: "发布日期",
     primaryCategory: "主分类",
-    targetPaperQuery: "目标论文",
-    targetPaperPlaceholder: "输入 arXiv ID 或论文标题。",
-    resolveTargetPaper: "解析目标论文",
-    targetPaperCard: "目标论文",
-    candidatePapers: "选择目标论文",
-    useThisPaper: "使用这篇论文",
-    arxivId: "arXiv ID",
     summary: "摘要",
-    runPst: "运行 PST-lite",
-    candidateNotice: "这些是候选先驱论文，不是已验证引用。",
     workspaceProgressTitle: "工作台进度",
     workspaceProgressSubtitle: "显示当前流程走到哪一步，并用可视化状态标记进程是否仍在存活。",
     qaProgressPlan: "生成检索改写方案",
     qaProgressReview: "确认改写结果",
     qaProgressSearch: "检索候选论文",
     qaProgressAnswer: "流式生成回答",
-    pstProgressResolve: "解析目标论文",
-    pstProgressConfirm: "确认目标论文",
-    pstProgressTrace: "追踪先驱工作",
-    pstProgressExplain: "流式生成 PST 解释",
+    citationTraceTitle: "引用溯源",
+    citationTraceRun: "运行引用溯源",
+    citationTraceArxivUrl: "arXiv 链接",
+    citationTracePdfFile: "PDF 文件",
+    citationTraceLoadArxiv: "载入 arXiv 论文",
+    citationTraceLoadPdf: "载入 PDF",
+    citationTraceProgressTitle: "引用溯源进度",
+    citationTraceProgressSubtitle: "跟踪论文载入、引用扩展和最终排序。",
+    citationTraceProgressLoad: "载入来源",
+    citationTraceProgressReferences: "解析参考文献",
+    citationTraceProgressRoundOne: "评估显式引用",
+    citationTraceProgressRoundTwo: "探索相关来源",
+    citationTraceProgressSynthesis: "综合证据",
+    citationTraceProgressTop5: "生成 Top 5",
+    citationTraceReadyToRun: "载入一篇论文即可开始引用溯源。",
+    citationTraceCompleted: "引用溯源已完成。",
+    citationTraceFailed: "引用溯源失败。",
+    citationTraceWarning: "提醒",
+    citationTraceUrlRequired: "请先输入 arXiv 链接。",
+    citationTraceFileRequired: "请先选择一个 PDF 文件。",
+    citationTraceNoSession: "当前还没有引用溯源会话。",
+    finalTop5: "最终 Top 5",
+    evidenceLedger: "证据账本",
+    exploratorySources: "探索来源",
+    citationTraceNoTop5: "还没有最终 Top 5。",
+    citationTraceNoExploratory: "还没有探索来源。",
+    citationTraceNoLedger: "还没有证据账本记录。",
     paperReaderMaxContextTokens: "最大上下文 Token",
     paperReaderTitle: "论文精读",
     paperReaderDescription: "输入 arXiv 链接或上传本地 PDF，直接阅读原生 PDF，并使用导航与选区翻译。",
@@ -756,34 +773,6 @@ function buildQaWorkflowContext({
   };
 }
 
-function buildPstWorkflowContext({
-  query,
-  answerText,
-  answerLanguage,
-  papers,
-  targetPaper,
-  traceId,
-  retrievalSources,
-  sourceFreshness
-}) {
-  const { paper_ids, paper_titles } = normalizeAssistantPaperRefs(papers);
-  return {
-    kind: "pst",
-    answer_language: answerLanguage || null,
-    query: String(query || "").trim(),
-    answer_text: trimAssistantAnswerContext(answerText),
-    paper_ids,
-    paper_titles,
-    target_paper_id: targetPaper?.id || null,
-    metadata: {
-      target_paper_title: targetPaper?.title || null,
-      trace_id: traceId || null,
-      retrieval_sources: Array.isArray(retrievalSources) ? retrievalSources : [],
-      source_freshness: sourceFreshness || {}
-    }
-  };
-}
-
 function formatTimeWindow(constraints, t) {
   if (!constraints) {
     return t("none");
@@ -1104,95 +1093,13 @@ function RetrievalProviderSection({ providers, onChange, t }) {
   );
 }
 
-function TargetPaperCard({ paper, t, actionLabel, onAction }) {
-  if (!paper) {
-    return null;
-  }
-  return (
-    <section className="rewrite-card">
-      <h3>{t("targetPaperCard")}</h3>
-      <div className="detail-grid">
-        <div>
-          <strong>{t("arxivId")}</strong>
-          <p>{paper.arxiv_id || t("none")}</p>
-        </div>
-        <div>
-          <strong>{t("source")}</strong>
-          <p>{paper.source || t("none")}</p>
-        </div>
-        <div>
-          <strong>{t("publishedDate")}</strong>
-          <p>{paper.published_date || t("none")}</p>
-        </div>
-        <div>
-          <strong>{t("primaryCategory")}</strong>
-          <p>{paper.primary_category || t("none")}</p>
-        </div>
-        <div>
-          <strong>{t("authors")}</strong>
-          <p>{paper.authors?.length ? paper.authors.join(", ") : t("none")}</p>
-        </div>
-      </div>
-      <p>
-        <strong>{paper.title}</strong>
-      </p>
-      <p>{paper.summary || t("none")}</p>
-      {paper.external_url ? (
-        <p>
-          <a href={paper.external_url} target="_blank" rel="noreferrer">
-            {t("openSource")}
-          </a>
-        </p>
-      ) : null}
-      {actionLabel && onAction ? <button onClick={onAction}>{actionLabel}</button> : null}
-    </section>
-  );
-}
-
-function CandidateList({ candidates, onSelect, t }) {
-  if (!candidates.length) {
-    return <p className="muted">{t("noCandidates")}</p>;
-  }
-  return (
-    <section>
-      <h3>{t("candidatePapers")}</h3>
-      <div className="paper-list">
-        {candidates.map((candidate) => (
-          <article key={candidate.id} className="paper-card">
-            <h4>{candidate.title}</h4>
-            <div className="tag-list">
-              <span className="tag">{`${t("source")}: ${candidate.source || t("none")}`}</span>
-              {candidate.arxiv_id ? <span className="tag">{`${t("arxivId")}: ${candidate.arxiv_id}`}</span> : null}
-              {candidate.published_date ? <span className="tag">{`${t("publishedDate")}: ${candidate.published_date}`}</span> : null}
-              {candidate.primary_category ? <span className="tag">{`${t("primaryCategory")}: ${candidate.primary_category}`}</span> : null}
-            </div>
-            <p>{candidate.summary || t("none")}</p>
-            {candidate.external_url ? (
-              <p>
-                <a href={candidate.external_url} target="_blank" rel="noreferrer">
-                  {t("openSource")}
-                </a>
-              </p>
-            ) : null}
-            <button onClick={() => onSelect(candidate)}>{t("useThisPaper")}</button>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 export default function App() {
   const [language, setLanguage] = useState(getInitialLanguage);
   const [activeTab, setActiveTab] = useState("search");
-  const [workspaceMode, setWorkspaceMode] = useState("qa");
   const [settings, setSettings] = useState(null);
   const [question, setQuestion] = useState("");
   const [queryPlan, setQueryPlan] = useState(null);
   const [feedback, setFeedback] = useState("");
-  const [traceQuery, setTraceQuery] = useState("");
-  const [resolvedTarget, setResolvedTarget] = useState(null);
-  const [traceCandidates, setTraceCandidates] = useState([]);
   const [papers, setPapers] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [answer, setAnswer] = useState("");
@@ -1204,19 +1111,11 @@ export default function App() {
   const [assistantSessionId, setAssistantSessionId] = useState(getOrCreateAssistantSessionId);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  const [workspaceProgressByMode, setWorkspaceProgressByMode] = useState({
-    qa: {
-      step: "plan",
-      status: "idle",
-      detail: "",
-      updatedAt: null
-    },
-    pst: {
-      step: "resolve",
-      status: "idle",
-      detail: "",
-      updatedAt: null
-    }
+  const [workspaceProgress, setWorkspaceProgress] = useState({
+    step: "plan",
+    status: "idle",
+    detail: "",
+    updatedAt: null
   });
   const [modelCatalogs, setModelCatalogs] = useState(buildInitialModelCatalogs);
   const [appliedConstraints, setAppliedConstraints] = useState(null);
@@ -1246,23 +1145,14 @@ export default function App() {
     [language, providerOptions]
   );
   const runtimePayload = useMemo(() => (settings ? buildRuntimeRequest(settings) : null), [settings]);
-  const workspaceProgress = workspaceProgressByMode[workspaceMode] || workspaceProgressByMode.qa;
   const workspaceProgressSteps = useMemo(() => {
-    if (workspaceMode === "pst") {
-      return [
-        { key: "resolve", label: t("pstProgressResolve") },
-        { key: "confirm", label: t("pstProgressConfirm") },
-        { key: "trace", label: t("pstProgressTrace") },
-        { key: "answer", label: t("pstProgressExplain") }
-      ];
-    }
     return [
       { key: "plan", label: t("qaProgressPlan") },
       { key: "review", label: t("qaProgressReview") },
       { key: "search", label: t("qaProgressSearch") },
       { key: "answer", label: t("qaProgressAnswer") }
     ];
-  }, [workspaceMode, t]);
+  }, [t]);
   const progressStatusLabels = useMemo(
     () => ({
       idle: t("progressIdle"),
@@ -1289,16 +1179,13 @@ export default function App() {
     };
   }, []);
 
-  function updateWorkspaceProgress(mode, step, status, detail = "") {
-    setWorkspaceProgressByMode((current) => ({
-      ...current,
-      [mode]: {
-        step,
-        status,
-        detail,
-        updatedAt: new Date().toISOString()
-      }
-    }));
+  function updateWorkspaceProgress(step, status, detail = "") {
+    setWorkspaceProgress({
+      step,
+      status,
+      detail,
+      updatedAt: new Date().toISOString()
+    });
   }
 
   async function loadConfig() {
@@ -1496,7 +1383,7 @@ export default function App() {
     }
     setBusy(true);
     setMessage("");
-    updateWorkspaceProgress("qa", "plan", "running", t("qaProgressPlan"));
+    updateWorkspaceProgress("plan", "running", t("qaProgressPlan"));
     try {
       const response = await fetch("/api/search/plan", {
         method: "POST",
@@ -1509,13 +1396,11 @@ export default function App() {
       }
       setQueryPlan(data);
       resetSearchOutputs();
-      setResolvedTarget(null);
-      setTraceCandidates([]);
       setCorpusLatestDate(data.corpus_latest_date || null);
-      updateWorkspaceProgress("qa", "review", "ready", t("qaProgressReview"));
+      updateWorkspaceProgress("review", "ready", t("qaProgressReview"));
     } catch (error) {
       setMessage(String(error));
-      updateWorkspaceProgress("qa", "plan", "interrupted", String(error));
+      updateWorkspaceProgress("plan", "interrupted", String(error));
     } finally {
       setBusy(false);
     }
@@ -1527,7 +1412,7 @@ export default function App() {
     }
     setBusy(true);
     setMessage("");
-    updateWorkspaceProgress("qa", "plan", "running", t("qaProgressPlan"));
+    updateWorkspaceProgress("plan", "running", t("qaProgressPlan"));
     try {
       const response = await fetch("/api/search/plan/refine", {
         method: "POST",
@@ -1546,33 +1431,23 @@ export default function App() {
       setQueryPlan(data);
       setFeedback("");
       setCorpusLatestDate(data.corpus_latest_date || null);
-      updateWorkspaceProgress("qa", "review", "ready", t("qaProgressReview"));
+      updateWorkspaceProgress("review", "ready", t("qaProgressReview"));
     } catch (error) {
       setMessage(String(error));
-      updateWorkspaceProgress("qa", "plan", "interrupted", String(error));
+      updateWorkspaceProgress("plan", "interrupted", String(error));
     } finally {
       setBusy(false);
     }
   }
 
-  function streamFrom(path, autoReplySource, buildWorkflowContext, progressMode) {
+  function streamFrom(path, autoReplySource, buildWorkflowContext) {
     answerSourceRef.current?.close();
     answerBufferRef.current = "";
-    updateWorkspaceProgress(
-      progressMode,
-      "answer",
-      "running",
-      progressMode === "qa" ? t("qaProgressAnswer") : t("pstProgressExplain")
-    );
+    updateWorkspaceProgress("answer", "running", t("qaProgressAnswer"));
     const source = new EventSource(path);
     answerSourceRef.current = source;
     source.onopen = () => {
-      updateWorkspaceProgress(
-        progressMode,
-        "answer",
-        "running",
-        progressMode === "qa" ? t("qaProgressAnswer") : t("pstProgressExplain")
-      );
+      updateWorkspaceProgress("answer", "running", t("qaProgressAnswer"));
     };
     source.addEventListener("token", (event) => {
       const payload = JSON.parse(event.data);
@@ -1595,18 +1470,13 @@ export default function App() {
           workflowContext
         });
       }
-      updateWorkspaceProgress(
-        progressMode,
-        "answer",
-        "completed",
-        progressMode === "qa" ? t("qaProgressAnswer") : t("pstProgressExplain")
-      );
+      updateWorkspaceProgress("answer", "completed", t("qaProgressAnswer"));
       source.close();
     });
     source.onerror = () => {
       source.close();
       setMessage(t("answerStreamFailed"));
-      updateWorkspaceProgress(progressMode, "answer", "interrupted", t("answerStreamFailed"));
+      updateWorkspaceProgress("answer", "interrupted", t("answerStreamFailed"));
     };
   }
 
@@ -1614,7 +1484,7 @@ export default function App() {
     setBusy(true);
     setMessage("");
     setAnswer("");
-    updateWorkspaceProgress("qa", "search", "running", t("qaProgressSearch"));
+    updateWorkspaceProgress("search", "running", t("qaProgressSearch"));
     try {
       const response = await fetch("/api/search/execute", {
         method: "POST",
@@ -1651,12 +1521,11 @@ export default function App() {
             searchId: data.search_id,
             retrievalSources: data.retrieval_sources || [],
             sourceFreshness: data.source_freshness || {}
-          }),
-        "qa"
+          })
       );
     } catch (error) {
       setMessage(String(error));
-      updateWorkspaceProgress("qa", "search", "interrupted", String(error));
+      updateWorkspaceProgress("search", "interrupted", String(error));
     } finally {
       setBusy(false);
     }
@@ -1669,96 +1538,6 @@ export default function App() {
     }
     setPendingPaperReaderUrl(resolvedUrl);
     setActiveTab("paper_reader");
-  }
-
-  async function resolveTraceTarget() {
-    if (!traceQuery.trim()) {
-      setMessage(t("pleaseEnterTarget"));
-      return;
-    }
-    setBusy(true);
-    setMessage("");
-    updateWorkspaceProgress("pst", "resolve", "running", t("pstProgressResolve"));
-    try {
-      const response = await fetch("/api/trace/resolve-target", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: traceQuery })
-      });
-      const data = await readJsonWithDetailFallback(response);
-      if (!response.ok) {
-        throw new Error(data.detail || t("failedResolveTarget"));
-      }
-      resetSearchOutputs();
-      setQueryPlan(null);
-      setFeedback("");
-      setResolvedTarget(data.resolved_target || null);
-      setTraceCandidates(data.status === "ambiguous" ? data.candidates || [] : []);
-      setMessage(data.message || "");
-      if (data.status === "not_found") {
-        setResolvedTarget(null);
-        setTraceCandidates([]);
-        updateWorkspaceProgress("pst", "resolve", "interrupted", data.message || t("failedResolveTarget"));
-      } else {
-        updateWorkspaceProgress("pst", "confirm", "ready", data.message || t("pstProgressConfirm"));
-      }
-    } catch (error) {
-      setMessage(String(error));
-      updateWorkspaceProgress("pst", "resolve", "interrupted", String(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function executeTrace(targetPaper) {
-    setBusy(true);
-    setMessage("");
-    setAnswer("");
-    updateWorkspaceProgress("pst", "trace", "running", t("pstProgressTrace"));
-    try {
-      const response = await fetch("/api/trace/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          target_id: targetPaper.id,
-          answer_language: language,
-          settings: runtimePayload
-        })
-      });
-      const data = await readJsonWithDetailFallback(response);
-      if (!response.ok) {
-        throw new Error(data.detail || t("failedExecuteTrace"));
-      }
-      setResolvedTarget(data.target_paper);
-      setTraceCandidates([]);
-      setPapers(data.papers);
-      setWarnings(data.warnings || []);
-      setAppliedConstraints(null);
-      setCorpusLatestDate(null);
-      setRetrievalSources(data.retrieval_sources || []);
-      setSourceFreshness(data.source_freshness || {});
-      streamFrom(
-        `/api/trace/${data.trace_id}/answer/stream`,
-        "pst_auto",
-        (answerText) =>
-          buildPstWorkflowContext({
-            query: traceQuery,
-            answerText,
-            answerLanguage: language,
-            papers: data.papers,
-            targetPaper: data.target_paper || targetPaper,
-            traceId: data.trace_id,
-            retrievalSources: data.retrieval_sources || [],
-            sourceFreshness: data.source_freshness || {}
-          }),
-        "pst"
-      );
-    } catch (error) {
-      setMessage(String(error));
-      updateWorkspaceProgress("pst", "trace", "interrupted", String(error));
-    } finally {
-      setBusy(false);
-    }
   }
 
   function startIngestStream(jobId) {
@@ -1826,6 +1605,9 @@ export default function App() {
             <button className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>
               {t("searchTab")}
             </button>
+            <button className={activeTab === "citation_trace" ? "active" : ""} onClick={() => setActiveTab("citation_trace")}>
+              {t("citationTraceTab")}
+            </button>
             <button className={activeTab === "paper_reader" ? "active" : ""} onClick={() => setActiveTab("paper_reader")}>
               {t("paperReaderTab")}
             </button>
@@ -1843,15 +1625,6 @@ export default function App() {
       {activeTab === "search" ? (
         <div className="search-layout">
           <section className="workspace search-main">
-            <div className="tab-row">
-              <button className={workspaceMode === "qa" ? "active" : "secondary"} onClick={() => setWorkspaceMode("qa")}>
-                {t("qaMode")}
-              </button>
-              <button className={workspaceMode === "pst" ? "active" : "secondary"} onClick={() => setWorkspaceMode("pst")}>
-                {t("pstMode")}
-              </button>
-            </div>
-
             <ProgressTracker
               title={t("workspaceProgressTitle")}
               subtitle={t("workspaceProgressSubtitle")}
@@ -1863,117 +1636,78 @@ export default function App() {
               updatedAt={workspaceProgress.updatedAt}
             />
 
-            {workspaceMode === "qa" ? (
-              <>
-                <div className="question-box">
-                  <label>
-                    {t("researchQuestion")}
-                    <textarea
-                      value={question}
-                      onChange={(event) => setQuestion(event.target.value)}
-                      rows={4}
-                      placeholder={t("questionPlaceholder")}
-                    />
-                  </label>
-                  <button onClick={requestPlan} disabled={busy}>
-                    {busy ? t("working") : t("generateQueryPlan")}
+            <div className="question-box">
+              <label>
+                {t("researchQuestion")}
+                <textarea
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  rows={4}
+                  placeholder={t("questionPlaceholder")}
+                />
+              </label>
+              <button onClick={requestPlan} disabled={busy}>
+                {busy ? t("working") : t("generateQueryPlan")}
+              </button>
+            </div>
+
+            {queryPlan ? (
+              <section className="rewrite-card">
+                <h3>{t("rewriteConfirmation")}</h3>
+                <p>
+                  <strong>{t("original")}:</strong> {question}
+                </p>
+                <p>
+                  <strong>{t("intentSummary")}:</strong> {queryPlan.intent_summary}
+                </p>
+                <p>
+                  <strong>{t("retrievalQuery")}:</strong> {queryPlan.retrieval_query_en}
+                </p>
+                <p>
+                  <strong>{t("keywords")}:</strong> {queryPlan.keywords_en.join(", ") || t("none")}
+                </p>
+                <ConstraintBlock
+                  constraints={queryPlan.constraints}
+                  corpusLatestDate={queryPlan.corpus_latest_date}
+                  retrievalSources={retrievalSources}
+                  sourceFreshness={sourceFreshness}
+                  t={t}
+                />
+                <div className="action-row">
+                  <button onClick={() => executeSearch(buildRetrievalText(queryPlan), queryPlan)} disabled={busy}>
+                    {t("useRewrite")}
+                  </button>
+                  <button className="secondary" onClick={() => executeSearch(question, queryPlan)} disabled={busy}>
+                    {t("useOriginal")}
                   </button>
                 </div>
-
-                {queryPlan ? (
-                  <section className="rewrite-card">
-                    <h3>{t("rewriteConfirmation")}</h3>
-                    <p>
-                      <strong>{t("original")}:</strong> {question}
-                    </p>
-                    <p>
-                      <strong>{t("intentSummary")}:</strong> {queryPlan.intent_summary}
-                    </p>
-                    <p>
-                      <strong>{t("retrievalQuery")}:</strong> {queryPlan.retrieval_query_en}
-                    </p>
-                    <p>
-                      <strong>{t("keywords")}:</strong> {queryPlan.keywords_en.join(", ") || t("none")}
-                    </p>
-                    <ConstraintBlock
-                      constraints={queryPlan.constraints}
-                      corpusLatestDate={queryPlan.corpus_latest_date}
-                      retrievalSources={retrievalSources}
-                      sourceFreshness={sourceFreshness}
-                      t={t}
-                    />
-                    <div className="action-row">
-                      <button onClick={() => executeSearch(buildRetrievalText(queryPlan), queryPlan)} disabled={busy}>
-                        {t("useRewrite")}
-                      </button>
-                      <button className="secondary" onClick={() => executeSearch(question, queryPlan)} disabled={busy}>
-                        {t("useOriginal")}
-                      </button>
-                    </div>
-                    <label>
-                      {t("improvePrompt")}
-                      <textarea
-                        value={feedback}
-                        onChange={(event) => setFeedback(event.target.value)}
-                        rows={3}
-                        placeholder={t("improvePlaceholder")}
-                      />
-                    </label>
-                    <button className="secondary" onClick={refinePlan} disabled={busy || !feedback.trim()}>
-                      {t("improveRewrite")}
-                    </button>
-                  </section>
-                ) : null}
-
-                {appliedConstraints ? (
-                  <section>
-                    <h3>{t("appliedConstraints")}</h3>
-                    <ConstraintBlock
-                      constraints={appliedConstraints}
-                      corpusLatestDate={corpusLatestDate}
-                      retrievalSources={retrievalSources}
-                      sourceFreshness={sourceFreshness}
-                      t={t}
-                    />
-                  </section>
-                ) : null}
-              </>
-            ) : (
-              <>
-                <div className="question-box">
-                  <label>
-                    {t("targetPaperQuery")}
-                    <textarea
-                      value={traceQuery}
-                      onChange={(event) => setTraceQuery(event.target.value)}
-                      rows={3}
-                      placeholder={t("targetPaperPlaceholder")}
-                    />
-                  </label>
-                  <button onClick={resolveTraceTarget} disabled={busy}>
-                    {busy ? t("working") : t("resolveTargetPaper")}
-                  </button>
-                </div>
-
-                {resolvedTarget ? (
-                  <TargetPaperCard paper={resolvedTarget} t={t} actionLabel={t("runPst")} onAction={() => executeTrace(resolvedTarget)} />
-                ) : null}
-
-                {!resolvedTarget && traceCandidates.length ? (
-                  <CandidateList
-                    candidates={traceCandidates}
-                    onSelect={(candidate) => {
-                      setResolvedTarget(candidate);
-                      setTraceCandidates([]);
-                      setMessage("");
-                    }}
-                    t={t}
+                <label>
+                  {t("improvePrompt")}
+                  <textarea
+                    value={feedback}
+                    onChange={(event) => setFeedback(event.target.value)}
+                    rows={3}
+                    placeholder={t("improvePlaceholder")}
                   />
-                ) : null}
+                </label>
+                <button className="secondary" onClick={refinePlan} disabled={busy || !feedback.trim()}>
+                  {t("improveRewrite")}
+                </button>
+              </section>
+            ) : null}
 
-                <p className="muted">{t("candidateNotice")}</p>
-              </>
-            )}
+            {appliedConstraints ? (
+              <section>
+                <h3>{t("appliedConstraints")}</h3>
+                <ConstraintBlock
+                  constraints={appliedConstraints}
+                  corpusLatestDate={corpusLatestDate}
+                  retrievalSources={retrievalSources}
+                  sourceFreshness={sourceFreshness}
+                  t={t}
+                />
+              </section>
+            ) : null}
             {warnings.length ? (
               <div className="warning-box">
                 {warnings.map((warning) => (
@@ -1983,12 +1717,12 @@ export default function App() {
             ) : null}
 
             <section>
-              <h3>{workspaceMode === "qa" ? t("topPapers") : t("priorPaperCandidates")}</h3>
+              <h3>{t("topPapers")}</h3>
               <PaperList papers={papers} t={t} onReadPaper={openPaperReaderFromSearch} />
             </section>
 
             <section>
-              <h3>{workspaceMode === "qa" ? t("answerStream") : t("traceExplanation")}</h3>
+              <h3>{t("answerStream")}</h3>
               <div className="answer-box">{answer || <span className="muted">{t("answerPlaceholder")}</span>}</div>
             </section>
           </section>
@@ -1997,6 +1731,16 @@ export default function App() {
             {renderAssistantLayer()}
           </aside>
         </div>
+      ) : null}
+
+      {activeTab === "citation_trace" ? (
+        <CitationTracePage
+          language={language}
+          t={t}
+          runtimePayload={runtimePayload}
+          onAssistantAutoReply={setAssistantAutoReply}
+          renderAssistantLayer={renderAssistantLayer}
+        />
       ) : null}
 
       {activeTab === "paper_reader" ? (
