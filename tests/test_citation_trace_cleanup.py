@@ -29,11 +29,17 @@ class CitationTraceCleanupTest(unittest.TestCase):
             ROOT / "frontend/src/App.jsx",
             ROOT / "frontend/src/CitationTracePage.jsx",
         ]
-        joined = "\n".join(path.read_text() for path in files)
         legacy_trace_source = "pst" + "_auto"
         legacy_workflow_label = "QA / " + "PST"
 
-        self.assertIn("citation_trace_auto", joined)
+        for path in files:
+            with self.subTest(path=str(path.relative_to(ROOT))):
+                self.assertIn("citation_trace_auto", path.read_text())
+
+        live2d_source = (ROOT / "backend/live2d_service.py").read_text()
+        self.assertIn('source == "citation_trace_auto"', live2d_source)
+
+        joined = "\n".join(path.read_text() for path in files)
         self.assertNotIn(legacy_trace_source, joined)
         self.assertNotIn(legacy_workflow_label, joined)
 

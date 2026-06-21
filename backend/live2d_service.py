@@ -584,7 +584,12 @@ def _build_live2d_messages(
                 " Return JSON only."
             )
         else:
-            workflow_label = "QA" if source == "qa_auto" else "Citation Trace"
+            if source == "qa_auto":
+                workflow_label = "QA"
+            elif source == "citation_trace_auto":
+                workflow_label = "Citation Trace"
+            else:
+                workflow_label = "workflow"
             auto_prompt = (
                 f"The {workflow_label} workflow just finished."
                 " Without waiting for user input, send one concise proactive follow-up based on the linked workflow answer."

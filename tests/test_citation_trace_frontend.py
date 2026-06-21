@@ -15,7 +15,7 @@ class CitationTraceFrontendTest(unittest.TestCase):
         self.assertIn("citationTraceTab", text)
         self.assertNotIn("pstMode", text)
         self.assertNotIn('workspaceMode === "pst"', text)
-        self.assertNotIn("pst_auto", text)
+        self.assertNotIn("pst" + "_auto", text)
         self.assertNotIn("/api/trace/", text)
 
     def test_citation_trace_page_contains_required_sections(self):
