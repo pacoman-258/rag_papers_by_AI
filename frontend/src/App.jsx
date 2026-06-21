@@ -1274,6 +1274,14 @@ export default function App() {
     });
   }
 
+  function scheduleCitationTraceAssistantAutoReply(payload) {
+    scheduleAssistantAutoReply({
+      source: "citation_trace_auto",
+      answerContext: payload?.answerContext,
+      workflowContext: payload?.workflowContext || null
+    });
+  }
+
   function updateAssistantLinkedContext(context) {
     const trimmed = trimAssistantAnswerContext(context?.answerContext);
     const workflowContext =
@@ -1738,7 +1746,7 @@ export default function App() {
           language={language}
           t={t}
           runtimePayload={runtimePayload}
-          onAssistantAutoReply={setAssistantAutoReply}
+          onAssistantAutoReply={scheduleCitationTraceAssistantAutoReply}
           renderAssistantLayer={renderAssistantLayer}
         />
       ) : null}

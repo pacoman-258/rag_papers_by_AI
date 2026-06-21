@@ -431,8 +431,8 @@ def _build_event_text(
         return _safe_text(answer_context)
     if source == "qa_auto":
         return "[QA workflow auto follow-up trigger]"
-    if source == "pst_auto":
-        return "[PST workflow auto follow-up trigger]"
+    if source == "citation_trace_auto":
+        return "[Citation Trace workflow auto follow-up trigger]"
     return "[Empty user message]"
 
 

@@ -21,6 +21,22 @@ class CitationTraceCleanupTest(unittest.TestCase):
         self.assertNotIn("trace_once", text)
         self.assertNotIn("PST", text)
 
+    def test_assistant_source_uses_citation_trace_auto_not_legacy_trace_source(self):
+        files = [
+            ROOT / "backend/schemas.py",
+            ROOT / "backend/live2d_service.py",
+            ROOT / "backend/assistant_memory.py",
+            ROOT / "frontend/src/App.jsx",
+            ROOT / "frontend/src/CitationTracePage.jsx",
+        ]
+        joined = "\n".join(path.read_text() for path in files)
+        legacy_trace_source = "pst" + "_auto"
+        legacy_workflow_label = "QA / " + "PST"
+
+        self.assertIn("citation_trace_auto", joined)
+        self.assertNotIn(legacy_trace_source, joined)
+        self.assertNotIn(legacy_workflow_label, joined)
+
 
 if __name__ == "__main__":
     unittest.main()

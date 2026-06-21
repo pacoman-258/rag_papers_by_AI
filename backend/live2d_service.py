@@ -246,14 +246,14 @@ def _fallback_live2d_reply(source: str, workflow_kind: str, reply_language: str)
         if source == "user" and workflow_kind == "paper_reader":
             return "I can keep unpacking this page with you. If you want, I can explain the method, point out the key evidence, or guide you into the next section."
         if source == "user":
-            return "I'm here. We can keep talking through your question, or you can run QA / PST first and I'll help you interpret the result."
+            return "I'm here. We can keep talking through your question, or you can run QA / Citation Trace first and I'll help you interpret the result."
         if workflow_kind == "paper_reader":
             return "I've caught up with this page. If you want, I can highlight the key point, explain the method, or suggest what to read next."
         return "I've read the latest result. If you want, I can break the key point down more clearly."
     if source == "user" and workflow_kind == "paper_reader":
         return "我可以继续陪你拆解这一页。如果你愿意，我可以解释方法、指出关键证据，或者带你进入下一部分。"
     if source == "user":
-        return "我在呢，可以继续和我聊你的问题，或者先运行一次 QA / PST，我再帮你解读结果。"
+        return "我在呢，可以继续和我聊你的问题，或者先运行一次 QA / 论文溯源，我再帮你解读结果。"
     if workflow_kind == "paper_reader":
         return "这一页我已经接上了。如果你愿意，我可以继续帮你解释方法、提醒关键点，或者带你看下一部分。"
     return "我看完最新结果了。如果你愿意，我可以继续帮你把关键点拆得更清楚。"
@@ -474,7 +474,7 @@ Behavior rules:
 - If long-term memory hints are provided, use them as soft personalization signals.
 - Do not claim certainty when memory hints might be outdated.
 - If no workflow answer context exists, behave like a normal chatbot.
-- For automatic QA/PST follow-ups, do not wait for user input. Send one concise suggestion or clarification.
+- For automatic QA/Citation Trace follow-ups, do not wait for user input. Send one concise suggestion or clarification.
 - Avoid markdown tables and long lists.
 - Only keep a very short English paper phrase when you are directly quoting the original wording; all explanation around it must stay in {reply_language_name}.
 {paper_reader_rules}
@@ -584,7 +584,7 @@ def _build_live2d_messages(
                 " Return JSON only."
             )
         else:
-            workflow_label = "QA" if source == "qa_auto" else "PST"
+            workflow_label = "QA" if source == "qa_auto" else "Citation Trace"
             auto_prompt = (
                 f"The {workflow_label} workflow just finished."
                 " Without waiting for user input, send one concise proactive follow-up based on the linked workflow answer."

@@ -17,7 +17,8 @@ class PaperReaderLive2DBehaviorTest(unittest.TestCase):
 
         self.assertIn("function scheduleAssistantAutoReply", app_source)
         self.assertIn("qa_auto", app_source)
-        self.assertIn("pst_auto", app_source)
+        self.assertNotIn("pst" + "_auto", app_source)
+        self.assertIn("citation_trace_auto", app_source)
 
 
 if __name__ == "__main__":
