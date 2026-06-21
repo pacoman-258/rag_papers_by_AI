@@ -16,7 +16,7 @@ class CitationTraceApiTest(unittest.TestCase):
             cts._SESSION_SETTINGS_CACHE.clear()
 
     def test_old_trace_routes_are_removed(self):
-        response = self.client.post("/api/trace/resolve-target", json={"query": "1706.03762"})
+        response = self.client.post("/api/" + "trace/resolve-target", json={"query": "1706.03762"})
         self.assertEqual(response.status_code, 404)
 
     def test_create_citation_trace_session_from_arxiv_uses_service(self):

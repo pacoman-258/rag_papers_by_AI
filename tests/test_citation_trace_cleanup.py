@@ -9,17 +9,17 @@ class CitationTraceCleanupTest(unittest.TestCase):
     def test_search_service_no_longer_exposes_pst_trace_execution(self):
         text = (ROOT / "local_paper_db/app/search_service.py").read_text()
 
-        self.assertNotIn("TraceExecution", text)
-        self.assertNotIn("execute_trace", text)
-        self.assertNotIn("stream_trace_answer_tokens", text)
-        self.assertNotIn("PST-lite", text)
+        self.assertNotIn("Trace" + "Execution", text)
+        self.assertNotIn("execute" + "_trace", text)
+        self.assertNotIn("stream_trace" + "_answer_tokens", text)
+        self.assertNotIn("P" + "ST-lite", text)
 
     def test_cli_no_longer_exposes_trace_flag(self):
         text = (ROOT / "local_paper_db/app/search.py").read_text()
 
         self.assertNotIn("--trace", text)
         self.assertNotIn("trace_once", text)
-        self.assertNotIn("PST", text)
+        self.assertNotIn("P" + "ST", text)
 
     def test_assistant_source_uses_citation_trace_auto_not_legacy_trace_source(self):
         files = [
@@ -30,7 +30,7 @@ class CitationTraceCleanupTest(unittest.TestCase):
             ROOT / "frontend/src/CitationTracePage.jsx",
         ]
         legacy_trace_source = "pst" + "_auto"
-        legacy_workflow_label = "QA / " + "PST"
+        legacy_workflow_label = "QA / " + "P" + "ST"
 
         for path in files:
             with self.subTest(path=str(path.relative_to(ROOT))):
@@ -49,8 +49,8 @@ class CitationTraceCleanupTest(unittest.TestCase):
 
         self.assertIn("Citation Trace", readme)
         self.assertIn("论文溯源", zh)
-        self.assertNotIn("PST-lite", readme)
-        self.assertNotIn("PST-lite", zh)
+        self.assertNotIn("P" + "ST-lite", readme)
+        self.assertNotIn("P" + "ST-lite", zh)
 
 
 if __name__ == "__main__":

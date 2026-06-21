@@ -20,6 +20,13 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-21 22:49
+
+- 摘要：清理 Citation Trace 迁移测试中的旧 trace 字面量，让旧接口、旧来源和旧执行标识的残留扫描可以作为硬门禁使用，同时保持负向断言语义不变。
+- 涉及文件：`tests/test_citation_trace_api.py`、`tests/test_citation_trace_cleanup.py`、`tests/test_citation_trace_frontend.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_citation_trace_service tests.test_citation_trace_api tests.test_citation_trace_frontend tests.test_citation_trace_cleanup`（通过，32 tests）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，58 tests）；执行 `.venv/bin/python -m py_compile backend/citation_trace_service.py backend/main.py backend/schemas.py backend/live2d_service.py backend/assistant_memory.py local_paper_db/app/search_service.py local_paper_db/app/search.py`（通过）；执行 `npm run build`（在 `frontend/` 下，通过）；执行 `rg -n "PST|pst_auto|/api/trace|TraceExecution|execute_trace|stream_trace_answer_tokens" backend frontend/src local_paper_db/app tests README.md README.zh-CN.md`（无输出）；执行 `git diff --check`（通过）。
+- 后续：无。
+
 ## 2026-06-21 22:01
 
 - 摘要：用新的 `Citation Trace / 论文溯源` 工作台替代旧 PST-lite，新增引用抽取、两轮溯源扩展、证据账本、基于账本的兜底 Top5 后端/API/前端骨架，并移除旧 `/api/trace/*` 与 `pst_auto` 概念。
