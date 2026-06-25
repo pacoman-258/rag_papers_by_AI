@@ -2,6 +2,7 @@ import { Component, useEffect, useMemo, useRef, useState } from "react";
 import CitationTracePage from "./CitationTracePage.jsx";
 import PaperReaderPage from "./PaperReaderPage.jsx";
 import ProgressTracker from "./ProgressTracker.jsx";
+import ResearchProfilePage from "./ResearchProfilePage.jsx";
 
 const translations = {
   en: {
@@ -9,6 +10,7 @@ const translations = {
     searchTab: "Search Workspace",
     citationTraceTab: "Citation Trace",
     paperReaderTab: "Paper Reader",
+    researchProfileTab: "Research Profile",
     ingestTab: "Ingest Manager",
     settingsTab: "Settings",
     qaMode: "QA",
@@ -40,6 +42,8 @@ const translations = {
     answerChat: "Answer Chat",
     paperReaderChatModel: "Paper Reader Chat",
     paperReaderTranslationModel: "PDF Selection Translation",
+    citationTraceMainModel: "Citation Trace Main Model",
+    citationTraceWorkerModel: "Citation Trace Worker Model",
     embedding: "Embedding",
     ollamaApiUrl: "Ollama API URL",
     embeddingModel: "Embedding Model",
@@ -87,6 +91,13 @@ const translations = {
     topPapers: "Top Papers",
     answerStream: "Answer Stream",
     answerPlaceholder: "The answer will stream here.",
+    globalSelectionTranslation: "Selection Translation",
+    globalSelectionTranslationHeading: "Translation card",
+    globalSelectionTranslationEmpty: "Select text on this page to translate it.",
+    globalSelectionTranslationRunning: "Translating",
+    selectedOriginalLabel: "Selected text",
+    translationOnlyLabel: "Translation",
+    translateSelectionButton: "Translate selection",
     databaseOverview: "Local Database Overview",
     papers: "Papers",
     embeddings: "Embeddings",
@@ -129,13 +140,18 @@ const translations = {
     citationTraceLoadArxiv: "Load arXiv Paper",
     citationTraceLoadPdf: "Load PDF",
     citationTraceProgressTitle: "Citation Trace Progress",
-    citationTraceProgressSubtitle: "Track source loading, reference expansion, and final ranking.",
+    citationTraceProgressSubtitle: "Track source loading, Top 15 recall, LLM assessment, and final ranking.",
     citationTraceProgressLoad: "Load source",
     citationTraceProgressReferences: "Resolve references",
-    citationTraceProgressRoundOne: "Score explicit references",
+    citationTraceProgressCandidateRecall: "Recall Top 15 candidates",
+    citationTraceProgressWorkerAssessment: "Analyze Top 15 candidates",
+    citationTraceProgressMainRanking: "Rank final Top 5",
+    citationTraceProgressRoundOne: "Recall Top 15 candidates",
     citationTraceProgressRoundTwo: "Explore related sources",
-    citationTraceProgressSynthesis: "Synthesize evidence",
+    citationTraceProgressSynthesis: "Rank final Top 5",
     citationTraceProgressTop5: "Finalize top 5",
+    citationTraceCandidateTop15: "Top 15 Candidates",
+    citationTraceReferenceText: "Original Reference Snippet",
     citationTraceReadyToRun: "Load a paper to start citation tracing.",
     citationTraceCompleted: "Citation trace completed.",
     citationTraceFailed: "Citation trace failed.",
@@ -196,6 +212,7 @@ const translations = {
     searchTab: "搜索工作台",
     citationTraceTab: "引用溯源",
     paperReaderTab: "论文精读",
+    researchProfileTab: "研究画像",
     ingestTab: "入库管理",
     settingsTab: "设置",
     qaMode: "QA",
@@ -227,6 +244,8 @@ const translations = {
     answerChat: "最终回答模型",
     paperReaderChatModel: "论文精读解析模型",
     paperReaderTranslationModel: "原文卡片翻译模型",
+    citationTraceMainModel: "引用溯源主模型",
+    citationTraceWorkerModel: "引用溯源副模型",
     embedding: "Embedding",
     ollamaApiUrl: "Ollama API 地址",
     embeddingModel: "Embedding 模型",
@@ -274,6 +293,13 @@ const translations = {
     topPapers: "命中论文",
     answerStream: "回答流",
     answerPlaceholder: "最终回答会显示在这里。",
+    globalSelectionTranslation: "选区翻译",
+    globalSelectionTranslationHeading: "翻译卡片",
+    globalSelectionTranslationEmpty: "选中页面文字后可翻译。",
+    globalSelectionTranslationRunning: "翻译中",
+    selectedOriginalLabel: "选中文本",
+    translationOnlyLabel: "译文",
+    translateSelectionButton: "翻译选区",
     databaseOverview: "本地数据库概览",
     papers: "论文数",
     embeddings: "向量数",
@@ -316,13 +342,18 @@ const translations = {
     citationTraceLoadArxiv: "载入 arXiv 论文",
     citationTraceLoadPdf: "载入 PDF",
     citationTraceProgressTitle: "引用溯源进度",
-    citationTraceProgressSubtitle: "跟踪论文载入、引用扩展和最终排序。",
+    citationTraceProgressSubtitle: "跟踪论文载入、Top15 候选召回、LLM 评审和最终排序。",
     citationTraceProgressLoad: "载入来源",
     citationTraceProgressReferences: "解析参考文献",
-    citationTraceProgressRoundOne: "评估显式引用",
+    citationTraceProgressCandidateRecall: "召回 Top15 候选",
+    citationTraceProgressWorkerAssessment: "分析 Top15 候选",
+    citationTraceProgressMainRanking: "排序最终 Top5",
+    citationTraceProgressRoundOne: "召回 Top15 候选",
     citationTraceProgressRoundTwo: "探索相关来源",
-    citationTraceProgressSynthesis: "综合证据",
+    citationTraceProgressSynthesis: "排序最终 Top5",
     citationTraceProgressTop5: "生成 Top 5",
+    citationTraceCandidateTop15: "Top15 候选",
+    citationTraceReferenceText: "原始参考文献片段",
     citationTraceReadyToRun: "载入一篇论文即可开始引用溯源。",
     citationTraceCompleted: "引用溯源已完成。",
     citationTraceFailed: "引用溯源失败。",
@@ -414,6 +445,8 @@ function buildInitialModelCatalogs() {
     answer_chat: buildEmptyModelCatalog(),
     paper_reader_chat: buildEmptyModelCatalog(),
     paper_reader_translation: buildEmptyModelCatalog(),
+    citation_trace_main_chat: buildEmptyModelCatalog(),
+    citation_trace_worker_chat: buildEmptyModelCatalog(),
     embedding: buildEmptyModelCatalog()
   };
 }
@@ -608,11 +641,15 @@ function getInitialLanguage() {
 
 function buildDefaultState(config) {
   const translationConfig = config.paper_reader_translation || config.paper_reader_chat;
+  const citationTraceMainConfig = config.citation_trace_main_chat || config.answer_chat;
+  const citationTraceWorkerConfig = config.citation_trace_worker_chat || config.paper_reader_chat;
   return {
     query_chat: { ...config.query_chat, api_key: "", clear_api_key: false },
     answer_chat: { ...config.answer_chat, api_key: "", clear_api_key: false },
     paper_reader_chat: { ...config.paper_reader_chat, api_key: "", clear_api_key: false },
     paper_reader_translation: { ...translationConfig, api_key: "", clear_api_key: false },
+    citation_trace_main_chat: { ...citationTraceMainConfig, api_key: "", clear_api_key: false },
+    citation_trace_worker_chat: { ...citationTraceWorkerConfig, api_key: "", clear_api_key: false },
     embedding: { ...config.embedding },
     retrieval: {
       ...config.retrieval,
@@ -657,6 +694,20 @@ function buildRuntimeRequest(settings) {
       api_key: settings.paper_reader_translation.api_key || null,
       clear_api_key: settings.paper_reader_translation.clear_api_key
     },
+    citation_trace_main_chat: {
+      provider: settings.citation_trace_main_chat.provider,
+      model: settings.citation_trace_main_chat.model,
+      base_url: settings.citation_trace_main_chat.base_url || null,
+      api_key: settings.citation_trace_main_chat.api_key || null,
+      clear_api_key: settings.citation_trace_main_chat.clear_api_key
+    },
+    citation_trace_worker_chat: {
+      provider: settings.citation_trace_worker_chat.provider,
+      model: settings.citation_trace_worker_chat.model,
+      base_url: settings.citation_trace_worker_chat.base_url || null,
+      api_key: settings.citation_trace_worker_chat.api_key || null,
+      clear_api_key: settings.citation_trace_worker_chat.clear_api_key
+    },
     embedding: {
       api_url: settings.embedding.api_url,
       model: settings.embedding.model
@@ -691,6 +742,24 @@ function readJsonWithDetailFallback(response) {
       return { detail: text };
     }
   });
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function clipDisplayText(text, maxLength = 520) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength).trim()}...`;
 }
 
 function buildRetrievalText(plan) {
@@ -1046,6 +1115,49 @@ function ChatConfigSection({
   );
 }
 
+function GlobalSelectionTranslationPanel({ selection, translationState, t, onTranslate }) {
+  const hasSelection = Boolean(selection?.text);
+  const translating = translationState.status === "running";
+  const translatedText = translationState.translation || "";
+
+  return (
+    <section className="workspace paper-reader-selection-card global-selection-translation-card">
+      <div className="reader-selection-card-head">
+        <p className="eyebrow">{t("globalSelectionTranslation")}</p>
+        <h3>{t("globalSelectionTranslationHeading")}</h3>
+      </div>
+      {hasSelection ? (
+        <div className="reader-selected-excerpt">
+          <span className="reader-tone-label">{t("selectedOriginalLabel")}</span>
+          <p>{clipDisplayText(selection.text)}</p>
+        </div>
+      ) : (
+        <p className="muted">{t("globalSelectionTranslationEmpty")}</p>
+      )}
+      {translationState.error ? <div className="warning-box">{translationState.error}</div> : null}
+      {translating ? (
+        <div className="reader-loading-state reader-selection-loading">
+          <span className="progress-liveness progress-liveness-running">
+            <span className="progress-liveness-dot" aria-hidden="true" />
+            <span>{t("globalSelectionTranslationRunning")}</span>
+          </span>
+        </div>
+      ) : null}
+      {translatedText ? (
+        <div className="reader-selection-translation">
+          <span className="reader-tone-label">{t("translationOnlyLabel")}</span>
+          <p>{translatedText}</p>
+        </div>
+      ) : null}
+      <div className="reader-selection-actions">
+        <button type="button" onClick={onTranslate} disabled={!hasSelection || translating}>
+          {translating ? t("globalSelectionTranslationRunning") : t("translateSelectionButton")}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function RetrievalProviderSection({ providers, onChange, t }) {
   const providerItems = [
     {
@@ -1125,9 +1237,17 @@ export default function App() {
   const [ingestStatus, setIngestStatus] = useState(null);
   const [ingestLogs, setIngestLogs] = useState([]);
   const [pendingPaperReaderUrl, setPendingPaperReaderUrl] = useState("");
+  const [globalSelection, setGlobalSelection] = useState({ text: "" });
+  const [globalSelectionTranslation, setGlobalSelectionTranslation] = useState({
+    status: "idle",
+    sourceText: "",
+    translation: "",
+    error: ""
+  });
   const answerSourceRef = useRef(null);
   const answerBufferRef = useRef("");
   const ingestSourceRef = useRef(null);
+  const globalSelectionRequestRef = useRef(0);
 
   const t = (key) => translations[language][key] ?? key;
   const providerOptions = useMemo(
@@ -1179,6 +1299,42 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (activeTab === "paper_reader") {
+      setGlobalSelection({ text: "" });
+      setGlobalSelectionTranslation({ status: "idle", sourceText: "", translation: "", error: "" });
+      return undefined;
+    }
+
+    function selectionStartsInEditable(selection) {
+      const node = selection?.anchorNode;
+      const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+      return Boolean(element?.closest?.("input, textarea, select, [contenteditable='true']"));
+    }
+
+    function captureGlobalSelection() {
+      const selection = window.getSelection?.();
+      const text = String(selection?.toString?.() || "").replace(/\s+/g, " ").trim();
+      if (!text || selectionStartsInEditable(selection)) {
+        return;
+      }
+      if (globalSelection.text === text) {
+        return;
+      }
+      setGlobalSelection({ text });
+      setGlobalSelectionTranslation({ status: "idle", sourceText: text, translation: "", error: "" });
+    }
+
+    document.addEventListener("selectionchange", captureGlobalSelection);
+    window.addEventListener("mouseup", captureGlobalSelection);
+    window.addEventListener("keyup", captureGlobalSelection);
+    return () => {
+      document.removeEventListener("selectionchange", captureGlobalSelection);
+      window.removeEventListener("mouseup", captureGlobalSelection);
+      window.removeEventListener("keyup", captureGlobalSelection);
+    };
+  }, [activeTab, globalSelection.text]);
+
   function updateWorkspaceProgress(step, status, detail = "") {
     setWorkspaceProgress({
       step,
@@ -1220,7 +1376,9 @@ export default function App() {
       (section === "query_chat" ||
         section === "answer_chat" ||
         section === "paper_reader_chat" ||
-        section === "paper_reader_translation") &&
+        section === "paper_reader_translation" ||
+        section === "citation_trace_main_chat" ||
+        section === "citation_trace_worker_chat") &&
       ["provider", "base_url", "api_key", "clear_api_key"].includes(key)
     ) {
       setModelCatalogs((current) => ({
@@ -1585,6 +1743,55 @@ export default function App() {
     startIngestStream(data.job_id);
   }
 
+  async function translateGlobalSelection() {
+    const sourceText = String(globalSelection.text || "").trim();
+    if (!sourceText || globalSelectionTranslation.status === "running") {
+      return;
+    }
+    globalSelectionRequestRef.current += 1;
+    const requestId = globalSelectionRequestRef.current;
+    setGlobalSelectionTranslation({
+      status: "running",
+      sourceText,
+      translation: "",
+      error: ""
+    });
+    try {
+      const response = await fetch("/api/translate-selection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: sourceText,
+          answer_language: language,
+          settings: runtimePayload
+        })
+      });
+      const payload = await readJsonWithDetailFallback(response);
+      if (!response.ok) {
+        throw new Error(payload.detail || `${t("globalSelectionTranslationRunning")} (HTTP ${response.status})`);
+      }
+      if (requestId !== globalSelectionRequestRef.current) {
+        return;
+      }
+      setGlobalSelectionTranslation({
+        status: "ready",
+        sourceText: firstNonEmpty(payload.source_text, payload.sourceText, sourceText),
+        translation: firstNonEmpty(payload.translation, payload.text),
+        error: ""
+      });
+    } catch (error) {
+      if (requestId !== globalSelectionRequestRef.current) {
+        return;
+      }
+      setGlobalSelectionTranslation({
+        status: "error",
+        sourceText,
+        translation: "",
+        error: String(error)
+      });
+    }
+  }
+
   if (!settings) {
     return (
       <div className="page">
@@ -1592,6 +1799,8 @@ export default function App() {
       </div>
     );
   }
+
+  const showGlobalSelectionTranslation = activeTab !== "paper_reader";
 
   return (
     <div className="page">
@@ -1618,6 +1827,12 @@ export default function App() {
             </button>
             <button className={activeTab === "paper_reader" ? "active" : ""} onClick={() => setActiveTab("paper_reader")}>
               {t("paperReaderTab")}
+            </button>
+            <button
+              className={activeTab === "research_profile" ? "active" : ""}
+              onClick={() => setActiveTab("research_profile")}
+            >
+              {t("researchProfileTab")}
             </button>
             <button className={activeTab === "ingest" ? "active" : ""} onClick={() => setActiveTab("ingest")}>
               {t("ingestTab")}
@@ -1764,6 +1979,14 @@ export default function App() {
         />
       ) : null}
 
+      {activeTab === "research_profile" ? (
+        <ResearchProfilePage
+          language={language}
+          assistantSessionId={assistantSessionId}
+          onAssistantSessionIdChange={setAssistantSessionId}
+        />
+      ) : null}
+
       {activeTab === "ingest" ? (
         <section className="workspace">
           <div className="ingest-head">
@@ -1832,6 +2055,28 @@ export default function App() {
               onFetchModels={() => fetchAvailableModels("paper_reader_translation")}
               modelListId="paper-reader-translation-models"
             />
+            <ChatConfigSection
+              title={t("citationTraceMainModel")}
+              config={settings.citation_trace_main_chat}
+              onChange={(key, value) => updateNested("citation_trace_main_chat", key, value)}
+              t={t}
+              language={language}
+              providerOptions={providerOptions}
+              modelCatalog={modelCatalogs.citation_trace_main_chat}
+              onFetchModels={() => fetchAvailableModels("citation_trace_main_chat")}
+              modelListId="citation-trace-main-models"
+            />
+            <ChatConfigSection
+              title={t("citationTraceWorkerModel")}
+              config={settings.citation_trace_worker_chat}
+              onChange={(key, value) => updateNested("citation_trace_worker_chat", key, value)}
+              t={t}
+              language={language}
+              providerOptions={providerOptions}
+              modelCatalog={modelCatalogs.citation_trace_worker_chat}
+              onFetchModels={() => fetchAvailableModels("citation_trace_worker_chat")}
+              modelListId="citation-trace-worker-models"
+            />
             <section className="config-section">
               <h3>{t("embedding")}</h3>
               <label>
@@ -1899,6 +2144,14 @@ export default function App() {
             />
           </section>
         </section>
+      ) : null}
+      {showGlobalSelectionTranslation ? (
+        <GlobalSelectionTranslationPanel
+          selection={globalSelection}
+          translationState={globalSelectionTranslation}
+          t={t}
+          onTranslate={translateGlobalSelection}
+        />
       ) : null}
     </div>
   );

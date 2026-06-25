@@ -92,6 +92,7 @@ class AssistantMemoryConfig:
     max_recall_items: int = 5
     recall_threshold: float = 0.72
     auto_save_enabled: bool = True
+    research_profile_enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -100,6 +101,8 @@ class RuntimeSettings:
     answer_chat: ChatConfig
     paper_reader_chat: PaperReaderChatConfig
     paper_reader_translation: ChatConfig
+    citation_trace_main_chat: ChatConfig
+    citation_trace_worker_chat: ChatConfig
     embedding: EmbeddingConfig
     retrieval: RetrievalConfig
     rerank: RerankConfig
@@ -320,11 +323,25 @@ def get_env_default_settings() -> RuntimeSettings:
         base_url=os.getenv("PAPER_READER_TRANSLATION_BASE_URL", paper_reader_chat.base_url),
         api_key=os.getenv("PAPER_READER_TRANSLATION_API_KEY", paper_reader_chat.api_key),
     )
+    citation_trace_main_chat = ChatConfig(
+        provider=normalize_provider(os.getenv("CITATION_TRACE_MAIN_CHAT_PROVIDER", answer_chat.provider)),
+        model=os.getenv("CITATION_TRACE_MAIN_CHAT_MODEL", answer_chat.model),
+        base_url=os.getenv("CITATION_TRACE_MAIN_CHAT_BASE_URL", answer_chat.base_url),
+        api_key=os.getenv("CITATION_TRACE_MAIN_CHAT_API_KEY", answer_chat.api_key),
+    )
+    citation_trace_worker_chat = ChatConfig(
+        provider=normalize_provider(os.getenv("CITATION_TRACE_WORKER_CHAT_PROVIDER", paper_reader_chat.provider)),
+        model=os.getenv("CITATION_TRACE_WORKER_CHAT_MODEL", paper_reader_chat.model),
+        base_url=os.getenv("CITATION_TRACE_WORKER_CHAT_BASE_URL", paper_reader_chat.base_url),
+        api_key=os.getenv("CITATION_TRACE_WORKER_CHAT_API_KEY", paper_reader_chat.api_key),
+    )
     return RuntimeSettings(
         query_chat=query_chat,
         answer_chat=answer_chat,
         paper_reader_chat=paper_reader_chat,
         paper_reader_translation=paper_reader_translation,
+        citation_trace_main_chat=citation_trace_main_chat,
+        citation_trace_worker_chat=citation_trace_worker_chat,
         embedding=EmbeddingConfig(
             api_url=embedding_api_url,
             model=os.getenv("OLLAMA_EMBED_MODEL", "qwen3-embedding:0.6b"),
@@ -351,6 +368,8 @@ def get_env_default_settings() -> RuntimeSettings:
             max_recall_items=int(os.getenv("ASSISTANT_MEMORY_MAX_RECALL_ITEMS", "5")),
             recall_threshold=float(os.getenv("ASSISTANT_MEMORY_RECALL_THRESHOLD", "0.72")),
             auto_save_enabled=os.getenv("ASSISTANT_MEMORY_AUTO_SAVE_ENABLED", "true").strip().lower()
+            not in {"0", "false", "no", "off"},
+            research_profile_enabled=os.getenv("ASSISTANT_MEMORY_RESEARCH_PROFILE_ENABLED", "true").strip().lower()
             not in {"0", "false", "no", "off"},
         ),
     )
@@ -379,6 +398,8 @@ def validate_runtime_settings(settings: RuntimeSettings) -> None:
     validate_chat_config(settings.answer_chat, "answer_chat")
     validate_chat_config(settings.paper_reader_chat, "paper_reader_chat")
     validate_chat_config(settings.paper_reader_translation, "paper_reader_translation")
+    validate_chat_config(settings.citation_trace_main_chat, "citation_trace_main_chat")
+    validate_chat_config(settings.citation_trace_worker_chat, "citation_trace_worker_chat")
     if not settings.embedding.api_url:
         raise RuntimeError("Missing embedding.api_url")
     if not settings.embedding.model:

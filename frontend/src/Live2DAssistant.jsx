@@ -10,6 +10,8 @@ const LIVE2D_SCRIPTS = [
 const DEFAULT_MOUTH_OPEN_PARAMETER_IDS = ["ParamMouthOpenY", "PARAM_MOUTH_OPEN_Y", "ParamMouthOpenX", "LipSync"];
 const DEFAULT_MOUTH_FORM_PARAMETER_IDS = ["ParamMouthForm", "PARAM_MOUTH_FORM"];
 const DEFAULT_CONTEXT_LIMIT = 4000;
+const DEFAULT_CONVERSATION_CONTEXT_MESSAGE_LIMIT = 8;
+const DEFAULT_CONVERSATION_CONTEXT_TEXT_LIMIT = 700;
 
 const copy = {
   en: {
@@ -156,6 +158,49 @@ function normalizeWorkflowContext(context) {
     return null;
   }
   return context;
+}
+
+function clipConversationContextText(text) {
+  const value = String(text || "").trim();
+  if (value.length <= DEFAULT_CONVERSATION_CONTEXT_TEXT_LIMIT) {
+    return value;
+  }
+  return `${value.slice(0, DEFAULT_CONVERSATION_CONTEXT_TEXT_LIMIT).trimEnd()}...`;
+}
+
+function enrichWorkflowContextWithConversation(context, history, currentUserMessage) {
+  const normalized = normalizeWorkflowContext(context);
+  if (!normalized) {
+    return null;
+  }
+  const recentMessages = (Array.isArray(history) ? history : [])
+    .map((item) => {
+      const role = String(item?.role || "").trim();
+      const text = clipConversationContextText(item?.text);
+      if (!["user", "assistant"].includes(role) || !text) {
+        return null;
+      }
+      return { role, text };
+    })
+    .filter(Boolean)
+    .slice(-DEFAULT_CONVERSATION_CONTEXT_MESSAGE_LIMIT);
+  const currentMessage = clipConversationContextText(currentUserMessage);
+  if (!recentMessages.length && !currentMessage) {
+    return normalized;
+  }
+  const metadata = normalized.metadata && typeof normalized.metadata === "object" && !Array.isArray(normalized.metadata)
+    ? normalized.metadata
+    : {};
+  return {
+    ...normalized,
+    metadata: {
+      ...metadata,
+      conversation_context: {
+        recent_messages: recentMessages,
+        current_user_message: currentMessage || null
+      }
+    }
+  };
 }
 
 function normalizeUsedMemoryItems(items) {
@@ -826,6 +871,11 @@ export default function Live2DAssistant({
     const resolvedContext = trimAnswerContext(answerContext ?? linkedAnswerContext);
     const resolvedWorkflowContext = normalizeWorkflowContext(workflowContext ?? linkedWorkflowContext);
     const history = buildHistoryPayload(messages);
+    const resolvedWorkflowContextWithConversation = enrichWorkflowContextWithConversation(
+      resolvedWorkflowContext,
+      history,
+      trimmedMessage
+    );
 
     if (source === "user" && !trimmedMessage) {
       return;
@@ -850,7 +900,7 @@ export default function Live2DAssistant({
           language,
           history,
           answer_context: resolvedContext,
-          workflow_context: resolvedWorkflowContext,
+          workflow_context: resolvedWorkflowContextWithConversation,
           session_id: String(assistantSessionId || "").trim() || null
         })
       });

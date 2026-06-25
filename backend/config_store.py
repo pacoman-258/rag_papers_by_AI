@@ -151,6 +151,18 @@ def runtime_settings_to_storage(
             "base_url": settings.paper_reader_translation.base_url,
             "api_key": settings.paper_reader_translation.api_key,
         },
+        "citation_trace_main_chat": {
+            "provider": settings.citation_trace_main_chat.provider,
+            "model": settings.citation_trace_main_chat.model,
+            "base_url": settings.citation_trace_main_chat.base_url,
+            "api_key": settings.citation_trace_main_chat.api_key,
+        },
+        "citation_trace_worker_chat": {
+            "provider": settings.citation_trace_worker_chat.provider,
+            "model": settings.citation_trace_worker_chat.model,
+            "base_url": settings.citation_trace_worker_chat.base_url,
+            "api_key": settings.citation_trace_worker_chat.api_key,
+        },
         "embedding": {
             "api_url": settings.embedding.api_url,
             "model": settings.embedding.model,
@@ -177,6 +189,7 @@ def runtime_settings_to_storage(
             "max_recall_items": settings.assistant_memory.max_recall_items,
             "recall_threshold": settings.assistant_memory.recall_threshold,
             "auto_save_enabled": settings.assistant_memory.auto_save_enabled,
+            "research_profile_enabled": settings.assistant_memory.research_profile_enabled,
         },
     }
 
@@ -187,12 +200,20 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
     default_assistant_memory = get_env_default_settings().assistant_memory
     default_paper_reader_chat = default_settings.paper_reader_chat
     default_paper_reader_translation = default_settings.paper_reader_translation
+    default_citation_trace_main = default_settings.citation_trace_main_chat
+    default_citation_trace_worker = default_settings.citation_trace_worker_chat
     assistant_memory_data = data.get("assistant_memory") if isinstance(data.get("assistant_memory"), dict) else {}
     paper_reader_chat_data = (
         data.get("paper_reader_chat") if isinstance(data.get("paper_reader_chat"), dict) else {}
     )
     paper_reader_translation_data = (
         data.get("paper_reader_translation") if isinstance(data.get("paper_reader_translation"), dict) else {}
+    )
+    citation_trace_main_data = (
+        data.get("citation_trace_main_chat") if isinstance(data.get("citation_trace_main_chat"), dict) else {}
+    )
+    citation_trace_worker_data = (
+        data.get("citation_trace_worker_chat") if isinstance(data.get("citation_trace_worker_chat"), dict) else {}
     )
     retrieval_data = data.get("retrieval") if isinstance(data.get("retrieval"), dict) else {}
     retrieval_providers = _coerce_retrieval_providers(
@@ -218,25 +239,47 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
     paper_reader_translation_fallback: ChatConfig = (
         default_paper_reader_translation if translation_has_identity else paper_reader_chat
     )
+    query_chat = ChatConfig(
+        provider=data["query_chat"]["provider"],
+        model=data["query_chat"]["model"],
+        base_url=data["query_chat"].get("base_url") or embedding_api_url,
+        api_key=data["query_chat"].get("api_key"),
+    )
+    answer_chat = ChatConfig(
+        provider=data["answer_chat"]["provider"],
+        model=data["answer_chat"]["model"],
+        base_url=data["answer_chat"].get("base_url") or embedding_api_url,
+        api_key=data["answer_chat"].get("api_key"),
+    )
+    citation_main_has_identity = bool(
+        citation_trace_main_data.get("provider") or citation_trace_main_data.get("model")
+    )
+    citation_worker_has_identity = bool(
+        citation_trace_worker_data.get("provider") or citation_trace_worker_data.get("model")
+    )
+    citation_main_fallback = default_citation_trace_main if citation_main_has_identity else answer_chat
+    citation_worker_fallback = default_citation_trace_worker if citation_worker_has_identity else paper_reader_chat
     return RuntimeSettings(
-        query_chat=ChatConfig(
-            provider=data["query_chat"]["provider"],
-            model=data["query_chat"]["model"],
-            base_url=data["query_chat"].get("base_url") or embedding_api_url,
-            api_key=data["query_chat"].get("api_key"),
-        ),
-        answer_chat=ChatConfig(
-            provider=data["answer_chat"]["provider"],
-            model=data["answer_chat"]["model"],
-            base_url=data["answer_chat"].get("base_url") or embedding_api_url,
-            api_key=data["answer_chat"].get("api_key"),
-        ),
+        query_chat=query_chat,
+        answer_chat=answer_chat,
         paper_reader_chat=paper_reader_chat,
         paper_reader_translation=ChatConfig(
             provider=paper_reader_translation_data.get("provider") or paper_reader_translation_fallback.provider,
             model=paper_reader_translation_data.get("model") or paper_reader_translation_fallback.model,
             base_url=paper_reader_translation_data.get("base_url") or paper_reader_translation_fallback.base_url,
             api_key=paper_reader_translation_data.get("api_key", paper_reader_translation_fallback.api_key),
+        ),
+        citation_trace_main_chat=ChatConfig(
+            provider=citation_trace_main_data.get("provider") or citation_main_fallback.provider,
+            model=citation_trace_main_data.get("model") or citation_main_fallback.model,
+            base_url=citation_trace_main_data.get("base_url") or citation_main_fallback.base_url,
+            api_key=citation_trace_main_data.get("api_key", citation_main_fallback.api_key),
+        ),
+        citation_trace_worker_chat=ChatConfig(
+            provider=citation_trace_worker_data.get("provider") or citation_worker_fallback.provider,
+            model=citation_trace_worker_data.get("model") or citation_worker_fallback.model,
+            base_url=citation_trace_worker_data.get("base_url") or citation_worker_fallback.base_url,
+            api_key=citation_trace_worker_data.get("api_key", citation_worker_fallback.api_key),
         ),
         embedding=EmbeddingConfig(api_url=embedding_api_url, model=data["embedding"]["model"]),
         retrieval=RetrievalConfig(
@@ -261,6 +304,10 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
             ),
             auto_save_enabled=coerce_bool(
                 assistant_memory_data.get("auto_save_enabled"), default_assistant_memory.auto_save_enabled
+            ),
+            research_profile_enabled=coerce_bool(
+                assistant_memory_data.get("research_profile_enabled"),
+                default_assistant_memory.research_profile_enabled,
             ),
         ),
     )
@@ -381,6 +428,16 @@ def merge_runtime_settings(
         incoming.paper_reader_translation,
         embedding_api_url,
     )
+    citation_trace_main_chat = merge_optional_chat(
+        base.citation_trace_main_chat,
+        incoming.citation_trace_main_chat,
+        embedding_api_url,
+    )
+    citation_trace_worker_chat = merge_optional_chat(
+        base.citation_trace_worker_chat,
+        incoming.citation_trace_worker_chat,
+        embedding_api_url,
+    )
 
     if query_chat.provider == "ollama" and not query_chat.base_url:
         query_chat = ChatConfig(
@@ -404,6 +461,7 @@ def merge_runtime_settings(
             max_recall_items=incoming.assistant_memory.max_recall_items,
             recall_threshold=incoming.assistant_memory.recall_threshold,
             auto_save_enabled=incoming.assistant_memory.auto_save_enabled,
+            research_profile_enabled=incoming.assistant_memory.research_profile_enabled,
         )
         if incoming.assistant_memory is not None
         else base.assistant_memory
@@ -414,6 +472,8 @@ def merge_runtime_settings(
         answer_chat=answer_chat,
         paper_reader_chat=paper_reader_chat,
         paper_reader_translation=paper_reader_translation,
+        citation_trace_main_chat=citation_trace_main_chat,
+        citation_trace_worker_chat=citation_trace_worker_chat,
         embedding=EmbeddingConfig(
             api_url=incoming.embedding.api_url,
             model=incoming.embedding.model,
@@ -459,6 +519,18 @@ def runtime_settings_to_response(
             base_url=settings.paper_reader_translation.base_url,
             has_api_key=bool(settings.paper_reader_translation.api_key),
         ),
+        citation_trace_main_chat=ChatConfigResponse(
+            provider=settings.citation_trace_main_chat.provider,
+            model=settings.citation_trace_main_chat.model,
+            base_url=settings.citation_trace_main_chat.base_url,
+            has_api_key=bool(settings.citation_trace_main_chat.api_key),
+        ),
+        citation_trace_worker_chat=ChatConfigResponse(
+            provider=settings.citation_trace_worker_chat.provider,
+            model=settings.citation_trace_worker_chat.model,
+            base_url=settings.citation_trace_worker_chat.base_url,
+            has_api_key=bool(settings.citation_trace_worker_chat.api_key),
+        ),
         embedding=EmbeddingConfigModel(
             api_url=settings.embedding.api_url,
             model=settings.embedding.model,
@@ -481,5 +553,6 @@ def runtime_settings_to_response(
             max_recall_items=settings.assistant_memory.max_recall_items,
             recall_threshold=settings.assistant_memory.recall_threshold,
             auto_save_enabled=settings.assistant_memory.auto_save_enabled,
+            research_profile_enabled=settings.assistant_memory.research_profile_enabled,
         ),
     )

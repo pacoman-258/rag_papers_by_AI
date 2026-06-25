@@ -33,6 +33,19 @@ RECALL_THRESHOLD = 0.72
 MIN_MEMORY_CONFIDENCE = 0.58
 MAX_EVENT_TEXT_LENGTH = 8000
 MAX_SUMMARY_TEXT_LENGTH = 12000
+RESEARCH_PROFILE_NODE_TYPES = frozenset({"expertise_signal", "research_direction", "reading_preference"})
+ALLOWED_MEMORY_NODE_TYPES = frozenset(
+    {
+        "preference",
+        "topic",
+        "task",
+        "fact",
+        "workflow_episode",
+        "paper_ref",
+        *RESEARCH_PROFILE_NODE_TYPES,
+    }
+)
+RESEARCH_PROFILE_MIN_CONFIDENCE = 0.6
 
 _SCHEMA_READY_CACHE: set[str] = set()
 
@@ -43,6 +56,32 @@ class RecallResult:
     items: list[dict[str, Any]]
     prompt_block: str | None
     notice: str | None
+
+
+@dataclass(slots=True)
+class MemoryOptions:
+    enabled: bool = True
+    summary_interval_turns: int = SUMMARY_INTERVAL_TURNS
+    major_summary_group_size: int = MAJOR_SUMMARY_GROUP_SIZE
+    max_recall_items: int = RECALL_MAX_ITEMS
+    recall_threshold: float = RECALL_THRESHOLD
+    auto_save_enabled: bool = True
+    research_profile_enabled: bool = True
+
+
+def _memory_options(settings: RuntimeSettings | None) -> MemoryOptions:
+    config = getattr(settings, "assistant_memory", None)
+    if config is None:
+        return MemoryOptions()
+    return MemoryOptions(
+        enabled=bool(getattr(config, "enabled", True)),
+        summary_interval_turns=max(1, int(getattr(config, "summary_interval_turns", SUMMARY_INTERVAL_TURNS) or 1)),
+        major_summary_group_size=max(1, int(getattr(config, "major_summary_group_size", MAJOR_SUMMARY_GROUP_SIZE) or 1)),
+        max_recall_items=max(1, int(getattr(config, "max_recall_items", RECALL_MAX_ITEMS) or 1)),
+        recall_threshold=min(1.0, max(0.0, float(getattr(config, "recall_threshold", RECALL_THRESHOLD) or 0.0))),
+        auto_save_enabled=bool(getattr(config, "auto_save_enabled", True)),
+        research_profile_enabled=bool(getattr(config, "research_profile_enabled", True)),
+    )
 
 
 def _db_signature(db_config: dict[str, str] | None = None) -> str:
@@ -750,8 +789,9 @@ def _maybe_create_mini_summary(
     session_id: str,
     settings: RuntimeSettings,
 ) -> dict[str, Any] | None:
+    options = _memory_options(settings)
     assistant_turns = _assistant_turn_count(conn, session_id)
-    if assistant_turns <= 0 or assistant_turns % SUMMARY_INTERVAL_TURNS != 0:
+    if assistant_turns <= 0 or assistant_turns % options.summary_interval_turns != 0:
         return None
 
     last_mini_end = _latest_summary_end_turn(conn, session_id, "mini")
@@ -795,7 +835,7 @@ def _maybe_create_mini_summary(
     return {"start_turn": start_turn, "end_turn": end_turn, "payload": payload}
 
 
-def _collect_recent_mini_blocks_for_major(conn, session_id: str) -> list[dict[str, Any]]:
+def _collect_recent_mini_blocks_for_major(conn, session_id: str, group_size: int) -> list[dict[str, Any]]:
     last_major_end = _latest_summary_end_turn(conn, session_id, "major")
     with conn.cursor(cursor_factory=RealDictCursor) as cursor:
         cursor.execute(
@@ -813,7 +853,7 @@ def _collect_recent_mini_blocks_for_major(conn, session_id: str) -> list[dict[st
             ORDER BY end_turn ASC
             LIMIT %s;
             """,
-            (session_id, last_major_end, MAJOR_SUMMARY_GROUP_SIZE),
+            (session_id, last_major_end, group_size),
         )
         rows = cursor.fetchall()
     return [dict(row) for row in rows]
@@ -844,6 +884,141 @@ def _parse_model_items(values: Any, node_type: str, confidence: float) -> list[d
             }
         )
     return normalized
+
+
+def _is_sensitive_profile_text(text: str) -> bool:
+    normalized = _normalize_whitespace(text).casefold()
+    if not normalized:
+        return True
+    age_patterns = (
+        r"\b\d{1,3}\s*(?:years?\s*old|year-old)\b",
+        r"\b\d{1,3}-year-old\b",
+        r"\d{1,3}\s*岁",
+    )
+    if any(re.search(pattern, normalized) for pattern in age_patterns):
+        return True
+    sensitive_keywords = (
+        "gender",
+        "male",
+        "female",
+        "race",
+        "ethnicity",
+        "religion",
+        "religious",
+        "political",
+        "politics",
+        "health condition",
+        "medical condition",
+        "sexual",
+        "orientation",
+        "用户是男",
+        "用户是女",
+        "政治倾向",
+        "宗教",
+        "种族",
+        "民族",
+        "健康状况",
+        "病史",
+        "性取向",
+    )
+    return any(keyword in normalized for keyword in sensitive_keywords)
+
+
+def _coerce_profile_evidence(raw_value: Any, workflow_contexts: list[dict[str, Any]]) -> list[str]:
+    evidence: list[str] = []
+    raw_items = raw_value if isinstance(raw_value, list) else [raw_value] if raw_value else []
+    for raw in raw_items:
+        text = _normalize_whitespace(str(raw or ""))
+        if text and text not in evidence:
+            evidence.append(_safe_text(text, max_length=160))
+        if len(evidence) >= 5:
+            break
+    if evidence:
+        return evidence
+    for context in workflow_contexts:
+        if str(context.get("kind") or "").strip().casefold() != "paper_reader":
+            continue
+        for key in ("paper_title", "page_title", "question"):
+            text = _normalize_whitespace(str(context.get(key) or ""))
+            if text and text not in evidence:
+                evidence.append(_safe_text(text, max_length=160))
+            if len(evidence) >= 5:
+                break
+        if len(evidence) >= 5:
+            break
+    return evidence
+
+
+def _parse_research_profile_items(
+    extracted: dict[str, Any],
+    workflow_contexts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    paper_reader_contexts = [
+        context
+        for context in workflow_contexts
+        if str(context.get("kind") or "").strip().casefold() == "paper_reader"
+    ]
+    if not paper_reader_contexts:
+        return []
+
+    paper_titles: list[str] = []
+    workflow_kinds: set[str] = set()
+    for context in workflow_contexts:
+        workflow_kind = _normalize_whitespace(str(context.get("kind") or ""))
+        if workflow_kind:
+            workflow_kinds.add(workflow_kind)
+        title = _normalize_whitespace(str(context.get("paper_title") or ""))
+        if title and title not in paper_titles:
+            paper_titles.append(_safe_text(title, max_length=180))
+
+    field_map = (
+        ("expertise_signals", "expertise_signal"),
+        ("research_directions", "research_direction"),
+        ("reading_preferences", "reading_preference"),
+    )
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for payload_key, node_type in field_map:
+        raw_items = extracted.get(payload_key)
+        if isinstance(raw_items, str):
+            raw_items = [raw_items]
+        if not isinstance(raw_items, list):
+            continue
+        for raw in raw_items[:8]:
+            if isinstance(raw, dict):
+                label = _normalize_whitespace(
+                    str(raw.get("label") or raw.get("text") or raw.get("summary") or raw.get("title") or "")
+                )
+                try:
+                    confidence = float(raw.get("confidence", 0.66))
+                except (TypeError, ValueError):
+                    confidence = 0.66
+                evidence = _coerce_profile_evidence(raw.get("evidence"), paper_reader_contexts)
+            else:
+                label = _normalize_whitespace(str(raw or ""))
+                confidence = 0.66
+                evidence = _coerce_profile_evidence(None, paper_reader_contexts)
+            if not label or confidence < RESEARCH_PROFILE_MIN_CONFIDENCE or _is_sensitive_profile_text(label):
+                continue
+            key = f"{node_type}:{label.casefold()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(
+                {
+                    "node_type": node_type,
+                    "text": _safe_text(label, max_length=360),
+                    "confidence": min(0.95, max(RESEARCH_PROFILE_MIN_CONFIDENCE, confidence)),
+                    "metadata": {
+                        "source": "research_profile",
+                        "profile_kind": node_type,
+                        "evidence": evidence,
+                        "paper_titles": paper_titles[:6],
+                        "workflow_kinds": sorted(workflow_kinds),
+                    },
+                }
+            )
+    return items
 
 
 def _extract_workflow_items(
@@ -950,11 +1125,17 @@ Return one JSON object only:
   "preferences": ["..."],
   "topics": ["..."],
   "tasks": ["..."],
-  "facts": ["..."]
+  "facts": ["..."],
+  "expertise_signals": [{"label": "...", "confidence": 0.0, "evidence": ["..."]}],
+  "research_directions": [{"label": "...", "confidence": 0.0, "evidence": ["..."]}],
+  "reading_preferences": [{"label": "...", "confidence": 0.0, "evidence": ["..."]}]
 }
 Rules:
 - Keep only stable facts/preferences/tasks likely useful in future sessions.
 - Prefer structured workflow context over casual text.
+- Infer research profile items only from paper topics, paper reading behavior, and research questions.
+- Do not infer sensitive personal attributes such as age, gender, health, race, religion, politics, or identity.
+- Keep profile labels cautious and research-focused.
 - No markdown and no explanations.
 """.strip()
     user = "\n\n".join(
@@ -981,6 +1162,7 @@ def _extract_memory_candidates_from_major(
     workflow_contexts: list[dict[str, Any]],
     settings: RuntimeSettings,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, str, str, float]]]:
+    options = _memory_options(settings)
     workflow_items, workflow_relations = _extract_workflow_items(workflow_contexts)
 
     extracted: dict[str, Any] = {}
@@ -1013,6 +1195,8 @@ def _extract_memory_candidates_from_major(
     ):
         items.extend(_parse_model_items(major_summary_payload.get(key), node_type, confidence))
     items.extend(workflow_items)
+    if options.research_profile_enabled:
+        items.extend(_parse_research_profile_items(extracted, workflow_contexts))
 
     if not items:
         fallback = _normalize_whitespace(major_summary_text)
@@ -1034,7 +1218,7 @@ def _extract_memory_candidates_from_major(
         confidence = float(item.get("confidence") or 0.6)
         if not text or confidence < MIN_MEMORY_CONFIDENCE:
             continue
-        if node_type not in {"preference", "topic", "task", "fact", "workflow_episode", "paper_ref"}:
+        if node_type not in ALLOWED_MEMORY_NODE_TYPES:
             node_type = "fact"
         key = f"{node_type}:{text.casefold()}"
         if key in seen:
@@ -1313,6 +1497,7 @@ def _maybe_create_major_summary_and_memory(
     session_id: str,
     settings: RuntimeSettings,
 ) -> dict[str, Any] | None:
+    options = _memory_options(settings)
     with conn.cursor() as cursor:
         cursor.execute(
             """
@@ -1323,11 +1508,11 @@ def _maybe_create_major_summary_and_memory(
             (session_id,),
         )
         mini_count = int(cursor.fetchone()[0] or 0)
-    if mini_count <= 0 or mini_count % MAJOR_SUMMARY_GROUP_SIZE != 0:
+    if mini_count <= 0 or mini_count % options.major_summary_group_size != 0:
         return None
 
-    mini_blocks = _collect_recent_mini_blocks_for_major(conn, session_id)
-    if len(mini_blocks) != MAJOR_SUMMARY_GROUP_SIZE:
+    mini_blocks = _collect_recent_mini_blocks_for_major(conn, session_id, options.major_summary_group_size)
+    if len(mini_blocks) != options.major_summary_group_size:
         return None
 
     source_text = "\n".join(
@@ -1527,9 +1712,25 @@ def _build_memory_prompt_block(
     if not memory_items and not workflow_context:
         return None
     sections: list[str] = []
-    if memory_items:
+    profile_items = [
+        item for item in memory_items if str(item.get("node_type") or "").strip() in RESEARCH_PROFILE_NODE_TYPES
+    ]
+    ordinary_items = [
+        item for item in memory_items if str(item.get("node_type") or "").strip() not in RESEARCH_PROFILE_NODE_TYPES
+    ]
+    if profile_items:
+        lines = ["Inferred research profile (treat as uncertain personalization hints, not facts):"]
+        for item in profile_items:
+            node_type = _safe_text(item.get("node_type") or "research_profile")
+            summary = _safe_text(item.get("summary") or item.get("text"), max_length=260)
+            if not summary:
+                continue
+            lines.append(f"- [{node_type}] {summary}")
+        if len(lines) > 1:
+            sections.append("\n".join(lines))
+    if ordinary_items:
         lines = ["Relevant long-term memory:"]
-        for item in memory_items:
+        for item in ordinary_items:
             node_type = _safe_text(item.get("node_type") or "fact")
             summary = _safe_text(item.get("summary") or item.get("text"), max_length=260)
             if not summary:
@@ -1555,6 +1756,9 @@ def recall_memory_for_message(
     settings: RuntimeSettings,
     db_config: dict[str, str] | None = None,
 ) -> RecallResult:
+    options = _memory_options(settings)
+    if not options.enabled:
+        return RecallResult(used=False, items=[], prompt_block=None, notice=None)
     query_text = ""
     latest_major_summary = None
     conn = _connect(db_config)
@@ -1639,13 +1843,16 @@ def recall_memory_for_message(
             ranked = sorted(score_map.items(), key=lambda item: item[1], reverse=True)
             selected: list[dict[str, Any]] = []
             for memory_id, score in ranked:
-                if score < RECALL_THRESHOLD:
+                if score < options.recall_threshold:
                     continue
                 item = candidates.get(memory_id)
                 if not item:
                     continue
+                node_type = str(item.get("node_type") or "").strip()
+                if node_type in RESEARCH_PROFILE_NODE_TYPES and not options.research_profile_enabled:
+                    continue
                 selected.append(_format_memory_item(item, score, sorted(tag_map.get(memory_id, {"vector_seed"}))))
-                if len(selected) >= RECALL_MAX_ITEMS:
+                if len(selected) >= options.max_recall_items:
                     break
 
             if not selected:
@@ -1759,8 +1966,21 @@ def prepare_live2d_chat_context(
     profile_key: str = DEFAULT_PROFILE_KEY,
     db_config: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    ensure_assistant_memory_schema(db_config)
     normalized_workflow = normalize_workflow_context(workflow_context)
+    options = _memory_options(settings)
+    if not options.enabled:
+        return {
+            "session_id": resolve_session_id(session_id),
+            "profile_id": None,
+            "user_event_turn": 0,
+            "workflow_context": normalized_workflow,
+            "memory_used": False,
+            "used_memory_items": [],
+            "memory_prompt_block": None,
+            "memory_notice": None,
+        }
+
+    ensure_assistant_memory_schema(db_config)
     session_state = get_or_create_session(
         session_id=session_id,
         source=source,
@@ -1772,36 +1992,37 @@ def prepare_live2d_chat_context(
     profile_id = session_state["profile_id"]
     user_event_turn = 0
 
-    conn = _connect(db_config)
-    try:
-        with conn:
-            user_role = "user" if source == "user" else "system"
-            event_text = _build_event_text(
-                source=source,
-                message=message,
-                answer_context=answer_context,
-                workflow_context=normalized_workflow,
-            )
-            user_event_turn = _append_session_event(
-                conn,
-                session_id=resolved_session_id,
-                role=user_role,
-                source=source,
-                message_text=event_text,
-                answer_context=answer_context,
-                workflow_context=normalized_workflow,
-            )
-            _save_explicit_memory_if_requested(
-                conn,
-                profile_id=profile_id,
-                session_id=resolved_session_id,
-                message=message,
-                workflow_context=normalized_workflow,
-                settings=settings,
-                turn_index=user_event_turn,
-            )
-    finally:
-        conn.close()
+    if options.auto_save_enabled:
+        conn = _connect(db_config)
+        try:
+            with conn:
+                user_role = "user" if source == "user" else "system"
+                event_text = _build_event_text(
+                    source=source,
+                    message=message,
+                    answer_context=answer_context,
+                    workflow_context=normalized_workflow,
+                )
+                user_event_turn = _append_session_event(
+                    conn,
+                    session_id=resolved_session_id,
+                    role=user_role,
+                    source=source,
+                    message_text=event_text,
+                    answer_context=answer_context,
+                    workflow_context=normalized_workflow,
+                )
+                _save_explicit_memory_if_requested(
+                    conn,
+                    profile_id=profile_id,
+                    session_id=resolved_session_id,
+                    message=message,
+                    workflow_context=normalized_workflow,
+                    settings=settings,
+                    turn_index=user_event_turn,
+                )
+        finally:
+            conn.close()
 
     recall_result = recall_memory_for_message(
         session_id=resolved_session_id,
@@ -1835,9 +2056,19 @@ def finalize_live2d_chat_turn(
     profile_key: str = DEFAULT_PROFILE_KEY,
     db_config: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    ensure_assistant_memory_schema(db_config)
     resolved_session_id = resolve_session_id(session_id)
     normalized_workflow = normalize_workflow_context(workflow_context)
+    options = _memory_options(settings)
+    if not options.enabled or not options.auto_save_enabled:
+        return {
+            "session_id": resolved_session_id,
+            "assistant_turn": 0,
+            "mini_summary_created": False,
+            "major_summary_created": False,
+            "major_summary_saved_memory_count": 0,
+        }
+
+    ensure_assistant_memory_schema(db_config)
 
     conn = _connect(db_config)
     try:
@@ -1939,6 +2170,198 @@ def list_assistant_memory_items(
     return result
 
 
+def _isoformat_or_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    text = str(value).strip()
+    return text or None
+
+
+def _metadata_list(metadata: Any, key: str) -> list[str]:
+    if not isinstance(metadata, dict):
+        return []
+    value = metadata.get(key)
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        text = _normalize_whitespace(str(item or ""))
+        if text and text not in result:
+            result.append(_safe_text(text, max_length=180))
+        if len(result) >= 6:
+            break
+    return result
+
+
+def _format_research_profile_item(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    node_type = _safe_text(row.get("node_type") or metadata.get("profile_kind") or "expertise_signal", max_length=64)
+    label = _safe_text(row.get("summary") or row.get("content_text") or row.get("text"), max_length=320)
+    return {
+        "memory_id": str(row.get("memory_id") or row.get("id") or "").strip(),
+        "kind": node_type if node_type in RESEARCH_PROFILE_NODE_TYPES else "expertise_signal",
+        "label": label,
+        "confidence": round(float(row.get("confidence") or 0.0), 4),
+        "evidence": _metadata_list(metadata, "evidence") or _metadata_list(metadata, "paper_titles"),
+        "pinned": bool(row.get("pinned")),
+        "created_at": _isoformat_or_text(row.get("created_at")),
+        "updated_at": _isoformat_or_text(row.get("updated_at")),
+    }
+
+
+def list_research_profile_items(
+    *,
+    session_id: str | None = None,
+    limit: int = 12,
+    profile_key: str = DEFAULT_PROFILE_KEY,
+    db_config: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    ensure_assistant_memory_schema(db_config)
+    resolved_session_id = resolve_session_id(session_id) if session_id else None
+    conn = _connect(db_config)
+    try:
+        with conn:
+            profile_id = _get_or_create_profile_id(conn, profile_key)
+            where_clauses = [
+                "n.profile_id = %s::uuid",
+                "n.deleted_at IS NULL",
+                "n.node_type IN ('expertise_signal', 'research_direction', 'reading_preference')",
+            ]
+            params: list[Any] = [profile_id]
+            if resolved_session_id:
+                where_clauses.append("(n.session_id = %s OR n.session_id IS NULL)")
+                params.append(resolved_session_id)
+            params.append(max(1, min(limit, 50)))
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT
+                        n.id::text AS memory_id,
+                        n.node_type,
+                        n.content_text AS summary,
+                        n.pinned,
+                        n.confidence,
+                        n.metadata,
+                        n.created_at,
+                        n.updated_at
+                    FROM assistant_memory_nodes AS n
+                    WHERE {" AND ".join(where_clauses)}
+                    ORDER BY n.pinned DESC, n.confidence DESC, n.updated_at DESC
+                    LIMIT %s;
+                    """,
+                    params,
+                )
+                rows = cursor.fetchall()
+    finally:
+        conn.close()
+    return [_format_research_profile_item(dict(row)) for row in rows]
+
+
+def get_research_profile_state(
+    *,
+    session_id: str | None = None,
+    limit: int = 12,
+    profile_key: str = DEFAULT_PROFILE_KEY,
+    db_config: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    resolved_session_id = resolve_session_id(session_id)
+    items = list_research_profile_items(
+        session_id=resolved_session_id,
+        limit=limit,
+        profile_key=profile_key,
+        db_config=db_config,
+    )
+    return {"session_id": resolved_session_id, "items": items, "count": len(items)}
+
+
+def refresh_research_profile_state(
+    *,
+    session_id: str | None,
+    settings: RuntimeSettings,
+    limit: int = 12,
+    profile_key: str = DEFAULT_PROFILE_KEY,
+    db_config: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    options = _memory_options(settings)
+    resolved_session_id = resolve_session_id(session_id)
+    if not options.enabled or not options.auto_save_enabled or not options.research_profile_enabled:
+        return get_research_profile_state(
+            session_id=resolved_session_id,
+            limit=limit,
+            profile_key=profile_key,
+            db_config=db_config,
+        )
+
+    ensure_assistant_memory_schema(db_config)
+    conn = _connect(db_config)
+    try:
+        with conn:
+            profile_id = _get_or_create_profile_id(conn, profile_key)
+            _ensure_session(
+                conn,
+                session_id=resolved_session_id,
+                profile_id=profile_id,
+                source="research_profile_refresh",
+                metadata={"local_first": True},
+            )
+            source_events = _collect_events_after_turn(conn, resolved_session_id, start_turn_exclusive=0)[-24:]
+            latest_turn = int(source_events[-1]["turn_index"]) if source_events else 0
+            workflow_contexts = [
+                context
+                for context in (
+                    normalize_workflow_context(event.get("workflow_context"))
+                    for event in source_events
+                )
+                if context
+            ]
+            if workflow_contexts:
+                source_text = "\n".join(
+                    _safe_text(event.get("message_text"), max_length=500)
+                    for event in source_events
+                    if _safe_text(event.get("message_text"), max_length=500)
+                )
+                candidates, _relations = _extract_memory_candidates_from_major(
+                    major_summary_payload={"summary": _safe_text(source_text, max_length=1200)},
+                    major_summary_text=_safe_text(source_text, max_length=1200),
+                    workflow_contexts=workflow_contexts,
+                    settings=settings,
+                )
+                marker = f"research-profile-refresh:{latest_turn}"
+                for item in candidates:
+                    if item.get("node_type") not in RESEARCH_PROFILE_NODE_TYPES:
+                        continue
+                    node_id = _upsert_memory_node(
+                        conn,
+                        profile_id=profile_id,
+                        session_id=resolved_session_id,
+                        node_type=item["node_type"],
+                        text=item["text"],
+                        confidence=float(item["confidence"]),
+                        source_marker=marker,
+                        metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
+                    )
+                    try:
+                        _upsert_memory_embedding(conn, node_id=node_id, text=item["text"], settings=settings)
+                    except Exception as exc:
+                        LOGGER.warning("assistant-memory: research profile embedding failed for node %s: %s", node_id, exc)
+    finally:
+        conn.close()
+
+    return get_research_profile_state(
+        session_id=resolved_session_id,
+        limit=limit,
+        profile_key=profile_key,
+        db_config=db_config,
+    )
+
+
 def pin_assistant_memory_item(
     memory_id: str,
     *,
@@ -2029,8 +2452,11 @@ __all__ = [
     "get_live2d_memory_state",
     "get_or_create_session",
     "list_assistant_memory_items",
+    "get_research_profile_state",
+    "list_research_profile_items",
     "normalize_workflow_context",
     "pin_assistant_memory_item",
     "prepare_live2d_chat_context",
+    "refresh_research_profile_state",
     "resolve_session_id",
 ]

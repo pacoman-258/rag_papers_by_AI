@@ -37,6 +37,7 @@ from backend.schemas import (
     PaperReaderSectionModel,
     PaperReaderSelectionTranslateRequest,
     PaperReaderSelectionTranslateResponse,
+    PaperReaderAssistantContextResponse,
     PaperReaderSessionModel,
     PaperReaderSelectedNodeModel,
     PaperReaderSourcePageModel,
@@ -46,6 +47,7 @@ from backend.schemas import (
     PaperReaderStoryStageModel,
     PaperReaderStructuredStatusModel,
     PaperReaderStructuredTextModel,
+    WorkflowContextModel,
 )
 from local_paper_db.app.external_sources import fetch_arxiv_record
 from local_paper_db.app.search_service import (
@@ -65,6 +67,9 @@ from local_paper_db.app.search_service import (
 DEFAULT_MAX_CONTEXT_TOKENS = 8192
 DEFAULT_TARGET_PAGE_TOKENS = 6000
 DEFAULT_TARGET_CHUNK_TOKENS = 1800
+ASSISTANT_CONTEXT_CHAR_BUDGET = 3800
+ASSISTANT_CONTEXT_SOURCE_PAGE_LIMIT = 8
+ASSISTANT_CONTEXT_CHUNK_LIMIT = 8
 DISCIPLINES = {
     "general",
     "science_engineering",
@@ -349,6 +354,10 @@ ARXIV_URL_PATTERN = re.compile(
     r"^https?://(?:www\.)?arxiv\.org/(?P<kind>abs|pdf)/(?P<id>\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?/?$",
     re.IGNORECASE,
 )
+ARXIV_PDF_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+ARXIV_PDF_RETRY_ATTEMPTS = 2
+ARXIV_PDF_RETRY_DELAY_SECONDS = 0.8
+ARXIV_PDF_MAX_RETRY_AFTER_SECONDS = 5.0
 NUMBERED_HEADING_PATTERN = re.compile(r"^(?P<num>\d+(?:\.\d+)*)\s*[.)]?\s+(?P<title>.+)$")
 ROMAN_HEADING_PATTERN = re.compile(r"^(?P<num>[ivxlcdm]+)\.?\s+(?P<title>.+)$", re.IGNORECASE)
 CHUNK_SPLIT_SENTENCE_PATTERN = re.compile(r"(?<=[。！？!?】【。.])\s+")
@@ -1184,17 +1193,78 @@ def _parse_arxiv_url(url: str) -> str:
     return base_id
 
 
+def _arxiv_pdf_download_urls(arxiv_id: str) -> list[str]:
+    normalized = normalize_whitespace(arxiv_id)
+    base_id = extract_arxiv_base_id(normalized) or normalized
+    ids = [normalized]
+    if base_id != normalized:
+        ids.append(base_id)
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in ids:
+        for url in (
+            f"https://arxiv.org/pdf/{item}.pdf",
+            f"https://arxiv.org/pdf/{item}",
+            f"https://export.arxiv.org/pdf/{item}",
+        ):
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
+
+
+def _retry_after_seconds(response: requests.Response) -> float:
+    raw_value = response.headers.get("retry-after") or response.headers.get("Retry-After")
+    try:
+        parsed = float(raw_value) if raw_value is not None else ARXIV_PDF_RETRY_DELAY_SECONDS
+    except (TypeError, ValueError):
+        parsed = ARXIV_PDF_RETRY_DELAY_SECONDS
+    return max(0.0, min(parsed, ARXIV_PDF_MAX_RETRY_AFTER_SECONDS))
+
+
+def _is_pdf_payload(content: bytes) -> bool:
+    return bool(content) and content[:1024].lstrip().startswith(b"%PDF")
+
+
 def _download_arxiv_pdf(arxiv_id: str, session_dir: Path, timeout: int) -> Path:
-    pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-    response = requests.get(
-        pdf_url,
-        timeout=timeout,
-        headers={"User-Agent": "arxiv-paper-rag/1.0"},
+    headers = {
+        "User-Agent": "arxiv-paper-rag/1.0 (local research tool)",
+        "Accept": "application/pdf,*/*;q=0.8",
+    }
+    last_error = ""
+    rate_limited = False
+    for pdf_url in _arxiv_pdf_download_urls(arxiv_id):
+        for attempt_index in range(ARXIV_PDF_RETRY_ATTEMPTS):
+            try:
+                response = requests.get(pdf_url, timeout=timeout, headers=headers)
+                if response.status_code in ARXIV_PDF_TRANSIENT_STATUS_CODES:
+                    if response.status_code == 429:
+                        rate_limited = True
+                    last_error = f"{response.status_code} from {pdf_url}"
+                    if attempt_index + 1 < ARXIV_PDF_RETRY_ATTEMPTS:
+                        time.sleep(_retry_after_seconds(response))
+                    continue
+                response.raise_for_status()
+                if not _is_pdf_payload(response.content):
+                    content_type = response.headers.get("content-type", "unknown")
+                    last_error = f"non-PDF response from {pdf_url} ({content_type})"
+                    break
+                pdf_path = session_dir / f"{arxiv_id.replace('/', '_')}.pdf"
+                pdf_path.write_bytes(response.content)
+                return pdf_path
+            except requests.RequestException as exc:
+                last_error = f"{pdf_url}: {exc}"
+                if attempt_index + 1 < ARXIV_PDF_RETRY_ATTEMPTS:
+                    time.sleep(ARXIV_PDF_RETRY_DELAY_SECONDS)
+                break
+    if rate_limited:
+        raise RuntimeError(
+            "arXiv is rate limiting PDF downloads; try again later or upload the PDF file directly."
+        )
+    raise RuntimeError(
+        "Unable to download the arXiv PDF after trying alternate arXiv endpoints. "
+        f"Last error: {last_error or 'unknown error'}"
     )
-    response.raise_for_status()
-    pdf_path = session_dir / f"{arxiv_id.replace('/', '_')}.pdf"
-    pdf_path.write_bytes(response.content)
-    return pdf_path
 
 
 def _section_label(section_title: str | None, subsection_title: str | None) -> str:
@@ -1742,6 +1812,153 @@ def _index_nodes_for_chunks(
     return selected
 
 
+def _clip_assistant_context_text(text: str, limit: int) -> str:
+    value = normalize_whitespace(text)
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _append_assistant_context_line(lines: list[str], line: str, budget: int) -> bool:
+    value = str(line or "").strip()
+    if not value:
+        return True
+    candidate_length = len("\n".join([*lines, value]))
+    if candidate_length <= budget:
+        lines.append(value)
+        return True
+    remaining = budget - len("\n".join(lines)) - 1
+    if remaining > 80:
+        lines.append(_clip_assistant_context_text(value, remaining))
+    return False
+
+
+def _paper_map_context_lines(session: PaperReaderSession, *, limit: int = 8) -> list[str]:
+    if session.index_tree is None:
+        return []
+    lines: list[str] = []
+    for node in _iter_index_nodes(session.index_tree):
+        if node.node_id == "paper-map":
+            continue
+        title = normalize_whitespace(node.title)
+        summary = normalize_whitespace(node.summary or "")
+        page_range = f"pages {node.page_start}-{node.page_end}" if node.page_start and node.page_end else "pages unknown"
+        if title:
+            suffix = f": {summary}" if summary else ""
+            lines.append(f"- {title} ({page_range}){suffix}")
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _chunk_context_lines(session: PaperReaderSession, *, limit: int = ASSISTANT_CONTEXT_CHUNK_LIMIT) -> list[str]:
+    lines: list[str] = []
+    for chunk in session.chunks[:limit]:
+        title = _section_label(chunk.section_title, chunk.subsection_title)
+        excerpt = _clip_assistant_context_text(chunk.text, 360)
+        if excerpt:
+            lines.append(f"- [{title} | pages {chunk.page_start}-{chunk.page_end}] {excerpt}")
+    return lines
+
+
+def _source_page_context_lines(
+    session: PaperReaderSession,
+    *,
+    limit: int = ASSISTANT_CONTEXT_SOURCE_PAGE_LIMIT,
+) -> list[str]:
+    pages = session.source_pages or []
+    if not pages:
+        return []
+    if len(pages) <= limit:
+        selected_pages = pages
+    else:
+        head_count = max(1, limit // 2)
+        tail_count = max(1, limit - head_count)
+        selected_pages = [*pages[:head_count], *pages[-tail_count:]]
+    lines: list[str] = []
+    seen: set[int] = set()
+    for page_number, page_text in selected_pages:
+        if page_number in seen:
+            continue
+        seen.add(page_number)
+        excerpt = _clip_assistant_context_text(page_text, 320)
+        if excerpt:
+            lines.append(f"- PDF page {page_number}: {excerpt}")
+    return lines
+
+
+def _build_whole_paper_assistant_text(session: PaperReaderSession) -> str:
+    source_page_count = _source_page_count(session)
+    lines = [
+        "Whole-paper context for Paper Reader.",
+        f"Paper title: {session.paper_title}",
+    ]
+    if session.authors:
+        lines.append("Authors: " + ", ".join(session.authors[:8]))
+    if session.source_id:
+        source_label = "arXiv ID" if session.source_type == "arxiv" else "Source ID"
+        lines.append(f"{source_label}: {session.source_id}")
+    if source_page_count:
+        lines.append(f"PDF source pages: {source_page_count}")
+    lines.append(f"Reader mode: {session.reader_mode}")
+    lines.append(f"Discipline: {session.discipline} ({session.discipline_source})")
+
+    map_lines = _paper_map_context_lines(session)
+    if map_lines:
+        lines.append("Paper map:")
+        lines.extend(map_lines)
+
+    chunk_lines = _chunk_context_lines(session)
+    if chunk_lines:
+        lines.append("Key paper chunks:")
+        lines.extend(chunk_lines)
+
+    page_lines = _source_page_context_lines(session)
+    if page_lines:
+        lines.append("Source page excerpts:")
+        lines.extend(page_lines)
+
+    budgeted: list[str] = []
+    for line in lines:
+        if not _append_assistant_context_line(budgeted, line, ASSISTANT_CONTEXT_CHAR_BUDGET):
+            break
+    return "\n".join(budgeted).strip()
+
+
+def build_assistant_context(session_id: str) -> PaperReaderAssistantContextResponse:
+    with _SESSION_LOCK:
+        session = _get_session(session_id)
+        _touch_session(session)
+        answer_context = _build_whole_paper_assistant_text(session)
+        source_page_count = _source_page_count(session)
+        workflow_context = WorkflowContextModel(
+            kind="paper_reader",
+            session_id=session.session_id,
+            source=session.source_type,
+            paper_title=session.paper_title,
+            arxiv_id=session.source_id if session.source_type == "arxiv" else None,
+            answer_language=_normalize_answer_language(session.answer_language, session.paper_title),
+            reader_mode=_normalize_reader_mode(session.reader_mode),
+            discipline=_normalize_discipline(session.discipline),
+            discipline_source="manual" if session.discipline_source == "manual" else "auto",
+            page_count=source_page_count or len(session.pages) or None,
+            latest_page_summary=answer_context,
+            metadata={
+                "whole_paper": {
+                    "context_kind": "whole_paper",
+                    "source_page_count": source_page_count,
+                    "chunk_count": len(session.chunks),
+                    "source": "paper_reader_assistant_context",
+                }
+            },
+        )
+    return PaperReaderAssistantContextResponse(
+        session_id=session_id,
+        answer_context=answer_context,
+        workflow_context=workflow_context,
+    )
+
+
 def _chunks_for_plan(session: PaperReaderSession, plan: PaperReaderPagePlan) -> list[PaperReaderChunk]:
     chunk_map = {chunk.chunk_id: chunk for chunk in session.chunks}
     return [chunk_map[chunk_id] for chunk_id in plan.chunk_ids if chunk_id in chunk_map]
@@ -2002,6 +2219,35 @@ def google_translate_text(text: str, target_language: str, timeout: int = 20) ->
     return _normalize_multiline_text("".join(translated_parts))
 
 
+def _translate_selected_source_text(source_text: str, answer_language: str, settings: RuntimeSettings) -> str:
+    translation_config = _default_paper_reader_translation_config(settings)
+    if translation_config.provider == "google_translate":
+        return google_translate_text(source_text, answer_language, timeout=settings.retrieval.request_timeout)
+
+    messages = _build_selected_text_translation_messages(source_text, answer_language)
+    raw_text = chat_completion(messages, translation_config, settings.retrieval.request_timeout)
+    return _extract_selected_text_translation(raw_text)
+
+
+def translate_standalone_selected_text(
+    request: PaperReaderSelectionTranslateRequest,
+    settings: RuntimeSettings,
+) -> PaperReaderSelectionTranslateResponse:
+    source_text = _normalize_multiline_text(request.text)
+    if not source_text:
+        raise ValueError("Selected text is empty.")
+
+    answer_language = _normalize_answer_language(request.answer_language, source_text)
+    translation = _translate_selected_source_text(source_text, answer_language, settings)
+    if not translation:
+        raise RuntimeError("Selected text translation returned no content.")
+    return PaperReaderSelectionTranslateResponse(
+        session_id=None,
+        source_text=source_text,
+        translation=translation,
+    )
+
+
 def translate_selected_text(
     session_id: str,
     request: PaperReaderSelectionTranslateRequest,
@@ -2016,13 +2262,7 @@ def translate_selected_text(
         answer_language = _normalize_answer_language(request.answer_language, session.paper_title) or session.answer_language
         _touch_session(session)
 
-    translation_config = _default_paper_reader_translation_config(settings)
-    if translation_config.provider == "google_translate":
-        translation = google_translate_text(source_text, answer_language, timeout=settings.retrieval.request_timeout)
-    else:
-        messages = _build_selected_text_translation_messages(source_text, answer_language)
-        raw_text = chat_completion(messages, translation_config, settings.retrieval.request_timeout)
-        translation = _extract_selected_text_translation(raw_text)
+    translation = _translate_selected_source_text(source_text, answer_language, settings)
     if not translation:
         raise RuntimeError("Selected text translation returned no content.")
     return PaperReaderSelectionTranslateResponse(
@@ -3236,15 +3476,14 @@ def get_source_page_pdf_path(session_id: str, page_number: int) -> Path:
 def get_source_pages_for_reader_page(session_id: str, page_index: int) -> PaperReaderSourcePagesResponse:
     with _SESSION_LOCK:
         session = _get_session(session_id)
-        if page_index < 0 or page_index >= len(session.pages):
-            raise IndexError("Requested page is out of range.")
-        plan = session.pages[page_index]
         source_pages = session.source_pages or _extract_pdf_pages(session.pdf_path)
         if not session.source_pages:
             session.source_pages = source_pages
-        page_start = plan.page_start or 1
-        page_end = plan.page_end or page_start
-        selected_page_numbers = [page_number for page_number, _text in source_pages if page_start <= page_number <= page_end]
+        source_page_count = _source_page_count(session)
+        if page_index < 0 or page_index >= source_page_count:
+            raise IndexError("Requested page is out of range.")
+        page_number = page_index + 1
+        selected_page_numbers = [page_number]
         missing_layouts = [page_number for page_number in selected_page_numbers if page_number not in session.source_page_layouts]
         if missing_layouts:
             with suppress(Exception):
@@ -3273,8 +3512,8 @@ def get_source_pages_for_reader_page(session_id: str, page_index: int) -> PaperR
     return PaperReaderSourcePagesResponse(
         session_id=session_id,
         reader_page_index=page_index,
-        page_start=page_start,
-        page_end=page_end,
+        page_start=page_number,
+        page_end=page_number,
         pages=selected_pages,
     )
 
@@ -3421,20 +3660,37 @@ def chat_with_paper(
     )
 
 
-def session_to_model(session: PaperReaderSession) -> PaperReaderSessionModel:
-    pages = [
+def _source_page_count(session: PaperReaderSession) -> int:
+    if session.source_pages:
+        return max((page_number for page_number, _text in session.source_pages), default=0)
+    with suppress(Exception):
+        return len(PdfReader(str(session.pdf_path)).pages)
+    return max((plan.page_end for plan in session.pages), default=len(session.pages))
+
+
+def _physical_source_page_manifests(session: PaperReaderSession) -> list[PaperReaderPageManifestModel]:
+    source_page_count = _source_page_count(session)
+    if source_page_count <= 0:
+        source_page_count = max(len(session.pages), 1)
+    return [
         PaperReaderPageManifestModel(
-            page_index=plan.page_index,
-            title=plan.title,
-            status=session.page_statuses.get(plan.page_index, "queued"),
-            estimated_tokens=plan.estimated_tokens,
-            chunk_count=len(plan.chunk_ids),
-            page_start=plan.page_start,
-            page_end=plan.page_end,
-            source_node_ids=list(plan.source_node_ids),
+            page_index=page_number - 1,
+            title=f"PDF page {page_number}",
+            status="ready",
+            estimated_tokens=0,
+            chunk_count=0,
+            page_start=page_number,
+            page_end=page_number,
+            source_node_ids=[],
         )
-        for plan in session.pages
+        for page_number in range(1, source_page_count + 1)
     ]
+
+
+def session_to_model(session: PaperReaderSession) -> PaperReaderSessionModel:
+    pages = _physical_source_page_manifests(session)
+    source_page_count = len(pages)
+    current_page_index = min(max(session.current_page_index, 0), max(source_page_count - 1, 0))
     return PaperReaderSessionModel(
         session_id=session.session_id,
         source_type=session.source_type,
@@ -3449,8 +3705,9 @@ def session_to_model(session: PaperReaderSession) -> PaperReaderSessionModel:
         discipline_source="manual" if session.discipline_source == "manual" else "auto",
         max_context_tokens=session.max_context_tokens,
         page_input_budget=session.page_input_budget,
-        current_page_index=session.current_page_index,
-        page_count=len(session.pages),
+        current_page_index=current_page_index,
+        page_count=source_page_count,
+        source_page_count=source_page_count,
         session_status=session.session_status,
         pages=pages,
         index_status="ready" if session.index_tree is not None and session.index_status == "ready" else "fallback",

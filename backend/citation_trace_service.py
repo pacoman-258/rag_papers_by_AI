@@ -10,12 +10,14 @@ from typing import Any, Iterator, Literal
 
 from pypdf import PdfReader
 
-from local_paper_db.app.external_sources import fetch_arxiv_record
+from local_paper_db.app.external_sources import fetch_arxiv_record, resolve_arxiv_candidates
 from local_paper_db.app.search_service import (
     TargetPaper,
     build_canonical_paper_id,
     build_target_paper_retrieval_text,
+    chat_completion,
     collect_prior_work_candidates,
+    extract_first_json_object,
     get_embedding,
     normalize_whitespace,
 )
@@ -36,10 +38,80 @@ DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
 YEAR_PATTERN = re.compile(r"\b(19\d{2}|20\d{2})\b")
 REFERENCE_SPLIT_PATTERN = re.compile(r"(?m)^\s*(?P<label>\[\d+\]|(?!(?:19|20)\d{2}\.)\d+\.)\s+")
 REFERENCE_SENTENCE_SPLIT_PATTERN = re.compile(r"(?<!\b[A-Z])\.\s+")
+REFERENCE_ARXIV_TRAILING_YEAR_PATTERN = re.compile(r"\s*[,;]?\s*(?:19|20)\d{2}[a-z]?\.", re.IGNORECASE)
+REFERENCE_YEAR_BOUNDARY_PATTERN = re.compile(r"\b(?:19|20)\d{2}[a-z]?\.\s+", re.IGNORECASE)
 ARXIV_URL_PATTERN = re.compile(
     r"^https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/(?P<id>\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?/?(?:[?#].*)?$",
     re.IGNORECASE,
 )
+NON_REFERENCE_FRAGMENT_PATTERN = re.compile(
+    r"\b(algorithm|appendix|ablation|kernel|require:|write:|section|figure|table)\b|[→←▷]",
+    re.IGNORECASE,
+)
+TOPIC_STOPWORDS = {
+    "about",
+    "after",
+    "also",
+    "among",
+    "and",
+    "are",
+    "around",
+    "based",
+    "been",
+    "being",
+    "between",
+    "both",
+    "can",
+    "could",
+    "from",
+    "has",
+    "have",
+    "into",
+    "its",
+    "language",
+    "model",
+    "models",
+    "more",
+    "our",
+    "paper",
+    "preprint",
+    "show",
+    "study",
+    "such",
+    "than",
+    "that",
+    "the",
+    "their",
+    "these",
+    "this",
+    "through",
+    "use",
+    "using",
+    "via",
+    "we",
+    "where",
+    "while",
+    "with",
+}
+SHORT_TOPIC_TOKENS = {"ai", "fp4", "fp8", "kv", "llm"}
+TOKEN_ALIASES = {
+    "cached": "cache",
+    "caches": "cache",
+    "caching": "cache",
+    "agents": "agent",
+    "apis": "api",
+    "codebooks": "codebook",
+    "compressing": "compression",
+    "compressions": "compression",
+    "quantisations": "quantization",
+    "quantisation": "quantization",
+    "quantizations": "quantization",
+    "quantized": "quantization",
+    "quantizing": "quantization",
+    "rotations": "rotation",
+    "serving": "serve",
+    "tools": "tool",
+}
 
 
 @dataclass(slots=True)
@@ -349,13 +421,50 @@ def _coerce_reference(label: str | None, text: str) -> ReferenceEntry:
     )
 
 
+def _trim_collapsed_reference_prefix(segment: str, arxiv_start: int) -> str:
+    prefix = segment[:arxiv_start]
+    boundaries = list(REFERENCE_YEAR_BOUNDARY_PATTERN.finditer(prefix))
+    if not boundaries:
+        return segment.strip()
+    trimmed = segment[boundaries[-1].end() :].strip()
+    return trimmed if len(trimmed.split()) >= 4 else segment.strip()
+
+
+def _iter_unlabeled_reference_paragraph_chunks(paragraph: str) -> Iterator[str]:
+    normalized = normalize_whitespace(paragraph)
+    if not normalized:
+        return
+    arxiv_matches = list(ARXIV_ID_PATTERN.finditer(normalized))
+    if not arxiv_matches:
+        yield normalized
+        return
+
+    previous_end = 0
+    for match in arxiv_matches:
+        if match.start() < previous_end:
+            continue
+        segment_end = match.end()
+        trailing_match = REFERENCE_ARXIV_TRAILING_YEAR_PATTERN.match(normalized[segment_end : segment_end + 40])
+        if trailing_match is not None:
+            segment_end += trailing_match.end()
+        segment = normalized[previous_end:segment_end].strip()
+        relative_arxiv_start = max(0, match.start() - previous_end)
+        trimmed = _trim_collapsed_reference_prefix(segment, relative_arxiv_start)
+        if trimmed:
+            yield trimmed
+        previous_end = segment_end
+
+    tail = normalize_whitespace(normalized[previous_end:])
+    if tail:
+        yield tail
+
+
 def _iter_reference_chunks(reference_text: str) -> Iterator[tuple[str | None, str]]:
     matches = list(REFERENCE_SPLIT_PATTERN.finditer(reference_text))
     if not matches:
         for paragraph in re.split(r"\n\s*\n", reference_text):
-            normalized = normalize_whitespace(paragraph)
-            if normalized:
-                yield None, normalized
+            for chunk in _iter_unlabeled_reference_paragraph_chunks(paragraph):
+                yield None, chunk
         return
     for index, match in enumerate(matches):
         start = match.end()
@@ -426,10 +535,91 @@ def _token_set(text: str) -> set[str]:
     }
 
 
+def _canonical_topic_token(token: str) -> str:
+    normalized = TOKEN_ALIASES.get(token, token)
+    if normalized.endswith("ies") and len(normalized) > 4:
+        return f"{normalized[:-3]}y"
+    if normalized.endswith("s") and len(normalized) > 4:
+        return normalized[:-1]
+    return normalized
+
+
+def _topic_token_set(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw_token in re.findall(r"[a-z0-9]+", normalize_whitespace(str(text)).casefold()):
+        token = _canonical_topic_token(raw_token)
+        if token in TOPIC_STOPWORDS:
+            continue
+        if len(token) <= 2 and token not in SHORT_TOPIC_TOKENS:
+            continue
+        if token.isdigit() and len(token) == 4:
+            continue
+        tokens.add(token)
+    return tokens
+
+
 def _jaccard(left: set[str], right: set[str]) -> float:
     if not left or not right:
         return 0.0
     return len(left & right) / len(left | right)
+
+
+def _token_recall(query_tokens: set[str], document_tokens: set[str]) -> float:
+    if not query_tokens or not document_tokens:
+        return 0.0
+    return len(query_tokens & document_tokens) / len(query_tokens)
+
+
+def _token_precision(query_tokens: set[str], document_tokens: set[str]) -> float:
+    if not query_tokens or not document_tokens:
+        return 0.0
+    return len(query_tokens & document_tokens) / len(document_tokens)
+
+
+def _token_f1(left: set[str], right: set[str]) -> float:
+    precision = _token_precision(left, right)
+    recall = _token_recall(left, right)
+    if precision <= 0.0 or recall <= 0.0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
+def _target_relevance_score(target: CitationTracePaperNode, candidate: CitationTracePaperNode) -> float:
+    target_title_tokens = _topic_token_set(target.title)
+    target_text_tokens = _topic_token_set(
+        " ".join([target.title, target.abstract, " ".join(target.keywords)])
+    )
+    candidate_title_tokens = _topic_token_set(candidate.title)
+    candidate_text_tokens = _topic_token_set(
+        " ".join([candidate.title, candidate.abstract, " ".join(candidate.keywords)])
+    )
+    title_alignment = _token_f1(target_title_tokens, candidate_title_tokens)
+    target_title_coverage = _token_recall(target_title_tokens, candidate_text_tokens)
+    topic_alignment = _token_f1(target_text_tokens, candidate_text_tokens)
+    return min(1.0, max(title_alignment, target_title_coverage * 0.85, topic_alignment))
+
+
+def _reference_title_similarity(query: str, candidate: CitationTracePaperNode) -> float:
+    query_tokens = _topic_token_set(query)
+    title_tokens = _topic_token_set(candidate.title)
+    if not query_tokens or not title_tokens:
+        return 0.0
+    return max(_token_f1(query_tokens, title_tokens), _token_recall(query_tokens, title_tokens) * 0.85)
+
+
+def _is_non_reference_fragment(reference: ReferenceEntry) -> bool:
+    text = normalize_whitespace(reference.raw_text or "")
+    if reference.arxiv_id or reference.doi:
+        return False
+    if reference.year:
+        return False
+    if not text:
+        return True
+    if NON_REFERENCE_FRAGMENT_PATTERN.search(text):
+        return True
+    tokens = _topic_token_set(text)
+    punctuation_density = sum(1 for char in text if char in "=;:()[]{}") / max(len(text), 1)
+    return len(tokens) > 45 and punctuation_density > 0.04
 
 
 def _date_plausibility(seed_date: str | None, candidate_date: str | None) -> float:
@@ -521,7 +711,7 @@ def score_candidate_relationship(
         abstract_similarity * 0.1
         + title_overlap * 0.07
         + keyword_overlap * 0.05
-        + author_overlap * 0.05
+        + author_overlap * 0.01
         + date_score * 0.03
         + reference_match * 0.7
     )
@@ -621,6 +811,247 @@ def resolve_reference_to_node(reference: ReferenceEntry, settings: Any) -> Citat
     )
 
 
+def _paper_node_from_external_record(record: Any) -> CitationTracePaperNode:
+    arxiv_id = (
+        _normalize_arxiv_id(getattr(record, "arxiv_id", None))
+        or _normalize_arxiv_id(getattr(record, "source_id", None))
+    )
+    source_id = normalize_whitespace(str(getattr(record, "source_id", "") or arxiv_id or ""))
+    title = normalize_whitespace(str(getattr(record, "title", "") or source_id or "Untitled paper"))
+    abstract = normalize_whitespace(str(getattr(record, "summary", "") or title))
+    authors = [normalize_whitespace(str(author)) for author in list(getattr(record, "authors", []) or [])]
+    published_date = getattr(record, "published_date", None)
+    doi = getattr(record, "doi", None)
+    primary_category = getattr(record, "primary_category", None)
+    canonical_id = build_canonical_paper_id(
+        title=title,
+        authors=authors,
+        published_date=published_date,
+        arxiv_id=arxiv_id,
+        doi=doi,
+    )
+    return CitationTracePaperNode(
+        paper_id=arxiv_id or source_id or canonical_id,
+        source="arxiv",
+        source_id=source_id or arxiv_id or canonical_id,
+        canonical_id=canonical_id,
+        title=title,
+        abstract=abstract,
+        authors=authors,
+        published_date=published_date,
+        keywords=[primary_category] if primary_category else [],
+        arxiv_id=arxiv_id,
+        doi=doi,
+        external_url=getattr(record, "external_url", None),
+    )
+
+
+def _reference_query(reference: ReferenceEntry) -> str:
+    if reference.title_hint:
+        return normalize_whitespace(reference.title_hint)
+    text = DOI_PATTERN.sub("", ARXIV_ID_PATTERN.sub("", reference.raw_text or ""))
+    text = YEAR_PATTERN.sub("", text)
+    return normalize_whitespace(text)[:240]
+
+
+def _year_from_date(value: str | None) -> int | None:
+    if not value:
+        return None
+    match = YEAR_PATTERN.search(str(value))
+    return int(match.group(1)) if match else None
+
+
+def _reference_author_overlap(reference: ReferenceEntry, candidate: CitationTracePaperNode) -> float:
+    reference_tokens = _token_set(reference.raw_text)
+    if not reference_tokens or not candidate.authors:
+        return 0.0
+    author_tokens: set[str] = set()
+    for author in candidate.authors:
+        parts = _token_set(author)
+        if parts:
+            author_tokens.add(sorted(parts, key=len)[-1])
+    return 1.0 if reference_tokens & author_tokens else 0.0
+
+
+def _reference_date_score(reference: ReferenceEntry, target: CitationTracePaperNode, candidate: CitationTracePaperNode) -> float:
+    candidate_year = _year_from_date(candidate.published_date)
+    target_year = _year_from_date(target.published_date)
+    reference_year = int(reference.year) if reference.year and reference.year.isdigit() else None
+    if candidate_year is None:
+        return 0.25
+    if target_year is not None and candidate_year > target_year:
+        return 0.0
+    if reference_year is not None:
+        delta = abs(candidate_year - reference_year)
+        if delta == 0:
+            return 1.0
+        if delta <= 1:
+            return 0.8
+        if delta <= 3:
+            return 0.5
+        return 0.2
+    return 0.75
+
+
+def _score_recalled_candidate(
+    session: CitationTraceSession,
+    reference: ReferenceEntry,
+    candidate: CitationTracePaperNode,
+    *,
+    source_label: str,
+) -> CitationTraceLedgerEntry:
+    query = _reference_query(reference)
+    reference_title_score = _reference_title_similarity(query, candidate)
+    target_relevance = _target_relevance_score(session.target_paper, candidate)
+    reference_match = _reference_metadata_match(candidate, reference.raw_text)
+    author_overlap = _reference_author_overlap(reference, candidate)
+    author_bonus = author_overlap * 0.01
+    date_score = _reference_date_score(reference, session.target_paper, candidate)
+    source_confidence = 1.0 if source_label == "arxiv_id" else 0.7
+    substantive_signal = max(target_relevance, reference_title_score, reference_match)
+    total = (
+        target_relevance * 0.46
+        + reference_title_score * 0.32
+        + reference_match * 0.13
+        + date_score * 0.04
+        + source_confidence * 0.03
+        + author_bonus
+    )
+    exact_arxiv_match = (
+        candidate.arxiv_id
+        and reference.arxiv_id
+        and _normalize_arxiv_id(candidate.arxiv_id) == _normalize_arxiv_id(reference.arxiv_id)
+    )
+    if exact_arxiv_match and reference_title_score >= 0.35 and target_relevance >= 0.1:
+        total += 0.1
+    warnings: list[str] = []
+    if target_relevance < 0.08:
+        cap = 0.45 if reference_title_score >= 0.65 else 0.35
+        if total > cap:
+            total = cap
+        if reference_match >= 1.0:
+            warnings.append("Exact identifier match but low target-topic alignment; demoted.")
+    if substantive_signal < 0.25:
+        if author_overlap > 0:
+            total = min(total, 0.08)
+            warnings.append("Author overlap is only a small bonus; no title, topic, or identifier evidence matched.")
+        else:
+            total = min(total, 0.12)
+    if reference_title_score < 0.12 and reference_match >= 1.0:
+        total = min(total, 0.42)
+        warnings.append("Exact identifier match but weak title agreement with the parsed reference text.")
+    score_total = round(min(total, 1.0), 4)
+    metadata = [f"reference:{reference.reference_id}", f"recall:{source_label}"]
+    if candidate.arxiv_id:
+        metadata.append(f"arXiv:{candidate.arxiv_id}")
+    if candidate.doi:
+        metadata.append(f"DOI:{candidate.doi}")
+    if candidate.published_date:
+        metadata.append(f"published:{candidate.published_date}")
+    return CitationTraceLedgerEntry(
+        entry_id=_new_id("ledger"),
+        candidate_paper=candidate,
+        seed_paper=session.target_paper,
+        round=1,
+        relation_type="explicit_reference",
+        evidence_level=_score_to_level(score_total, "explicit_reference"),
+        score_total=score_total,
+        score_breakdown=CitationTraceScoreBreakdown(
+            abstract_similarity=round(target_relevance, 4),
+            title_overlap=round(reference_title_score, 4),
+            author_overlap=round(author_bonus, 4),
+            date_plausibility=round(date_score, 4),
+            reference_match=round(reference_match, 4),
+        ),
+        reference_text=reference.raw_text,
+        metadata_evidence=metadata,
+        warnings=warnings,
+    )
+
+
+def recall_reference_candidates(
+    session: CitationTraceSession,
+    settings: Any,
+    *,
+    limit: int = 15,
+) -> list[CitationTraceLedgerEntry]:
+    indexed_entries: list[tuple[int, int, CitationTraceLedgerEntry]] = []
+    unresolved_entries: list[tuple[int, int, CitationTraceLedgerEntry]] = []
+    for reference_index, reference in enumerate(session.reference_entries):
+        entries_for_reference: list[CitationTraceLedgerEntry] = []
+        if reference.arxiv_id:
+            try:
+                node = resolve_reference_to_node(reference, settings)
+            except Exception as exc:
+                node = None
+                session.warnings.append(f"{reference.title_hint or reference.reference_id}: {exc}")
+            if node is not None:
+                entries_for_reference.append(
+                    _score_recalled_candidate(session, reference, node, source_label="arxiv_id")
+                )
+        else:
+            query = _reference_query(reference)
+            if query:
+                try:
+                    records = resolve_arxiv_candidates(query, limit=limit)
+                except Exception as exc:
+                    records = []
+                    session.warnings.append(f"{reference.title_hint or reference.reference_id}: {exc}")
+                for record in records[:limit]:
+                    entries_for_reference.append(
+                        _score_recalled_candidate(
+                            session,
+                            reference,
+                            _paper_node_from_external_record(record),
+                            source_label="title",
+                        )
+                    )
+        if not entries_for_reference:
+            if _is_non_reference_fragment(reference):
+                label = reference.title_hint or reference.raw_text[:80] or reference.reference_id
+                session.warnings.append(f"Skipped unresolved reference fragment: {normalize_whitespace(label)}")
+                continue
+            _node, entry = build_unresolved_reference_record(
+                reference,
+                seed_paper_id=session.target_paper.paper_id,
+            )
+            unresolved_entries.append((reference_index, 0, entry))
+            continue
+        for candidate_index, entry in enumerate(entries_for_reference):
+            indexed_entries.append((reference_index, candidate_index, entry))
+
+    source_entries = indexed_entries if indexed_entries else unresolved_entries
+    best_by_key: dict[str, tuple[int, int, CitationTraceLedgerEntry]] = {}
+    for reference_index, candidate_index, entry in source_entries:
+        key = (
+            entry.candidate_paper.canonical_id
+            or entry.candidate_paper.arxiv_id
+            or entry.candidate_paper.source_id
+            or entry.candidate_paper.paper_id
+        ).casefold()
+        existing = best_by_key.get(key)
+        if existing is None or (
+            -entry.score_total,
+            reference_index,
+            candidate_index,
+        ) < (
+            -existing[2].score_total,
+            existing[0],
+            existing[1],
+        ):
+            best_by_key[key] = (reference_index, candidate_index, entry)
+    sorted_entries = sorted(
+        best_by_key.values(),
+        key=lambda item: (
+            -item[2].score_total,
+            item[0],
+            item[1],
+            item[2].candidate_paper.title.casefold(),
+        ),
+    )
+    return [entry for _reference_index, _candidate_index, entry in sorted_entries[:limit]]
+
+
 def _search_source_for_node(node: CitationTracePaperNode) -> str:
     return node.source if node.source in {"arxiv", "local", "wos"} else "arxiv"
 
@@ -707,47 +1138,16 @@ def _round_summary_payload(summary: CitationTraceRoundSummary) -> dict[str, Any]
 
 
 def run_round_one(session: CitationTraceSession, settings: Any) -> CitationTraceRoundSummary:
-    indexed_entries: list[tuple[int, CitationTraceLedgerEntry]] = []
-    warnings: list[str] = []
-    for reference_index, reference in enumerate(session.reference_entries):
-        try:
-            node = resolve_reference_to_node(reference, settings)
-        except Exception as exc:
-            node = None
-            warnings.append(f"{reference.title_hint or reference.reference_id}: {exc}")
-        if node is None:
-            _node, entry = build_unresolved_reference_record(
-                reference,
-                seed_paper_id=session.target_paper.paper_id,
-            )
-            indexed_entries.append((reference_index, entry))
-            continue
-        indexed_entries.append(
-            (
-                reference_index,
-                score_candidate_relationship(
-                    session.target_paper,
-                    node,
-                    round_number=1,
-                    relation_type="explicit_reference",
-                    reference_text=reference.raw_text,
-                ),
-            )
-        )
-    indexed_entries.sort(
-        key=lambda item: (
-            -item[1].score_total,
-            item[0],
-        )
-    )
-    selected = [entry for _reference_index, entry in indexed_entries[:10]]
+    warning_count_before = len(session.warnings)
+    selected = recall_reference_candidates(session, settings, limit=15)
+    warnings = session.warnings[warning_count_before:]
     return CitationTraceRoundSummary(
         round=1,
         status="completed" if selected else "partial",
         seed_count=1,
-        candidate_count=len(indexed_entries),
+        candidate_count=len(selected),
         selected_count=len(selected),
-        summary_text="Round 1 selected explicit references and unresolved reference records.",
+        summary_text="Round 1 recalled the top 15 reference-grounded candidates.",
         seed_paper_ids=[session.target_paper.paper_id],
         ledger_entries=selected,
         warnings=warnings,
@@ -792,9 +1192,20 @@ def run_round_two(
     )
 
 
-def synthesize_final_top5(session: CitationTraceSession, settings: Any) -> list[CitationTraceTopPaper]:
+def _fallback_final_top5(session: CitationTraceSession) -> list[CitationTraceTopPaper]:
     items: list[CitationTraceTopPaper] = []
-    for index, entry in enumerate(session.ledger_entries[:5], start=1):
+    candidate_entries = [
+        entry for entry in session.ledger_entries if entry.candidate_paper.source != "unresolved"
+    ] or list(session.ledger_entries)
+    ranked_entries = sorted(
+        candidate_entries,
+        key=lambda entry: (
+            -entry.score_total,
+            entry.candidate_paper.title.casefold(),
+            entry.entry_id,
+        ),
+    )
+    for index, entry in enumerate(ranked_entries[:5], start=1):
         relation_is_explicit = entry.relation_type == "explicit_reference"
         items.append(
             CitationTraceTopPaper(
@@ -807,15 +1218,167 @@ def synthesize_final_top5(session: CitationTraceSession, settings: Any) -> list[
                 is_explicitly_cited=relation_is_explicit,
                 is_exploratory=not relation_is_explicit,
                 why_worth_reading="It is one of the strongest currently available provenance candidates.",
-                uncertainty="LLM synthesis fallback used until model ranking is configured.",
+                uncertainty="LLM ranking fallback used; ordered by the reference recall score.",
                 supporting_edge_ids=[entry.entry_id],
             )
         )
     return enforce_final_top5_policy(items)
 
 
+def _request_timeout_from_settings(settings: Any) -> int:
+    return _request_timeout(settings)
+
+
+def _candidate_assessment_messages(
+    session: CitationTraceSession,
+    entry: CitationTraceLedgerEntry,
+) -> list[dict[str, str]]:
+    target = session.target_paper
+    candidate = entry.candidate_paper
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You assess whether a referenced candidate paper is useful for citation provenance. "
+                "Return one JSON object with keys: paper_summary, comparison_points, supporting_evidence, "
+                "negative_evidence, confidence, suggested_score. Do not invent evidence."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Target paper:\nTitle: {target.title}\nAbstract: {target.abstract}\n\n"
+                f"Reference text:\n{entry.reference_text or ''}\n\n"
+                f"Candidate paper:\nTitle: {candidate.title}\nAbstract: {candidate.abstract}\n"
+                f"Authors: {', '.join(candidate.authors)}\nPublished: {candidate.published_date or 'unknown'}"
+            ),
+        },
+    ]
+
+
+def _format_llm_field(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_format_llm_field(item) for item in value)
+    if isinstance(value, dict):
+        return ", ".join(
+            f"{normalize_whitespace(str(key))}: {_format_llm_field(item)}"
+            for key, item in value.items()
+        )
+    return normalize_whitespace(str(value))
+
+
+def assess_recalled_candidates(session: CitationTraceSession, settings: Any) -> None:
+    config = getattr(settings, "citation_trace_worker_chat", None)
+    if config is None:
+        return
+    for entry in session.ledger_entries[:15]:
+        try:
+            raw = chat_completion(
+                _candidate_assessment_messages(session, entry),
+                config,
+                _request_timeout_from_settings(settings),
+            )
+            parsed = extract_first_json_object(raw)
+            entry.llm_assessment = (
+                f"summary: {_format_llm_field(parsed.get('paper_summary'))}\n"
+                f"comparison_points: {_format_llm_field(parsed.get('comparison_points'))}\n"
+                f"supporting_evidence: {_format_llm_field(parsed.get('supporting_evidence'))}\n"
+                f"negative_evidence: {_format_llm_field(parsed.get('negative_evidence'))}\n"
+                f"confidence: {_format_llm_field(parsed.get('confidence'))}\n"
+                f"suggested_score: {_format_llm_field(parsed.get('suggested_score'))}"
+            )
+        except Exception as exc:
+            entry.warnings.append(f"Worker assessment failed: {exc}")
+
+
+def _main_ranking_messages(session: CitationTraceSession) -> list[dict[str, str]]:
+    candidate_lines = []
+    for entry in session.ledger_entries[:15]:
+        candidate_lines.append(
+            {
+                "entry_id": entry.entry_id,
+                "paper_id": entry.candidate_paper.paper_id,
+                "source": entry.candidate_paper.source,
+                "arxiv_id": entry.candidate_paper.arxiv_id,
+                "title": entry.candidate_paper.title,
+                "score_total": entry.score_total,
+                "score_breakdown": {
+                    "target_topic_alignment": entry.score_breakdown.abstract_similarity,
+                    "reference_title_alignment": entry.score_breakdown.title_overlap,
+                    "author_bonus": entry.score_breakdown.author_overlap,
+                    "date_plausibility": entry.score_breakdown.date_plausibility,
+                    "identifier_match": entry.score_breakdown.reference_match,
+                },
+                "reference_text": entry.reference_text,
+                "llm_assessment": entry.llm_assessment,
+                "warnings": list(entry.warnings),
+            }
+        )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Rank citation provenance candidates. Return one JSON object with key top5. "
+                "top5 must be a list of objects with paper_id, influence_area, reason, "
+                "why_worth_reading, uncertainty. Prefer candidates with strong target-topic "
+                "alignment and reference-title alignment. Do not rank unresolved snippets, "
+                "appendix/algorithm fragments, or papers that only share an identifier with a "
+                "polluted reference but are unrelated to the target topic. Treat author_bonus as "
+                "a small tie-breaker only, never as primary evidence. Use only supplied evidence."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Target paper: {session.target_paper.title}\nCandidates:\n{candidate_lines}",
+        },
+    ]
+
+
+def synthesize_final_top5(session: CitationTraceSession, settings: Any) -> list[CitationTraceTopPaper]:
+    config = getattr(settings, "citation_trace_main_chat", None)
+    if config is None:
+        return _fallback_final_top5(session)
+    try:
+        raw = chat_completion(_main_ranking_messages(session), config, _request_timeout_from_settings(settings))
+        parsed = extract_first_json_object(raw)
+        requested = parsed.get("top5") if isinstance(parsed.get("top5"), list) else []
+    except Exception:
+        return _fallback_final_top5(session)
+
+    entries_by_paper_id = {entry.candidate_paper.paper_id: entry for entry in session.ledger_entries}
+    items: list[CitationTraceTopPaper] = []
+    for item in requested:
+        if not isinstance(item, dict):
+            continue
+        paper_id = normalize_whitespace(item.get("paper_id") or "")
+        entry = entries_by_paper_id.get(paper_id)
+        if entry is None:
+            continue
+        relation_is_explicit = entry.relation_type == "explicit_reference"
+        items.append(
+            CitationTraceTopPaper(
+                rank=len(items) + 1,
+                paper_id=entry.candidate_paper.paper_id,
+                title=entry.candidate_paper.title,
+                influence_area=normalize_whitespace(item.get("influence_area") or "unknown") or "unknown",
+                reason=normalize_whitespace(item.get("reason") or entry.llm_assessment or "Selected by citation trace ranking."),
+                evidence_level=entry.evidence_level,
+                is_explicitly_cited=relation_is_explicit,
+                is_exploratory=not relation_is_explicit,
+                why_worth_reading=normalize_whitespace(item.get("why_worth_reading") or "Worth reading as a high-ranked provenance candidate."),
+                uncertainty=normalize_whitespace(item.get("uncertainty") or ""),
+                supporting_edge_ids=[entry.entry_id],
+            )
+        )
+        if len(items) >= 5:
+            break
+    return enforce_final_top5_policy(items) if items else _fallback_final_top5(session)
+
+
 def run_synthesis_stage(session: CitationTraceSession, settings: Any) -> Iterator[tuple[str, dict[str, Any]]]:
-    yield "stage_start", {"stage": "synthesis", "session_id": session.session_id}
+    yield "stage_start", {"stage": "main_ranking", "session_id": session.session_id}
     try:
         session.final_top5 = synthesize_final_top5(session, settings)
     except Exception as exc:
@@ -836,6 +1399,7 @@ def run_citation_trace_events(
     session.final_top5 = []
     yield "stage_start", {"session_id": session.session_id, "stage": "reference_resolution"}
 
+    yield "stage_start", {"session_id": session.session_id, "stage": "candidate_recall"}
     round_one = run_round_one(session, settings)
     session.rounds = [round_one]
     session.ledger_entries = list(round_one.ledger_entries)
@@ -849,26 +1413,19 @@ def run_citation_trace_events(
     for warning in round_one.warnings:
         yield "warning", {"message": warning}
 
-    yield "stage_start", {"session_id": session.session_id, "stage": "round_two"}
-    round_two = run_round_two(session, settings, round_one)
-    session.rounds.append(round_two)
-    session.ledger_entries.extend(round_two.ledger_entries)
-    yield "round_summary", _round_summary_payload(round_two)
-    for entry in round_two.ledger_entries:
-        yield "ledger_entry", {
-            "entry_id": entry.entry_id,
-            "round": entry.round,
-            "title": entry.candidate_paper.title,
-        }
-    for warning in round_two.warnings:
-        yield "warning", {"message": warning}
+    yield "stage_start", {"session_id": session.session_id, "stage": "worker_assessment"}
+    assess_recalled_candidates(session, settings)
+    yield "worker_assessment_complete", {
+        "session_id": session.session_id,
+        "candidate_count": len(session.ledger_entries[:15]),
+    }
 
     for event_name, payload in run_synthesis_stage(session, settings):
         yield event_name, payload
 
-    if round_one.status in {"partial", "failed"} or round_two.status in {"partial", "failed"}:
+    if round_one.status in {"partial", "failed"}:
         session.status = "partial"
-    elif round_one.warnings or round_two.warnings or session.warnings:
+    elif round_one.warnings or session.warnings:
         session.status = "partial"
     else:
         session.status = "completed"

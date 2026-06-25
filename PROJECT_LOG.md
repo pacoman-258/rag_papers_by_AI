@@ -20,6 +20,104 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-25 22:04
+
+- 摘要：补齐远端仓库安全自动化配置，新增 CodeQL 扫描与 Dependabot 依赖更新检查，并在中英文 README 中说明仓库安全卫生、只写 API Key 和示例配置提交规则。
+- 涉及文件：`.github/workflows/codeql.yml`、`.github/dependabot.yml`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：执行 `git fetch --prune origin`（通过，当前分支相对 `origin/mac-dev` 为 ahead 23 / behind 0）；执行 `rg` 秘密扫描（未发现 OpenAI key、私钥或明文 `OPENAI_API_KEY=`）；执行 `git diff --check`（通过）；执行 `git status --ignored -s config`（确认 `config/runtime_settings.json` 为 ignored）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，92 tests）；执行 `npm run build`（在 `frontend/` 下，通过）。
+- 后续：远端启用 GitHub Advanced Security 或分支保护需要仓库权限；当前提交已提供仓库内可追踪的 CodeQL / Dependabot 配置。
+
+## 2026-06-25 11:01
+
+- 摘要：新增仓库工作流图资产，使用图像生成工具生成四流程视觉参考，并用可复现渲染脚本输出搜索、引用溯源、精读和用户画像系统的 1920×1080 PNG 流程图。
+- 涉及文件：`docs/workflows/render_workflow_diagrams.py`、`docs/workflows/search-workflow.svg`、`docs/workflows/search-workflow.png`、`docs/workflows/citation-trace-workflow.svg`、`docs/workflows/citation-trace-workflow.png`、`docs/workflows/paper-reader-workflow.svg`、`docs/workflows/paper-reader-workflow.png`、`docs/workflows/research-profile-workflow.svg`、`docs/workflows/research-profile-workflow.png`、`docs/workflows/workflow-overview-imagegen.png`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m py_compile docs/workflows/render_workflow_diagrams.py`（通过）；执行 `.venv/bin/python docs/workflows/render_workflow_diagrams.py`（通过，非沙箱渲染 PNG）；执行 `file docs/workflows/*.png docs/workflows/*.svg`（确认四张主图为 1920×1080 PNG，SVG 源图存在）；用本地图片查看确认主图文字与排版未明显截断。
+- 后续：若工作流协议继续变化，直接更新 `render_workflow_diagrams.py` 中的流程数据并重新渲染图片。
+
+## 2026-06-25 10:45
+
+- 摘要：进一步收紧 Citation Trace 候选召回评分，将作者重叠从主证据降为极小 bonus；当候选只有作者/年份/来源置信度而缺少标题、主题或标识符证据时强制低分并写入 warning，同时前端将该字段显示为 `author_bonus`。
+- 涉及文件：`backend/citation_trace_service.py`、`frontend/src/CitationTracePage.jsx`、`tests/test_citation_trace_service.py`、`tests/test_citation_trace_frontend.py`、`PROJECT_LOG.md`
+- 验证：新增作者-only 候选回归测试，先确认旧公式会给到 0.2062；修复后执行 `.venv/bin/python -m unittest tests.test_citation_trace_service.CitationTraceServiceTest.test_reference_recall_treats_author_overlap_as_tiny_bonus_not_evidence tests.test_citation_trace_frontend.CitationTraceFrontendTest.test_citation_trace_page_contains_required_sections`（通过，2 tests）；执行 `.venv/bin/python -m unittest tests.test_citation_trace_service tests.test_citation_trace_frontend`（通过，33 tests）；执行 `.venv/bin/python -m py_compile backend/citation_trace_service.py tests/test_citation_trace_service.py`（通过）；执行 `npm run build`（在 `frontend/` 下，通过）。
+- 后续：若后续引入更多 bibliographic matching 信号，仍需保持作者只作为 tie-breaker，不能单独构成候选证据。
+
+## 2026-06-25 10:41
+
+- 摘要：将选区翻译卡扩展到 `Paper Reader` 以外的页面；新增通用 `/api/translate-selection` 接口，前端在非论文精读页监听页面文本选区并用 `paper_reader_translation` 配置翻译。
+- 涉及文件：`backend/main.py`、`backend/paper_reader_service.py`、`backend/schemas.py`、`frontend/src/App.jsx`、`frontend/src/styles.css`、`tests/test_paper_reader_translation.py`、`tests/test_global_selection_translation_frontend.py`、`PROJECT_LOG.md`
+- 验证：新增 `test_standalone_selected_text_translation_uses_translation_config_without_session` 与 `test_app_exposes_global_selection_translation_card_outside_paper_reader` 并先确认缺少无 session 翻译服务和全局卡片时失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation.PaperReaderTranslationTest.test_standalone_selected_text_translation_uses_translation_config_without_session`（通过）；执行 `.venv/bin/python -m unittest tests.test_global_selection_translation_frontend`（通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation tests.test_global_selection_translation_frontend`（通过，11 tests）；执行 `.venv/bin/python -m py_compile backend/main.py backend/paper_reader_service.py backend/schemas.py tests/test_paper_reader_translation.py tests/test_global_selection_translation_frontend.py`（通过）；执行 `npm run build`（在 `frontend/` 下，通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，91 tests）；执行 `git diff --check`（通过）。
+- 后续：全局卡片会忽略输入框、下拉框和可编辑区域里的选区；`Paper Reader` 页继续使用其专用 PDF 选区翻译卡，避免重复出现两个翻译入口。
+
+## 2026-06-25 10:39
+
+- 摘要：澄清 Citation Trace 详情页中 `reference_text` 的展示语义，将“原始问题”改为“原始参考文献片段”，并修复未编号 References 被 PDF 抽取成单段时多个 arXiv 引用粘连的问题。
+- 涉及文件：`backend/citation_trace_service.py`、`frontend/src/App.jsx`、`frontend/src/CitationTracePage.jsx`、`tests/test_citation_trace_service.py`、`tests/test_citation_trace_frontend.py`、`PROJECT_LOG.md`
+- 验证：新增未编号 arXiv references 分割测试和 Citation Trace 专用文案测试，先确认当前实现失败；修复后执行 `.venv/bin/python -m unittest tests.test_citation_trace_service.CitationTraceServiceTest.test_extract_reference_entries_splits_collapsed_unnumbered_arxiv_references tests.test_citation_trace_frontend.CitationTraceFrontendTest.test_citation_trace_page_contains_required_sections`（通过，2 tests）；执行 `.venv/bin/python -m unittest tests.test_citation_trace_service tests.test_citation_trace_frontend`（通过，32 tests）；执行 `.venv/bin/python -m py_compile backend/citation_trace_service.py tests/test_citation_trace_service.py`（通过）；执行 `npm run build`（在 `frontend/` 下，通过）。
+- 后续：未编号参考文献仍只能用启发式切分；若 PDF 完全丢失句点/年份边界，仍建议上传更干净的 PDF 或后续接入更强的 reference parser。
+
+## 2026-06-25 10:18
+
+- 摘要：修复 Citation Trace / Paper Reader 载入 arXiv PDF 时因 SSL EOF 或 429 限流直接中断的问题，新增 arXiv PDF 备用端点重试、短退避、PDF 内容校验、可操作的限流提示，并为 arXiv 标题候选解析增加缓存以减少重复 API 请求。
+- 涉及文件：`backend/paper_reader_service.py`、`local_paper_db/app/external_sources.py`、`backend/main.py`、`tests/test_arxiv_reliability.py`、`tests/test_citation_trace_api.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：新增 `tests.test_arxiv_reliability` 先确认 SSL EOF 不重试、429 抛原始 HTTPError、title 查询重复请求；修复后执行 `.venv/bin/python -m unittest tests.test_arxiv_reliability tests.test_citation_trace_api`（通过，10 tests）；执行 `.venv/bin/python -m unittest tests.test_arxiv_reliability tests.test_citation_trace_service tests.test_citation_trace_api tests.test_paper_reader_index`（通过，42 tests）；执行 `.venv/bin/python -m py_compile backend/paper_reader_service.py backend/citation_trace_service.py backend/main.py local_paper_db/app/external_sources.py tests/test_arxiv_reliability.py tests/test_citation_trace_api.py`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，88 tests）；执行 `npm run build`（在 `frontend/` 下，通过）。
+- 后续：arXiv 真实限流仍由远端控制，若持续 429，用户仍需稍后重试或上传本地 PDF；后续可考虑为已成功下载的 arXiv PDF 加磁盘缓存。
+
+## 2026-06-24 17:24
+
+- 摘要：将 Live2D 研究画像从小助手常驻面板中移出，新增独立“研究画像”页面用于查看、刷新、置顶和删除画像条目。
+- 涉及文件：`frontend/src/App.jsx`、`frontend/src/Live2DAssistant.jsx`、`frontend/src/ResearchProfilePage.jsx`、`frontend/src/styles.css`、`tests/test_research_profile_frontend.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：新增 `tests.test_research_profile_frontend` 并先确认旧结构下失败；修复后执行 `.venv/bin/python -B -m unittest tests.test_assistant_research_profile tests.test_research_profile_frontend`（通过，7 tests）；执行 `npm run build`（在 `frontend/` 下，通过）。
+- 后续：画像真实生成仍依赖长期记忆数据库；独立页面只负责管理与降级提示，不改变画像抽取策略。
+
+## 2026-06-24 15:16
+
+- 摘要：为 `Paper Reader` 新增整篇论文级 Live2D 助手上下文接口，并将 PDF 选区改为点击“同步给小助手”后才作为助手回答焦点；同步修正 Live2D 的 Paper Reader prompt，不再按当前页上下文回答，并将最近用户/助手对话也打包进 workflow context。
+- 涉及文件：`backend/schemas.py`、`backend/paper_reader_service.py`、`backend/main.py`、`backend/live2d_service.py`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/Live2DAssistant.jsx`、`frontend/src/styles.css`、`tests/test_paper_reader_translation.py`、`tests/test_paper_reader_live2d_behavior.py`、`README.md`、`README.zh-CN.md`、`docs/superpowers/specs/2026-06-24-paper-reader-assistant-selection-design.md`、`docs/superpowers/plans/2026-06-24-paper-reader-assistant-selection.md`、`PROJECT_LOG.md`
+- 验证：新增 `test_assistant_context_uses_whole_paper_source_pages`、`test_live2d_paper_reader_context_renders_manual_selection_focus`、`test_paper_reader_syncs_whole_paper_context_not_active_page_context`、`test_live2d_paper_reader_context_renders_conversation_context`、`test_live2d_request_packages_conversation_context_with_workflow_context` 并先确认缺少功能时失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_translation tests.test_paper_reader_live2d_behavior`（通过，13 tests）；执行 `.venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py backend/main.py backend/live2d_service.py tests/test_paper_reader_translation.py tests/test_paper_reader_live2d_behavior.py`（通过）；执行 `npm run build`（在 `frontend/` 下，通过）；执行 `git diff --check`（通过）。
+- 后续：助手上下文为预算内整篇论文压缩切片，不替代主 Paper Reader 追问接口的检索式精读回答。
+
+## 2026-06-24 14:43
+
+- 摘要：修复 Live2D 研究画像在长期记忆数据库未连接时一直显示“研究画像暂时不可用”的问题，画像接口改为非致命降级返回，并在前端显示“连接长期记忆库后会开始积累画像”的行动提示。
+- 涉及文件：`backend/live2d_service.py`、`backend/main.py`、`backend/schemas.py`、`frontend/src/Live2DAssistant.jsx`、`tests/test_assistant_research_profile.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -B -m unittest tests.test_assistant_research_profile.AssistantResearchProfileTest.test_live2d_research_profile_list_degrades_when_memory_store_is_unavailable`（先失败后通过）；执行 `.venv/bin/python -B -m unittest tests.test_assistant_research_profile`（通过，6 tests）；执行 `.venv/bin/python -B -m py_compile backend/live2d_service.py backend/main.py backend/schemas.py tests/test_assistant_research_profile.py`（通过）；执行 `npm run build`（在 `frontend/` 下，通过）；执行 `git diff --check`（通过）。
+- 后续：真正生成画像仍需要本地 PostgreSQL/pgvector 记忆库可用；未连接时只做 UI 降级，不会保存或召回画像。
+
+## 2026-06-24 14:37
+
+- 摘要：移除 `Paper Reader` 用户可见的精读页分组概念，后端会话 `pages/page_count` 改为暴露 PDF 物理页，`/pages/{index}/source` 按物理页返回单页原文，前端翻页与总页数改为覆盖完整 PDF 页数。
+- 涉及文件：`backend/schemas.py`、`backend/paper_reader_service.py`、`frontend/src/PaperReaderPage.jsx`、`tests/test_paper_reader_source_layout.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：新增 `test_session_manifest_uses_pdf_pages_not_deep_reading_groups`、`test_source_page_endpoint_uses_physical_pdf_page_index` 并先确认旧协议下失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout tests.test_paper_reader_translation`（通过，15 tests）；执行 `.venv/bin/python -m py_compile backend/schemas.py backend/paper_reader_service.py backend/main.py tests/test_paper_reader_source_layout.py`（通过）；执行 `npm run build`（在 `frontend/` 下，通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，77 tests）；执行 `git diff --check`（通过）。
+- 后续：现有已打开的 Paper Reader 会话需要刷新或重新载入论文，前端才会拿到新的物理页 manifest。
+
+## 2026-06-23 14:19
+
+- 摘要：调整 `Paper Reader` 中间 PDF 原文区为单页显示，不再一次堆叠当前阅读分组的多张 PDF 页；底部上一页/下一页改为按 PDF 物理页翻页，并移除右侧阅读分组数字跳转。
+- 涉及文件：`frontend/src/PaperReaderPage.jsx`、`tests/test_paper_reader_source_layout.py`、`PROJECT_LOG.md`
+- 验证：新增 `test_frontend_pdf_reader_shows_one_source_page_with_bottom_navigation` 并先确认缺少 `activeSourcePageNumber` 时失败；修复后执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout.PaperReaderSourceLayoutTest.test_frontend_pdf_reader_shows_one_source_page_with_bottom_navigation`（通过）；执行 `.venv/bin/python -m unittest tests.test_paper_reader_source_layout tests.test_paper_reader_translation`（通过，13 tests）；执行 `npm run build`（在 `frontend/` 下，通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，75 tests）；执行 `git diff --check`（通过）。
+- 后续：无。
+
+## 2026-06-22 17:50
+
+- 摘要：为 Live2D 助手新增 Paper Reader 优先的研究画像能力，从论文阅读上下文中抽取专业方向、后续研究方向和阅读偏好画像信号，并在助手面板中支持刷新、置顶和删除。
+- 涉及文件：`backend/assistant_memory.py`、`backend/live2d_service.py`、`backend/main.py`、`backend/schemas.py`、`backend/config_store.py`、`local_paper_db/app/search_service.py`、`frontend/src/Live2DAssistant.jsx`、`frontend/src/styles.css`、`config/runtime_settings.example.json`、`README.md`、`README.zh-CN.md`、`tests/test_assistant_research_profile.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -B -m unittest discover -s tests`（通过，74 tests）；执行 `.venv/bin/python -B -m py_compile backend/assistant_memory.py backend/live2d_service.py backend/main.py backend/schemas.py backend/config_store.py local_paper_db/app/search_service.py tests/test_assistant_research_profile.py`（通过）；执行 `npm run build`（在 `frontend/` 下，通过）；执行 `git diff --check`（通过）；使用 Browser 打开 `http://127.0.0.1:5173/`，确认助手画像面板渲染，且 PostgreSQL 未启动时只显示温和降级文案。
+- 后续：画像仍是基于论文阅读行为的低频谨慎推断，不代表确定身份或正式专业标签；真实效果需要在多篇 Paper Reader 会话后人工观察建议质量。
+
+## 2026-06-22 14:39
+
+- 摘要：重做 Citation Trace Top15 候选规则分，降低纯 reference 标识符命中的权重，加入目标论文主题相关性、reference 标题一致性和非论文片段过滤，并修复 worker 返回数字字段时的解析失败。
+- 涉及文件：`backend/citation_trace_service.py`、`tests/test_citation_trace_service.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：新增回归测试先确认 Toolformer 类主题错位 exact arXiv 命中仍得高分、Algorithm 片段会进入 Top15、数字型 worker `confidence` 会触发失败；修复后执行 `.venv/bin/python -m unittest tests.test_citation_trace_service`（通过，28 tests）；执行 `.venv/bin/python -m unittest tests.test_citation_trace_service tests.test_citation_trace_api tests.test_citation_trace_frontend tests.test_paper_reader_translation`（通过，43 tests）；执行 `.venv/bin/python -m py_compile backend/citation_trace_service.py backend/main.py backend/schemas.py backend/config_store.py local_paper_db/app/search_service.py`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，69 tests）；执行 `npm run build`（在 `frontend/` 下，通过）。
+- 后续：规则分仍是轻量词法相关性，后续可继续引入候选论文 introduction/conclusion 抽取或本地 embedding 相关性作为更强的 topic alignment 信号。
+
+## 2026-06-22 11:40
+
+- 摘要：将 Citation Trace 默认流程改为一轮 references Top15 候选召回，新增主/副溯源模型配置，接入副模型逐候选分析与主模型 Top5 排序，并保留规则兜底。
+- 涉及文件：`backend/citation_trace_service.py`、`backend/config_store.py`、`backend/schemas.py`、`backend/main.py`、`local_paper_db/app/search_service.py`、`frontend/src/App.jsx`、`frontend/src/CitationTracePage.jsx`、`config/runtime_settings.example.json`、`README.md`、`README.zh-CN.md`、`tests/test_citation_trace_service.py`、`tests/test_citation_trace_frontend.py`、`tests/test_paper_reader_translation.py`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest tests.test_citation_trace_service tests.test_citation_trace_api tests.test_citation_trace_frontend tests.test_paper_reader_translation`（通过，41 tests）；执行 `.venv/bin/python -m py_compile backend/citation_trace_service.py backend/main.py backend/schemas.py backend/config_store.py local_paper_db/app/search_service.py`（通过）；执行 `.venv/bin/python -m unittest discover -s tests`（通过，67 tests）；执行 `npm run build`（在 `frontend/` 下，通过）；执行旧二轮/兜底文案扫描（无输出）；执行 `git diff --check`（通过）。
+- 后续：真实远程模型质量依赖主/副模型配置与 arXiv/PDF 可访问性；后续可再做候选 PDF 的 introduction/conclusion 精细抽取和缓存。
+
 ## 2026-06-21 23:01
 
 - 摘要：根据最终审查补齐 Citation Trace 的真实第二轮 prior-work 检索扩展，为 arXiv 会话 ID 增加唯一后缀避免缓存串用，并同步设计/计划文档中的兜底 Top5 表述。

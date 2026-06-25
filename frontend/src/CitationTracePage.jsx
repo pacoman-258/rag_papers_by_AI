@@ -27,6 +27,13 @@ function formatScore(value) {
   return Number.isFinite(score) ? score.toFixed(3) : "-";
 }
 
+function scoreBreakdownLabel(key) {
+  if (key === "author_overlap") {
+    return "author_bonus";
+  }
+  return key;
+}
+
 function entryTitle(entry) {
   return trimText(entry?.candidate_paper?.title) || trimText(entry?.candidate_paper?.canonical_id) || trimText(entry?.entry_id);
 }
@@ -45,6 +52,12 @@ function stageToProgress(stage) {
   switch (stage) {
     case "reference_resolution":
       return "references";
+    case "candidate_recall":
+      return "candidate_recall";
+    case "worker_assessment":
+      return "worker_assessment";
+    case "main_ranking":
+      return "main_ranking";
     case "round_two":
       return "round_two";
     case "synthesis":
@@ -56,6 +69,12 @@ function stageToProgress(stage) {
 
 function progressDetailForStep(step, t) {
   switch (step) {
+    case "candidate_recall":
+      return t("citationTraceProgressCandidateRecall");
+    case "worker_assessment":
+      return t("citationTraceProgressWorkerAssessment");
+    case "main_ranking":
+      return t("citationTraceProgressMainRanking");
     case "round_one":
       return t("citationTraceProgressRoundOne");
     case "round_two":
@@ -245,7 +264,7 @@ function EntryDetail({ entry, t }) {
       {paper.abstract ? <p>{paper.abstract}</p> : null}
       {entry.reference_text ? (
         <div>
-          <strong>{t("original")}</strong>
+          <strong>{t("citationTraceReferenceText")}</strong>
           <p>{entry.reference_text}</p>
         </div>
       ) : null}
@@ -264,7 +283,7 @@ function EntryDetail({ entry, t }) {
         <div className="detail-grid">
           {scoreBreakdown.map(([key, value]) => (
             <div key={key}>
-              <strong>{key}</strong>
+              <strong>{scoreBreakdownLabel(key)}</strong>
               <p>{formatScore(value)}</p>
             </div>
           ))}
@@ -315,9 +334,9 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
   const progressSteps = [
     { key: "load", label: t("citationTraceProgressLoad") },
     { key: "references", label: t("citationTraceProgressReferences") },
-    { key: "round_one", label: t("citationTraceProgressRoundOne") },
-    { key: "round_two", label: t("citationTraceProgressRoundTwo") },
-    { key: "synthesis", label: t("citationTraceProgressSynthesis") },
+    { key: "candidate_recall", label: t("citationTraceProgressCandidateRecall") },
+    { key: "worker_assessment", label: t("citationTraceProgressWorkerAssessment") },
+    { key: "main_ranking", label: t("citationTraceProgressMainRanking") },
     { key: "top5", label: t("citationTraceProgressTop5") }
   ];
   const finalTop5 = toArray(session?.final_top5);
@@ -412,7 +431,7 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
         return;
       }
       if (payload.round === 1) {
-        updateProgress("round_one", "completed", payload.summary_text || t("citationTraceProgressRoundOne"));
+        updateProgress("candidate_recall", "completed", payload.summary_text || t("citationTraceProgressCandidateRecall"));
       } else if (payload.round === 2) {
         updateProgress("round_two", "completed", payload.summary_text || t("citationTraceProgressRoundTwo"));
       }
@@ -422,7 +441,14 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
       if (!payload) {
         return;
       }
-      updateProgress(payload.round === 2 ? "round_two" : "round_one", "running", payload.title || t("evidenceLedger"));
+      updateProgress(payload.round === 2 ? "round_two" : "candidate_recall", "running", payload.title || t("evidenceLedger"));
+    });
+    source.addEventListener("worker_assessment_complete", (event) => {
+      const payload = readSsePayload(event);
+      if (!payload) {
+        return;
+      }
+      updateProgress("worker_assessment", "completed", `${t("citationTraceCandidateTop15")}: ${payload.candidate_count ?? 0}`);
     });
     source.addEventListener("warning", (event) => {
       const payload = readSsePayload(event);
@@ -592,6 +618,11 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
         ) : null}
 
         <TargetSummary session={session} t={t} />
+
+        <section>
+          <h3>{t("citationTraceCandidateTop15")}</h3>
+          <LedgerList entries={evidenceLedger.slice(0, 15)} selectedEntryId={selectedEntry?.entry_id || ""} onSelect={setSelectedEntryId} t={t} />
+        </section>
 
         <section>
           <h3>{t("finalTop5")}</h3>

@@ -32,10 +32,13 @@ from backend.live2d_service import (
     get_live2d_audio,
     get_live2d_bootstrap_payload,
     list_live2d_memory_items,
+    list_live2d_research_profile,
     pin_live2d_memory_item,
+    refresh_live2d_research_profile,
     synthesize_live2d_tts,
 )
 from backend.paper_reader_service import (
+    build_assistant_context,
     chat_with_paper,
     create_session_from_arxiv,
     create_session_from_pdf_bytes,
@@ -48,6 +51,7 @@ from backend.paper_reader_service import (
     page_content_to_model,
     session_to_model,
     translate_selected_text,
+    translate_standalone_selected_text,
 )
 from backend.ingest_manager import IngestManager
 from backend.schemas import (
@@ -69,6 +73,7 @@ from backend.schemas import (
     ModelListResponse,
     PaperReaderChatRequest,
     PaperReaderChatResponse,
+    PaperReaderAssistantContextResponse,
     PaperReaderPageContentModel,
     PaperReaderSelectionTranslateRequest,
     PaperReaderSelectionTranslateResponse,
@@ -77,6 +82,9 @@ from backend.schemas import (
     PaperReaderSourcePagesResponse,
     QueryPlanModel,
     RetrievalConstraintsModel,
+    ResearchProfileItemModel,
+    ResearchProfileRefreshRequest,
+    ResearchProfileResponse,
     SearchExecuteRequest,
     SearchExecuteResponse,
     SearchPlanRequest,
@@ -138,8 +146,12 @@ def use_retrieval_sources(sources: list[str]):
 def to_http_detail(exc: Exception) -> HTTPException:
     message = str(exc) or exc.__class__.__name__
     lowered = message.lower()
+    if "rate limiting" in lowered or "too many requests" in lowered:
+        return HTTPException(status_code=429, detail=message)
     if "not found" in lowered or "no relevant papers" in lowered or "no prior paper candidates" in lowered:
         return HTTPException(status_code=404, detail=message)
+    if "unable to download the arxiv pdf" in lowered or "unable to query arxiv metadata" in lowered:
+        return HTTPException(status_code=502, detail=message)
     if isinstance(exc, (ValueError, RuntimeError)):
         return HTTPException(status_code=400, detail=message)
     return HTTPException(status_code=502, detail=message)
@@ -241,6 +253,37 @@ def coerce_memory_list_items(raw_items: Any) -> list[AssistantMemoryItemModel]:
     return items
 
 
+def coerce_research_profile_items(raw_items: Any) -> list[ResearchProfileItemModel]:
+    if not isinstance(raw_items, list):
+        return []
+    items: list[ResearchProfileItemModel] = []
+    allowed_kinds = {"expertise_signal", "research_direction", "reading_preference"}
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        memory_id = str(raw.get("memory_id") or raw.get("id") or "").strip()
+        label = str(raw.get("label") or raw.get("summary") or raw.get("text") or "").strip()
+        kind = str(raw.get("kind") or raw.get("node_type") or "").strip()
+        if not memory_id or not label or kind not in allowed_kinds:
+            continue
+        evidence = raw.get("evidence")
+        if not isinstance(evidence, list):
+            evidence = []
+        items.append(
+            ResearchProfileItemModel(
+                memory_id=memory_id,
+                kind=kind,
+                label=label,
+                confidence=float(raw["confidence"]) if isinstance(raw.get("confidence"), (float, int)) else None,
+                evidence=[str(item).strip() for item in evidence if str(item).strip()][:6],
+                pinned=bool(raw.get("pinned", False)),
+                created_at=(str(raw.get("created_at")).strip() or None) if raw.get("created_at") is not None else None,
+                updated_at=(str(raw.get("updated_at")).strip() or None) if raw.get("updated_at") is not None else None,
+            )
+        )
+    return items
+
+
 def constraints_model_to_dataclass(model: RetrievalConstraintsModel | None) -> RetrievalConstraints:
     if model is None:
         return RetrievalConstraints()
@@ -292,6 +335,8 @@ def resolve_saved_model_list_api_key(payload: ModelListRequest) -> str | None:
         saved_settings.answer_chat,
         saved_settings.paper_reader_chat,
         saved_settings.paper_reader_translation,
+        saved_settings.citation_trace_main_chat,
+        saved_settings.citation_trace_worker_chat,
     ):
         if chat_config.provider != "openai_compatible":
             continue
@@ -447,6 +492,19 @@ def api_paper_reader_session(session_id: str) -> PaperReaderSessionModel:
         raise to_http_detail(exc) from exc
 
 
+@app.get(
+    "/api/paper-reader/session/{session_id}/assistant-context",
+    response_model=PaperReaderAssistantContextResponse,
+)
+def api_paper_reader_assistant_context(session_id: str) -> PaperReaderAssistantContextResponse:
+    try:
+        return build_assistant_context(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+
 @app.get("/api/paper-reader/session/{session_id}/pdf")
 def api_paper_reader_pdf(session_id: str) -> FileResponse:
     try:
@@ -553,6 +611,15 @@ def api_paper_reader_translate_selection(
         return translate_selected_text(session_id, payload, settings)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=detail_from_exception(exc)) from exc
+    except Exception as exc:
+        raise to_http_detail(exc) from exc
+
+
+@app.post("/api/translate-selection", response_model=PaperReaderSelectionTranslateResponse)
+def api_translate_selection(payload: PaperReaderSelectionTranslateRequest) -> PaperReaderSelectionTranslateResponse:
+    try:
+        settings = settings_from_optional_payload(payload.settings)
+        return translate_standalone_selected_text(payload, settings)
     except Exception as exc:
         raise to_http_detail(exc) from exc
 
@@ -857,6 +924,41 @@ def api_live2d_memory_list(session_id: str) -> AssistantMemoryListResponse:
     return AssistantMemoryListResponse(
         session_id=resolved_session_id,
         items=coerce_memory_list_items(raw_items),
+    )
+
+
+@app.get("/api/live2d/research-profile", response_model=ResearchProfileResponse)
+def api_live2d_research_profile(session_id: str) -> ResearchProfileResponse:
+    resolved_session_id = require_session_id(session_id)
+    settings = load_runtime_settings()
+    raw_state = list_live2d_research_profile(session_id=resolved_session_id)
+    raw_items = raw_state.get("items") if isinstance(raw_state, dict) else []
+    return ResearchProfileResponse(
+        session_id=resolved_session_id,
+        enabled=bool(settings.assistant_memory.enabled and settings.assistant_memory.research_profile_enabled),
+        available=bool(raw_state.get("available", True)) if isinstance(raw_state, dict) else True,
+        notice=(str(raw_state.get("notice")).strip() or None)
+        if isinstance(raw_state, dict) and raw_state.get("notice") is not None
+        else None,
+        items=coerce_research_profile_items(raw_items),
+    )
+
+
+@app.post("/api/live2d/research-profile/refresh", response_model=ResearchProfileResponse)
+def api_live2d_research_profile_refresh(payload: ResearchProfileRefreshRequest) -> ResearchProfileResponse:
+    resolved_session_id = require_session_id(payload.session_id)
+    settings = load_runtime_settings()
+    validate_runtime_settings(settings)
+    raw_state = refresh_live2d_research_profile(session_id=resolved_session_id, settings=settings)
+    raw_items = raw_state.get("items") if isinstance(raw_state, dict) else []
+    return ResearchProfileResponse(
+        session_id=resolved_session_id,
+        enabled=bool(settings.assistant_memory.enabled and settings.assistant_memory.research_profile_enabled),
+        available=bool(raw_state.get("available", True)) if isinstance(raw_state, dict) else True,
+        notice=(str(raw_state.get("notice")).strip() or None)
+        if isinstance(raw_state, dict) and raw_state.get("notice") is not None
+        else None,
+        items=coerce_research_profile_items(raw_items),
     )
 
 

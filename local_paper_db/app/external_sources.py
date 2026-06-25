@@ -220,6 +220,21 @@ def _arxiv_client() -> Any:
     return arxiv.Client(page_size=100, delay_seconds=3.0, num_retries=2)
 
 
+def _arxiv_error_message(exc: Exception) -> str:
+    message = _normalize_whitespace(str(exc)) or exc.__class__.__name__
+    lowered = message.casefold()
+    if "429" in lowered or "too many requests" in lowered or "rate limit" in lowered:
+        return "arXiv is rate limiting metadata requests; try again later."
+    return f"Unable to query arXiv metadata: {message}"
+
+
+def _arxiv_results(search: Any) -> list[Any]:
+    try:
+        return list(_arxiv_client().results(search))
+    except Exception as exc:
+        raise RuntimeError(_arxiv_error_message(exc)) from exc
+
+
 def search_arxiv_records(retrieval_text: str, constraints: Any, *, limit: int) -> list[ExternalPaperRecord]:
     cache_key = "arxiv:search:" + json.dumps(
         {
@@ -246,7 +261,7 @@ def search_arxiv_records(retrieval_text: str, constraints: Any, *, limit: int) -
         sort_by=sort_by,
         sort_order=arxiv.SortOrder.Descending,
     )
-    results = [_coerce_arxiv_record(item) for item in _arxiv_client().results(search)]
+    results = [_coerce_arxiv_record(item) for item in _arxiv_results(search)]
     return _cache_set(cache_key, results[:limit], ttl_seconds=600)
 
 
@@ -269,7 +284,7 @@ def fetch_arxiv_record(arxiv_id: str) -> ExternalPaperRecord | None:
         return cached
 
     search = arxiv.Search(id_list=[normalized], max_results=1)
-    results = [_coerce_arxiv_record(item) for item in _arxiv_client().results(search)]
+    results = [_coerce_arxiv_record(item) for item in _arxiv_results(search)]
     record = results[0] if results else None
     return _cache_set(cache_key, record, ttl_seconds=600)
 
@@ -283,13 +298,28 @@ def resolve_arxiv_candidates(query: str, *, limit: int) -> list[ExternalPaperRec
         record = fetch_arxiv_record(arxiv_id)
         return [record] if record is not None else []
 
+    cache_key = "arxiv:resolve:" + json.dumps(
+        {"query": normalized, "limit": limit},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     title_query = f'ti:"{_escape_quoted(normalized[:240])}"'
-    results = [_coerce_arxiv_record(item) for item in _arxiv_client().results(arxiv.Search(query=title_query, max_results=max(1, limit)))]
+    results = [
+        _coerce_arxiv_record(item)
+        for item in _arxiv_results(arxiv.Search(query=title_query, max_results=max(1, limit)))
+    ]
     if results:
-        return results[:limit]
+        return _cache_set(cache_key, results[:limit], ttl_seconds=600)
     fallback_query = f'all:"{_escape_quoted(normalized[:240])}"'
-    fallback = [_coerce_arxiv_record(item) for item in _arxiv_client().results(arxiv.Search(query=fallback_query, max_results=max(1, limit)))]
-    return fallback[:limit]
+    fallback = [
+        _coerce_arxiv_record(item)
+        for item in _arxiv_results(arxiv.Search(query=fallback_query, max_results=max(1, limit)))
+    ]
+    return _cache_set(cache_key, fallback[:limit], ttl_seconds=600)
 
 
 def _wos_headers(api_key: str) -> dict[str, str]:

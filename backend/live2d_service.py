@@ -21,8 +21,10 @@ from backend.assistant_memory import (
     delete_assistant_memory_item,
     finalize_live2d_chat_turn,
     get_live2d_memory_state,
+    get_research_profile_state,
     pin_assistant_memory_item,
     prepare_live2d_chat_context,
+    refresh_research_profile_state,
 )
 from local_paper_db.app.search_service import (
     RuntimeSettings,
@@ -244,18 +246,18 @@ def _reply_language_name(reply_language: str) -> str:
 def _fallback_live2d_reply(source: str, workflow_kind: str, reply_language: str) -> str:
     if reply_language == "en":
         if source == "user" and workflow_kind == "paper_reader":
-            return "I can keep unpacking this page with you. If you want, I can explain the method, point out the key evidence, or guide you into the next section."
+            return "I can keep unpacking this paper with you. If you want, I can explain a method, connect the selected excerpt, or point out what to inspect next."
         if source == "user":
             return "I'm here. We can keep talking through your question, or you can run QA / Citation Trace first and I'll help you interpret the result."
         if workflow_kind == "paper_reader":
-            return "I've caught up with this page. If you want, I can highlight the key point, explain the method, or suggest what to read next."
+            return "I've caught up with this paper context. If you want, I can highlight the key point, explain the method, or connect a selected excerpt."
         return "I've read the latest result. If you want, I can break the key point down more clearly."
     if source == "user" and workflow_kind == "paper_reader":
-        return "我可以继续陪你拆解这一页。如果你愿意，我可以解释方法、指出关键证据，或者带你进入下一部分。"
+        return "我可以继续陪你拆解这篇论文。如果你愿意，我可以解释方法、串起选区，或者指出接下来该看哪里。"
     if source == "user":
         return "我在呢，可以继续和我聊你的问题，或者先运行一次 QA / 论文溯源，我再帮你解读结果。"
     if workflow_kind == "paper_reader":
-        return "这一页我已经接上了。如果你愿意，我可以继续帮你解释方法、提醒关键点，或者带你看下一部分。"
+        return "这篇论文的上下文我已经接上了。如果你愿意，我可以继续帮你解释方法、提醒关键点，或者串起选区。"
     return "我看完最新结果了。如果你愿意，我可以继续帮你把关键点拆得更清楚。"
 
 
@@ -280,6 +282,14 @@ def _render_paper_reader_context_lines(workflow_context: dict[str, Any]) -> list
     blackboard_notes = workflow_context.get("blackboard_notes")
     glossary_terms = workflow_context.get("glossary_terms") if isinstance(workflow_context.get("glossary_terms"), list) else []
     checkpoint_status = _safe_text(workflow_context.get("checkpoint_status"), max_length=48)
+    metadata = workflow_context.get("metadata") if isinstance(workflow_context.get("metadata"), dict) else {}
+    whole_paper = metadata.get("whole_paper") if isinstance(metadata.get("whole_paper"), dict) else {}
+    selected_excerpt = metadata.get("selected_excerpt") if isinstance(metadata.get("selected_excerpt"), dict) else {}
+    conversation_context = (
+        metadata.get("conversation_context")
+        if isinstance(metadata.get("conversation_context"), dict)
+        else {}
+    )
 
     if paper_title:
         lines.append(f"- paper_title: {paper_title}")
@@ -333,8 +343,41 @@ def _render_paper_reader_context_lines(workflow_context: dict[str, Any]) -> list
         lines.append(f"- latest_page_summary: {latest_page_summary}")
     if latest_answer_text:
         lines.append(f"- latest_answer_text: {latest_answer_text}")
+    if whole_paper:
+        lines.append("- context_scope: whole_paper")
+        source_page_count = _coerce_int(whole_paper.get("source_page_count"))
+        chunk_count = _coerce_int(whole_paper.get("chunk_count"))
+        if source_page_count is not None:
+            lines.append(f"- whole_paper_source_page_count: {source_page_count}")
+        if chunk_count is not None:
+            lines.append(f"- whole_paper_chunk_count: {chunk_count}")
+    if selected_excerpt:
+        selected_text = _safe_text(selected_excerpt.get("text"), max_length=1600)
+        selected_pages = _coerce_string_list(selected_excerpt.get("page_numbers"), limit=8, max_length=24)
+        selected_at = _safe_text(selected_excerpt.get("created_at"), max_length=80)
+        if selected_text:
+            lines.append(f"- selected_excerpt: {selected_text}")
+        if selected_pages:
+            lines.append("- selected_excerpt_source_pages: " + ", ".join(selected_pages))
+        if selected_at:
+            lines.append(f"- selected_excerpt_synced_at: {selected_at}")
+    if conversation_context:
+        recent_messages = conversation_context.get("recent_messages")
+        if isinstance(recent_messages, list):
+            for item in recent_messages[-8:]:
+                if not isinstance(item, dict):
+                    continue
+                role = _safe_text(item.get("role"), max_length=24).casefold()
+                if role not in {"user", "assistant"}:
+                    continue
+                text = _safe_text(item.get("text"), max_length=700)
+                if text:
+                    lines.append(f"- conversation_recent_{role}: {text}")
+        current_user_message = _safe_text(conversation_context.get("current_user_message"), max_length=700)
+        if current_user_message:
+            lines.append(f"- current_user_message: {current_user_message}")
     lines.append(
-        "- guidance: act as a professional guided-reading mentor, follow the paper discipline, focus on the current page, explain what matters, suggest the next reading step, and do not invent citations or paper-wide claims."
+        "- guidance: act as a professional guided-reading mentor, follow the paper discipline, ground replies in the whole paper context, treat a selected_excerpt as the immediate focus when provided, and do not invent citations or claims outside the supplied context."
     )
     return lines
 
@@ -453,14 +496,19 @@ def _build_live2d_system_prompt(
     reply_language_name = _reply_language_name(reply_language)
     paper_reader_rules = ""
     if workflow_kind == "paper_reader":
-        page_ref_hint = 'Prefer "这一页" / "这一部分"' if reply_language == "zh" else 'Prefer "this page" / "this section"'
+        paper_ref_hint = (
+            'Prefer "这篇论文"; use "这段选区" only when selected_excerpt exists'
+            if reply_language == "zh"
+            else 'Prefer "this paper"; use "this selected excerpt" only when selected_excerpt exists'
+        )
         paper_reader_rules = """
-- When the workflow context is paper_reader, treat it as a page-local paper reading assistant.
-- Explain the current page in plain language, follow the discipline-specific reading frame, point out what matters, and suggest the next sensible reading step.
-- Use cautious language. Do not invent citations, experiments, formulas, or paper-wide conclusions beyond the provided page context.
-- {page_ref_hint} language when the user is reading a paper.
-- If the user asks for a broader summary, explain that you can only ground the reply in the current page context and can help continue page by page.
-""".strip().format(page_ref_hint=page_ref_hint)
+- When the workflow context is paper_reader, treat it as a whole paper reading assistant.
+- Explain the linked whole paper context in plain language, follow the discipline-specific reading frame, point out what matters, and suggest the next sensible reading step.
+- When selected_excerpt is present, treat that excerpt as the immediate focus while using the whole paper context for surrounding meaning.
+- Use cautious language. Do not invent citations, experiments, formulas, or conclusions beyond the provided paper context.
+- {paper_ref_hint} language when the user is reading a paper.
+- If the user asks beyond the provided context, say what is available and what would need inspection in the paper.
+""".strip().format(paper_ref_hint=paper_ref_hint)
     return f"""
 You are a warm and concise Live2D assistant inside an arXiv paper RAG workbench.
 You can chat casually, explain answers, and suggest practical next steps.
@@ -564,9 +612,9 @@ def _build_live2d_messages(
         )
         if workflow_kind == "paper_reader":
             user_prompt += (
-                "\n\nThis is a paper reading page. Ground the reply in the current page context, "
-                "help the user understand what matters, and suggest what to inspect next. "
-                "Do not invent citations or paper-wide conclusions."
+                "\n\nThis is a paper reading workflow. Ground the reply in the linked whole paper context. "
+                "If selected_excerpt is present, use it as the immediate focus and explain how it fits the paper. "
+                "Do not invent citations or conclusions beyond the supplied context."
             )
         messages.append(
             {
@@ -577,10 +625,10 @@ def _build_live2d_messages(
     else:
         if workflow_kind == "paper_reader":
             auto_prompt = (
-                "The paper_reader workflow just updated the current paper page."
+                "The paper_reader workflow just updated the linked paper context."
                 " Without waiting for user input, send one concise follow-up that helps the user understand"
-                " the current page, notice the key point, or know what to read next."
-                " Ground the reply in the current page context and do not invent citations or paper-wide claims."
+                " the paper, notice the key point, or know what to read next."
+                " Ground the reply in the whole paper context and do not invent citations or unsupported claims."
                 " Return JSON only."
             )
         else:
@@ -723,6 +771,52 @@ def list_live2d_memory_items(
         return get_live2d_memory_state(session_id=session_id, limit=limit, db_config=db_config)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to list assistant memory: {exc}") from exc
+
+
+def list_live2d_research_profile(
+    *,
+    session_id: str | None = None,
+    limit: int = 12,
+    db_config: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    try:
+        state = get_research_profile_state(session_id=session_id, limit=limit, db_config=db_config)
+        return {**state, "available": True, "notice": None}
+    except Exception as exc:
+        LOGGER.warning("live2d research profile unavailable: %s", exc)
+        return {
+            "session_id": str(session_id or "").strip() or "local-default-session",
+            "items": [],
+            "count": 0,
+            "available": False,
+            "notice": "Research profile requires the assistant memory database.",
+        }
+
+
+def refresh_live2d_research_profile(
+    *,
+    session_id: str | None,
+    settings: RuntimeSettings,
+    limit: int = 12,
+    db_config: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    try:
+        state = refresh_research_profile_state(
+            session_id=session_id,
+            settings=settings,
+            limit=limit,
+            db_config=db_config,
+        )
+        return {**state, "available": True, "notice": None}
+    except Exception as exc:
+        LOGGER.warning("live2d research profile refresh unavailable: %s", exc)
+        return {
+            "session_id": str(session_id or "").strip() or "local-default-session",
+            "items": [],
+            "count": 0,
+            "available": False,
+            "notice": "Research profile requires the assistant memory database.",
+        }
 
 
 def pin_live2d_memory_item(

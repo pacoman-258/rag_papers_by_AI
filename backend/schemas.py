@@ -98,6 +98,7 @@ class AssistantMemoryConfigModel(BaseModel):
     max_recall_items: int = Field(default=5, ge=1)
     recall_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
     auto_save_enabled: bool = True
+    research_profile_enabled: bool = True
 
 
 class RuntimeSettingsRequest(BaseModel):
@@ -105,6 +106,8 @@ class RuntimeSettingsRequest(BaseModel):
     answer_chat: ChatConfigRequest
     paper_reader_chat: PaperReaderChatConfigRequest | None = None
     paper_reader_translation: ChatConfigRequest | None = None
+    citation_trace_main_chat: ChatConfigRequest | None = None
+    citation_trace_worker_chat: ChatConfigRequest | None = None
     embedding: EmbeddingConfigModel
     retrieval: RetrievalConfigRequest
     rerank: RerankConfigRequest
@@ -116,6 +119,8 @@ class RuntimeSettingsResponse(BaseModel):
     answer_chat: ChatConfigResponse
     paper_reader_chat: PaperReaderChatConfigResponse
     paper_reader_translation: ChatConfigResponse
+    citation_trace_main_chat: ChatConfigResponse
+    citation_trace_worker_chat: ChatConfigResponse
     embedding: EmbeddingConfigModel
     retrieval: RetrievalConfigModel
     rerank: RerankConfigResponse
@@ -247,7 +252,7 @@ class PaperReaderSelectionTranslateRequest(BaseModel):
 
 
 class PaperReaderSelectionTranslateResponse(BaseModel):
-    session_id: str
+    session_id: str | None = None
     source_text: str
     translation: str
 
@@ -373,6 +378,7 @@ class PaperReaderSessionModel(BaseModel):
     page_input_budget: int
     current_page_index: int = 0
     page_count: int
+    source_page_count: int | None = None
     session_status: str
     pages: list[PaperReaderPageManifestModel] = Field(default_factory=list)
     index_status: Literal["ready", "fallback"] = "fallback"
@@ -651,6 +657,12 @@ class WorkflowContextModel(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class PaperReaderAssistantContextResponse(BaseModel):
+    session_id: str
+    answer_context: str
+    workflow_context: WorkflowContextModel
+
+
 class UsedMemoryItemModel(BaseModel):
     memory_id: str
     summary: str
@@ -692,6 +704,29 @@ class AssistantMemoryItemModel(BaseModel):
 class AssistantMemoryListResponse(BaseModel):
     session_id: str
     items: list[AssistantMemoryItemModel] = Field(default_factory=list)
+
+
+class ResearchProfileItemModel(BaseModel):
+    memory_id: str
+    kind: Literal["expertise_signal", "research_direction", "reading_preference"]
+    label: str
+    confidence: float | None = None
+    evidence: list[str] = Field(default_factory=list)
+    pinned: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ResearchProfileResponse(BaseModel):
+    session_id: str
+    enabled: bool = True
+    available: bool = True
+    notice: str | None = None
+    items: list[ResearchProfileItemModel] = Field(default_factory=list)
+
+
+class ResearchProfileRefreshRequest(BaseModel):
+    session_id: str | None = None
 
 
 class AssistantMemoryPinRequest(BaseModel):

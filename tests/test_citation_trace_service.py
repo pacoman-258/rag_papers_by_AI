@@ -107,6 +107,31 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertIn("2017. pages 1-2.", entries[0].raw_text)
         self.assertEqual(entries[1].raw_label, "[2]")
 
+    def test_extract_reference_entries_splits_collapsed_unnumbered_arxiv_references(self):
+        text = """
+        Abstract
+        We study efficient evaluation.
+
+        References
+        ARC Prize. ARC Prize leaderboard. https://arcprize.org/leaderboard, 2026. Mislav Balunovic,
+        Jasper Dekoninck, Ivo Petrov, Nikola Jovanovic, and Martin Vechev. MathArena:
+        Evaluating LLMs on uncontaminated math competitions. https://matharena.ai/, 2025.
+        Andrew M. Bean, Nabeel Seedat, Shengzhuang Chen, and Jonathan Richard Schwarz.
+        Scales++: Compute efficient evaluation subset selection with cognitive scales embeddings.
+        arXiv preprint arXiv:2510.26384, 2025. Ryan Burnell, Han Hao, Andrew R. A.
+        Conway, and Jose Hernandez-Orallo. Revealing the structure of language model capabilities.
+        arXiv preprint arXiv:2306.10062, 2023a.
+        """
+
+        entries = cts.extract_reference_entries(text)
+        arxiv_entries = [entry for entry in entries if entry.arxiv_id]
+
+        self.assertEqual([entry.arxiv_id for entry in arxiv_entries], ["2510.26384", "2306.10062"])
+        self.assertIn("Scales++", arxiv_entries[0].raw_text)
+        self.assertNotIn("ARC Prize", arxiv_entries[0].raw_text)
+        self.assertNotIn("Revealing the structure", arxiv_entries[0].raw_text)
+        self.assertIn("Revealing the structure", arxiv_entries[1].raw_text)
+
     def test_create_session_from_arxiv_uses_resolved_metadata(self):
         class Record:
             arxiv_id = "1706.03762"
@@ -411,6 +436,309 @@ class CitationTraceServiceTest(unittest.TestCase):
 
         self.assertEqual([entry.candidate_paper.paper_id for entry in selected], ["p1", "p2"])
 
+    def test_reference_candidate_recall_uses_arxiv_id_and_title_lookup_top15(self):
+        session = cts.CitationTraceSession(
+            session_id="recall-session",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode(
+                "target",
+                "target",
+                "paper.pdf",
+                "file:paper.pdf",
+                "Target Paper",
+                published_date="2020-01-01",
+            ),
+            answer_language="en",
+            reference_entries=[
+                cts.ReferenceEntry(
+                    "ref-arxiv",
+                    "Exact Prior. arXiv:1601.00001.",
+                    arxiv_id="1601.00001",
+                    year="2016",
+                    title_hint="Exact Prior",
+                ),
+                cts.ReferenceEntry(
+                    "ref-title",
+                    "A. Writer. Neural Matching Prior. 2018.",
+                    year="2018",
+                    title_hint="Neural Matching Prior",
+                ),
+            ],
+        )
+        calls: list[tuple[str, int]] = []
+
+        class Record:
+            def __init__(self, arxiv_id, title, year="2016"):
+                self.arxiv_id = arxiv_id
+                self.source_id = arxiv_id
+                self.title = title
+                self.summary = f"{title} abstract."
+                self.authors = ["A. Writer"]
+                self.published_date = f"{year}-01-01"
+                self.primary_category = "cs.CL"
+                self.external_url = f"https://arxiv.org/abs/{arxiv_id}"
+                self.doi = None
+
+        original_fetch = cts.fetch_arxiv_record
+        original_resolve = cts.resolve_arxiv_candidates
+        try:
+            cts.fetch_arxiv_record = lambda arxiv_id: Record(arxiv_id, "Exact Prior")
+
+            def resolve(query, *, limit):
+                calls.append((query, limit))
+                return [
+                    Record(f"1801.{index:05d}", f"Neural Matching Prior {index}", "2018")
+                    for index in range(20)
+                ]
+
+            cts.resolve_arxiv_candidates = resolve
+
+            entries = cts.recall_reference_candidates(session, settings=None, limit=15)
+        finally:
+            cts.fetch_arxiv_record = original_fetch
+            cts.resolve_arxiv_candidates = original_resolve
+
+        self.assertEqual(calls, [("Neural Matching Prior", 15)])
+        self.assertEqual(len(entries), 15)
+        self.assertEqual(entries[0].candidate_paper.arxiv_id, "1601.00001")
+        self.assertEqual(entries[0].reference_text, "Exact Prior. arXiv:1601.00001.")
+        self.assertIn("reference:ref-arxiv", entries[0].metadata_evidence)
+        self.assertTrue(all(entry.relation_type == "explicit_reference" for entry in entries))
+
+    def test_reference_candidate_recall_dedupes_and_sorts_before_top15(self):
+        session = cts.CitationTraceSession(
+            session_id="recall-sort",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode(
+                "target",
+                "target",
+                "paper.pdf",
+                "file:paper.pdf",
+                "Target",
+                published_date="2020-01-01",
+            ),
+            answer_language="en",
+            reference_entries=[
+                cts.ReferenceEntry("ref-1", "Shared Excellent Prior. 2018.", year="2018", title_hint="Shared Excellent Prior"),
+                cts.ReferenceEntry("ref-2", "Shared Excellent Prior. 2018.", year="2018", title_hint="Shared Excellent Prior"),
+            ],
+        )
+
+        class Record:
+            def __init__(self, arxiv_id, title, year="2018"):
+                self.arxiv_id = arxiv_id
+                self.source_id = arxiv_id
+                self.title = title
+                self.summary = ""
+                self.authors = []
+                self.published_date = f"{year}-01-01"
+                self.primary_category = None
+                self.external_url = f"https://arxiv.org/abs/{arxiv_id}"
+                self.doi = None
+
+        records = [
+            Record("1901.00001", "Different Future Paper", "2024"),
+            Record("1801.00001", "Shared Excellent Prior", "2018"),
+            Record("1801.00001", "Shared Excellent Prior Duplicate", "2018"),
+        ] + [Record(f"1701.{index:05d}", f"Shared Prior {index}", "2017") for index in range(20)]
+        original_resolve = cts.resolve_arxiv_candidates
+        try:
+            cts.resolve_arxiv_candidates = lambda query, *, limit: records[:limit]
+            entries = cts.recall_reference_candidates(session, settings=None, limit=15)
+        finally:
+            cts.resolve_arxiv_candidates = original_resolve
+
+        arxiv_ids = [entry.candidate_paper.arxiv_id for entry in entries]
+        self.assertEqual(len(entries), 14)
+        self.assertEqual(arxiv_ids.count("1801.00001"), 1)
+        self.assertEqual(arxiv_ids[0], "1801.00001")
+        self.assertNotIn("1901.00001", arxiv_ids[:3])
+
+    def test_reference_recall_demotes_exact_arxiv_match_when_topic_and_title_do_not_match(self):
+        session = cts.CitationTraceSession(
+            session_id="topic-rank",
+            source_type="arxiv",
+            source_id="2606.20474",
+            source_url="https://arxiv.org/abs/2606.20474",
+            target_paper=cts.CitationTracePaperNode(
+                "target",
+                "target",
+                "2606.20474",
+                "arxiv:2606.20474",
+                "UltraQuant: 4-bit KV Caching for Context-Heavy Agents",
+                abstract=(
+                    "We study 4-bit KV-cache compression for context-heavy LLM agents, "
+                    "including quantization, codebooks, rotations, and vLLM serving."
+                ),
+                published_date="2026-06-18",
+                keywords=["cs.LG"],
+            ),
+            answer_language="en",
+            reference_entries=[
+                cts.ReferenceEntry(
+                    "ref-good",
+                    "A. Researcher. 4-bit KV Cache Quantization for Context-Heavy Agents. arXiv:2601.00001. 2026.",
+                    arxiv_id="2601.00001",
+                    year="2026",
+                    title_hint="4-bit KV Cache Quantization for Context-Heavy Agents",
+                ),
+                cts.ReferenceEntry(
+                    "ref-polluted",
+                    (
+                        "Joel Max. 1960. Quantizing for minimum distortion. "
+                        "Timo Schick et al. 2023. Toolformer: Language models can teach themselves "
+                        "to use tools. Preprint, arXiv:2302.04761. Algorithm 1FP4 KV encoding."
+                    ),
+                    arxiv_id="2302.04761",
+                    year="1960",
+                    title_hint="Quantizing for minimum distortion",
+                ),
+            ],
+        )
+
+        class Record:
+            def __init__(self, arxiv_id, title, summary, authors, year):
+                self.arxiv_id = arxiv_id
+                self.source_id = arxiv_id
+                self.title = title
+                self.summary = summary
+                self.authors = authors
+                self.published_date = f"{year}-01-01"
+                self.primary_category = "cs.LG"
+                self.external_url = f"https://arxiv.org/abs/{arxiv_id}"
+                self.doi = None
+
+        records = {
+            "2601.00001": Record(
+                "2601.00001",
+                "4-bit KV Cache Quantization for Context-Heavy Agents",
+                "KV cache compression with 4-bit quantization, codebooks, rotations, and LLM serving.",
+                ["A. Researcher"],
+                "2026",
+            ),
+            "2302.04761": Record(
+                "2302.04761",
+                "Toolformer: Language Models Can Teach Themselves to Use Tools",
+                "Language models learn when to call external tools such as calculators and search APIs.",
+                ["Timo Schick"],
+                "2023",
+            ),
+        }
+        original_fetch = cts.fetch_arxiv_record
+        try:
+            cts.fetch_arxiv_record = lambda arxiv_id: records[arxiv_id]
+            entries = cts.recall_reference_candidates(session, settings=None, limit=15)
+        finally:
+            cts.fetch_arxiv_record = original_fetch
+
+        by_arxiv = {entry.candidate_paper.arxiv_id: entry for entry in entries}
+        self.assertEqual(entries[0].candidate_paper.arxiv_id, "2601.00001")
+        self.assertLess(by_arxiv["2302.04761"].score_total, by_arxiv["2601.00001"].score_total)
+        self.assertLess(by_arxiv["2302.04761"].score_total, 0.45)
+        self.assertEqual(by_arxiv["2302.04761"].evidence_level, "weak")
+        self.assertEqual(by_arxiv["2302.04761"].score_breakdown.reference_match, 1.0)
+
+    def test_reference_recall_treats_author_overlap_as_tiny_bonus_not_evidence(self):
+        session = cts.CitationTraceSession(
+            session_id="author-only",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode(
+                "target",
+                "target",
+                "paper.pdf",
+                "file:paper.pdf",
+                "Efficient LLM Benchmark Evaluation",
+                abstract="Selecting small benchmark subsets for language model evaluation.",
+                published_date="2026-01-01",
+            ),
+            answer_language="en",
+        )
+        reference = cts.ReferenceEntry(
+            "ref-author",
+            "Andrew Bean. A handwritten note about marine logistics. 2025.",
+            year="2025",
+            title_hint="A handwritten note about marine logistics",
+        )
+        candidate = cts.CitationTracePaperNode(
+            "paper-author",
+            "arxiv",
+            "2501.00001",
+            "arxiv:2501.00001",
+            "Ocean Route Planning for Cargo Ships",
+            abstract="We optimize marine routes for cargo ships using weather and port constraints.",
+            authors=["Andrew M. Bean"],
+            published_date="2025-01-01",
+            arxiv_id="2501.00001",
+        )
+
+        entry = cts._score_recalled_candidate(session, reference, candidate, source_label="title")
+
+        self.assertEqual(entry.score_breakdown.author_overlap, 0.01)
+        self.assertLessEqual(entry.score_total, 0.08)
+        self.assertEqual(entry.evidence_level, "weak")
+        self.assertTrue(any("Author overlap is only a small bonus" in warning for warning in entry.warnings))
+
+    def test_reference_recall_skips_unresolved_non_paper_fragments_when_resolved_candidates_exist(self):
+        session = cts.CitationTraceSession(
+            session_id="fragment-skip",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode(
+                "target",
+                "target",
+                "paper.pdf",
+                "file:paper.pdf",
+                "UltraQuant: 4-bit KV Caching",
+                abstract="KV cache quantization.",
+                published_date="2026-01-01",
+            ),
+            answer_language="en",
+            reference_entries=[
+                cts.ReferenceEntry(
+                    "ref-resolved",
+                    "A. Researcher. KV Cache Quantization. arXiv:2601.00001.",
+                    arxiv_id="2601.00001",
+                    title_hint="KV Cache Quantization",
+                ),
+                cts.ReferenceEntry(
+                    "ref-fragment",
+                    "Algorithm 2 Calibrated LUT int4 KV encoding Require: K, V; Write: split blocks.",
+                    title_hint="Algorithm 2 Calibrated LUT int4 KV encoding",
+                ),
+            ],
+        )
+
+        class Record:
+            arxiv_id = "2601.00001"
+            source_id = "2601.00001"
+            title = "KV Cache Quantization"
+            summary = "KV cache quantization for LLM serving."
+            authors = ["A. Researcher"]
+            published_date = "2026-01-01"
+            primary_category = "cs.LG"
+            external_url = "https://arxiv.org/abs/2601.00001"
+            doi = None
+
+        original_fetch = cts.fetch_arxiv_record
+        original_resolve = cts.resolve_arxiv_candidates
+        try:
+            cts.fetch_arxiv_record = lambda arxiv_id: Record()
+            cts.resolve_arxiv_candidates = lambda query, *, limit: []
+            entries = cts.recall_reference_candidates(session, settings=None, limit=15)
+        finally:
+            cts.fetch_arxiv_record = original_fetch
+            cts.resolve_arxiv_candidates = original_resolve
+
+        self.assertEqual([entry.candidate_paper.arxiv_id for entry in entries], ["2601.00001"])
+        self.assertTrue(any("Skipped unresolved reference fragment" in warning for warning in session.warnings))
+
     def test_expand_seed_candidates_uses_prior_work_search_results(self):
         seed = cts.CitationTracePaperNode(
             paper_id="seed",
@@ -473,7 +801,7 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertEqual(candidates[0].source, "arxiv")
         self.assertEqual(candidates[0].abstract, "Earlier attention mechanisms.")
 
-    def test_run_citation_trace_keeps_round_one_when_round_two_seed_fails(self):
+    def test_run_citation_trace_default_flow_skips_round_two_and_analyzes_top15(self):
         session = cts.CitationTraceSession(
             session_id="run-session",
             source_type="file",
@@ -504,44 +832,147 @@ class CitationTraceServiceTest(unittest.TestCase):
             ],
         )
         original_resolve = cts.resolve_reference_to_node
-        original_expand = cts.expand_seed_candidates
+        original_recall = cts.recall_reference_candidates
+        original_round_two = cts.run_round_two
+        original_worker = cts.assess_recalled_candidates
+        original_synthesis = cts.synthesize_final_top5
+        called = {"round_two": False, "worker_count": 0}
         try:
-            cts.resolve_reference_to_node = lambda reference, settings: cts.CitationTracePaperNode(
-                reference.arxiv_id or reference.reference_id,
-                "arxiv",
-                reference.arxiv_id or reference.reference_id,
-                reference.reference_id,
-                reference.title_hint or "Paper",
-                abstract="attention method",
-                arxiv_id=reference.arxiv_id,
-            )
-
-            def expand(seed, settings):
-                if seed.paper_id == "1601.00002":
-                    raise RuntimeError("seed failed")
-                return [
+            cts.resolve_reference_to_node = lambda reference, settings: None
+            cts.recall_reference_candidates = lambda trace_session, settings, limit=15: [
+                cts.CitationTraceLedgerEntry(
+                    f"entry-{index}",
                     cts.CitationTracePaperNode(
-                        "prior",
+                        f"paper-{index}",
                         "arxiv",
-                        "prior",
-                        "prior",
-                        "Prior",
-                        abstract="attention",
-                    )
-                ]
+                        f"1601.{index:05d}",
+                        f"arxiv:1601.{index:05d}",
+                        f"Prior {index}",
+                    ),
+                    session.target_paper,
+                    1,
+                    "explicit_reference",
+                    "medium",
+                    0.6,
+                    cts.CitationTraceScoreBreakdown(title_overlap=0.8),
+                    reference_text=f"Reference {index}",
+                )
+                for index in range(15)
+            ]
 
-            cts.expand_seed_candidates = expand
+            def fail_round_two(*args, **kwargs):
+                called["round_two"] = True
+                raise AssertionError("round two should not run by default")
+
+            def worker(trace_session, settings):
+                called["worker_count"] = len(trace_session.ledger_entries)
+
+            cts.run_round_two = fail_round_two
+            cts.assess_recalled_candidates = worker
+            cts.synthesize_final_top5 = lambda trace_session, settings: [
+                _top_paper(1, trace_session.ledger_entries[0].candidate_paper.paper_id)
+            ]
             events = list(cts.run_citation_trace_events(session, settings=None))
         finally:
             cts.resolve_reference_to_node = original_resolve
-            cts.expand_seed_candidates = original_expand
+            cts.recall_reference_candidates = original_recall
+            cts.run_round_two = original_round_two
+            cts.assess_recalled_candidates = original_worker
+            cts.synthesize_final_top5 = original_synthesis
 
-        self.assertTrue(any(name == "round_summary" and payload["round"] == 1 for name, payload in events))
+        self.assertFalse(called["round_two"])
+        self.assertEqual(called["worker_count"], 15)
+        self.assertTrue(any(name == "stage_start" and payload["stage"] == "candidate_recall" for name, payload in events))
+        self.assertTrue(any(name == "stage_start" and payload["stage"] == "worker_assessment" for name, payload in events))
+        self.assertTrue(any(name == "stage_start" and payload["stage"] == "main_ranking" for name, payload in events))
         self.assertEqual(session.rounds[0].status, "completed")
-        self.assertEqual(session.rounds[1].status, "partial")
-        self.assertTrue(session.rounds[1].warnings)
-        self.assertGreaterEqual(len(session.ledger_entries), 2)
+        self.assertEqual(len(session.rounds), 1)
+        self.assertEqual(len(session.ledger_entries), 15)
         self.assertTrue(any(name == "complete" for name, _payload in events))
+
+    def test_worker_assessment_calls_worker_model_for_each_top15_entry(self):
+        session = cts.CitationTraceSession(
+            session_id="worker-session",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode("target", "target", "paper.pdf", "file:paper.pdf", "Target"),
+            answer_language="en",
+            ledger_entries=[
+                cts.CitationTraceLedgerEntry(
+                    f"entry-{index}",
+                    cts.CitationTracePaperNode(f"p{index}", "arxiv", f"p{index}", f"p{index}", f"Paper {index}"),
+                    None,
+                    1,
+                    "explicit_reference",
+                    "medium",
+                    0.5,
+                    cts.CitationTraceScoreBreakdown(),
+                )
+                for index in range(15)
+            ],
+        )
+        settings = SimpleNamespace(
+            citation_trace_worker_chat=SimpleNamespace(provider="ollama", model="worker-model", base_url="http://localhost:11434/api"),
+            retrieval=SimpleNamespace(request_timeout=30),
+        )
+        calls = []
+        original_chat = cts.chat_completion
+        try:
+            def fake_chat(messages, config, timeout):
+                calls.append((messages, config.model, timeout))
+                return '{"paper_summary":"summary","comparison_points":["point"],"supporting_evidence":["evidence"],"negative_evidence":[],"confidence":0.72,"suggested_score":0.7}'
+
+            cts.chat_completion = fake_chat
+            cts.assess_recalled_candidates(session, settings)
+        finally:
+            cts.chat_completion = original_chat
+
+        self.assertEqual(len(calls), 15)
+        self.assertTrue(all(entry.llm_assessment and "summary" in entry.llm_assessment for entry in session.ledger_entries))
+        self.assertTrue(all("confidence: 0.72" in entry.llm_assessment for entry in session.ledger_entries))
+        self.assertFalse(any(entry.warnings for entry in session.ledger_entries))
+
+    def test_main_ranking_uses_main_model_and_falls_back_on_failure(self):
+        session = cts.CitationTraceSession(
+            session_id="rank-session",
+            source_type="file",
+            source_id="paper.pdf",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode("target", "target", "paper.pdf", "file:paper.pdf", "Target"),
+            answer_language="en",
+            ledger_entries=[
+                cts.CitationTraceLedgerEntry(
+                    f"entry-{index}",
+                    cts.CitationTracePaperNode(f"p{index}", "arxiv", f"p{index}", f"p{index}", f"Paper {index}"),
+                    None,
+                    1,
+                    "explicit_reference",
+                    "medium",
+                    0.9 - index * 0.01,
+                    cts.CitationTraceScoreBreakdown(),
+                    llm_assessment=f"assessment {index}",
+                )
+                for index in range(6)
+            ],
+        )
+        settings = SimpleNamespace(
+            citation_trace_main_chat=SimpleNamespace(provider="ollama", model="main-model", base_url="http://localhost:11434/api"),
+            retrieval=SimpleNamespace(request_timeout=30),
+        )
+        original_chat = cts.chat_completion
+        try:
+            cts.chat_completion = lambda messages, config, timeout: '{"top5":[{"paper_id":"p2","influence_area":"method","reason":"best","why_worth_reading":"read","uncertainty":"low"}]}'
+            ranked = cts.synthesize_final_top5(session, settings)
+            cts.chat_completion = lambda messages, config, timeout: (_ for _ in ()).throw(RuntimeError("model down"))
+            fallback = cts.synthesize_final_top5(session, settings)
+        finally:
+            cts.chat_completion = original_chat
+
+        self.assertEqual([item.paper_id for item in ranked], ["p2"])
+        self.assertIn("best", ranked[0].reason)
+        self.assertEqual(len(fallback), 5)
+        self.assertIn("fallback", fallback[0].uncertainty.casefold())
 
     def test_synthesis_failure_leaves_ledger_available(self):
         session = cts.CitationTraceSession(
@@ -592,7 +1023,7 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertEqual(session.status, "partial")
         self.assertEqual(complete_payload["status"], "partial")
 
-    def test_run_round_one_uses_extraction_order_for_unresolved_ties(self):
+    def test_run_round_one_uses_extraction_order_for_unresolved_ties_in_top15(self):
         references = [
             cts.ReferenceEntry(
                 reference_id=f"ref-{99 - index:02d}",
@@ -600,7 +1031,7 @@ class CitationTraceServiceTest(unittest.TestCase):
                 raw_label=f"[{index}]",
                 title_hint=f"Reference {index}",
             )
-            for index in range(1, 13)
+            for index in range(1, 18)
         ]
         session = cts.CitationTraceSession(
             session_id="tie-run",
@@ -612,10 +1043,15 @@ class CitationTraceServiceTest(unittest.TestCase):
             reference_entries=references,
         )
 
-        summary = cts.run_round_one(session, settings=None)
+        original_resolve = cts.resolve_arxiv_candidates
+        try:
+            cts.resolve_arxiv_candidates = lambda query, *, limit: []
+            summary = cts.run_round_one(session, settings=None)
+        finally:
+            cts.resolve_arxiv_candidates = original_resolve
 
         self.assertEqual([entry.reference_text for entry in summary.ledger_entries], [
-            f"Reference {index}." for index in range(1, 11)
+            f"Reference {index}." for index in range(1, 16)
         ])
 
     def test_rerun_citation_trace_clears_stale_warnings(self):
@@ -632,21 +1068,26 @@ class CitationTraceServiceTest(unittest.TestCase):
             warnings=["Synthesis failed: previous run"],
         )
         original_resolve = cts.resolve_reference_to_node
-        original_expand = cts.expand_seed_candidates
+        original_recall = cts.recall_reference_candidates
         try:
-            cts.resolve_reference_to_node = lambda reference, settings: cts.CitationTracePaperNode(
-                "1601.00001",
-                "arxiv",
-                "1601.00001",
-                "arxiv:1601.00001",
-                "Good reference",
-                arxiv_id="1601.00001",
-            )
-            cts.expand_seed_candidates = lambda seed, settings: []
+            cts.resolve_reference_to_node = lambda reference, settings: None
+            cts.recall_reference_candidates = lambda trace_session, settings, limit=15: [
+                cts.CitationTraceLedgerEntry(
+                    "entry",
+                    cts.CitationTracePaperNode("1601.00001", "arxiv", "1601.00001", "arxiv:1601.00001", "Good reference"),
+                    trace_session.target_paper,
+                    1,
+                    "explicit_reference",
+                    "strong",
+                    0.9,
+                    cts.CitationTraceScoreBreakdown(reference_match=1.0),
+                    reference_text="Good reference. arXiv:1601.00001",
+                )
+            ]
             list(cts.run_citation_trace_events(session, settings=None))
         finally:
             cts.resolve_reference_to_node = original_resolve
-            cts.expand_seed_candidates = original_expand
+            cts.recall_reference_candidates = original_recall
 
         self.assertEqual(session.warnings, [])
         self.assertEqual(session.status, "completed")

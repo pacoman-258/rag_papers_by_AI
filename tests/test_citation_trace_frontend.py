@@ -18,6 +18,14 @@ class CitationTraceFrontendTest(unittest.TestCase):
         self.assertNotIn("pst" + "_auto", text)
         self.assertNotIn("/api/" + "trace/", text)
 
+    def test_app_exposes_citation_trace_model_settings(self):
+        text = APP.read_text()
+
+        self.assertIn("citation_trace_main_chat", text)
+        self.assertIn("citation_trace_worker_chat", text)
+        self.assertIn("citationTraceMainModel", text)
+        self.assertIn("citationTraceWorkerModel", text)
+
     def test_citation_trace_page_contains_required_sections(self):
         text = PAGE.read_text()
 
@@ -29,6 +37,13 @@ class CitationTraceFrontendTest(unittest.TestCase):
         self.assertIn("citation_trace_auto", text)
         self.assertIn("parseSseJson", text)
         self.assertIn("progressStepRef", text)
+        self.assertIn("candidate_recall", text)
+        self.assertIn("worker_assessment", text)
+        self.assertIn("main_ranking", text)
+        self.assertIn("citationTraceCandidateTop15", text)
+        self.assertIn("citationTraceReferenceText", APP.read_text())
+        self.assertIn("citationTraceReferenceText", text)
+        self.assertIn("author_bonus", text)
 
 
 if __name__ == "__main__":

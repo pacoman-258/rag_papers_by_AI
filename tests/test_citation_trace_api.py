@@ -104,6 +104,26 @@ class CitationTraceApiTest(unittest.TestCase):
         self.assertIn("extractable text", response.json()["detail"])
         self.assertEqual(cts._SESSION_CACHE, {})
 
+    def test_create_citation_trace_session_from_arxiv_maps_arxiv_rate_limit_to_429(self):
+        original = cts.create_session_from_arxiv
+        try:
+            cts.create_session_from_arxiv = (
+                lambda url, settings, answer_language: (_ for _ in ()).throw(
+                    RuntimeError(
+                        "arXiv is rate limiting PDF downloads; try again later or upload the PDF file directly."
+                    )
+                )
+            )
+            response = self.client.post(
+                "/api/citation-trace/session/from-arxiv",
+                json={"url": "https://arxiv.org/abs/2606.24020", "answer_language": "zh"},
+            )
+        finally:
+            cts.create_session_from_arxiv = original
+
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("upload the PDF", response.json()["detail"])
+
     def test_execute_stream_emits_progress_events(self):
         session = cts.CitationTraceSession(
             session_id="session-stream",

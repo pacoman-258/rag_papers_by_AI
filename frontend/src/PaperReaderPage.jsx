@@ -490,6 +490,23 @@ function normalizeSourcePagesPayload(raw, fallbackPageIndex = 0) {
   };
 }
 
+function normalizeAssistantContextPayload(raw) {
+  if (!isPlainObject(raw)) {
+    return null;
+  }
+  const answerContext = firstNonEmpty(raw.answer_context, raw.answerContext);
+  const workflowContextRaw = raw.workflow_context || raw.workflowContext;
+  const workflowContext = isPlainObject(workflowContextRaw) ? workflowContextRaw : null;
+  if (!answerContext && !workflowContext) {
+    return null;
+  }
+  return {
+    session_id: firstNonEmpty(raw.session_id, raw.sessionId),
+    answerContext: answerContext || null,
+    workflowContext
+  };
+}
+
 function normalizeStructuredStatus(raw) {
   if (!isPlainObject(raw)) {
     return {
@@ -1457,6 +1474,7 @@ function normalizeSession(raw) {
     page_input_budget: toNumber(raw.page_input_budget ?? raw.pageInputBudget ?? 0, 0),
     current_page_index: toNumber(raw.current_page_index ?? raw.currentPageIndex ?? raw.page_index ?? 0, 0),
     page_count: toNumber(raw.page_count ?? raw.pageCount ?? pagesRaw.length, pagesRaw.length),
+    source_page_count: toNumber(raw.source_page_count ?? raw.sourcePageCount ?? raw.pdf_page_count ?? raw.pdfPageCount ?? 0, 0),
     index_status: firstNonEmpty(raw.index_status, raw.indexStatus, indexTree ? "ready" : "fallback"),
     index_tree: indexTree,
     pages: pagesRaw
@@ -1464,91 +1482,6 @@ function normalizeSession(raw) {
       .filter(Boolean)
       .sort((left, right) => left.page_index - right.page_index),
     current_page: normalizePageEntry(raw.current_page || raw.currentPage || raw.page || raw.page_content, raw.current_page_index ?? 0)
-  };
-}
-
-function extractAssistantContextText(page) {
-  return firstNonEmpty(
-    page?.reading_blocks
-      ?.map((block) =>
-        [
-          block.source_label,
-          formatPageRange(block.page_start, block.page_end, { sourcePages: "pages" }),
-          block.original_en,
-          block.explanation
-        ]
-          .filter(Boolean)
-          .join("\n")
-      )
-      .filter(Boolean)
-      .join("\n\n"),
-    page?.page_overview?.display_text,
-    page?.page_overview?.explanation,
-    page?.mentor_script?.map((item) => firstNonEmpty(item.explanation, item.display_text, item.original_en)).join("\n"),
-    page?.discipline_guide?.panels
-      ?.map((panel) => [panel.title, ...(panel.items || []), panel.takeaway].filter(Boolean).join("\n"))
-      .filter(Boolean)
-      .join("\n\n"),
-    page?.blackboard_notes?.takeaway,
-    page?.glossary_terms?.map((item) => `${item.term}: ${item.explanation}`).join("\n"),
-    page?.insights
-      ?.map((card) =>
-        [
-          card.title,
-          card.original_text,
-          card.explanation_text,
-          card.supporting_points?.join(" "),
-          card.why_it_matters?.map((item) => item.explanation).join(" ")
-        ]
-          .filter(Boolean)
-          .join("\n")
-      )
-      .filter(Boolean)
-      .join("\n\n"),
-    page?.summary,
-    page?.text,
-    page?.body,
-    page?.sections?.map((section) => section.text).filter(Boolean).join("\n\n"),
-    page?.citations?.map((citation) => citation.text || citation.excerpt).filter(Boolean).join("\n")
-  );
-}
-
-function buildPaperReaderWorkflowContext({ session, page, answerText, question, language }) {
-  const pageIndex = toNumber(page?.page_index ?? session?.current_page_index ?? 0, 0);
-  return {
-    kind: "paper_reader",
-    session_id: session?.session_id || null,
-    source: session?.source || null,
-    paper_title: session?.paper_title || null,
-    arxiv_id: session?.arxiv_id || null,
-    answer_language: session?.answer_language || language || null,
-    page_language: language || null,
-    reader_mode: session?.reader_mode || null,
-    discipline: session?.discipline || null,
-    discipline_source: session?.discipline_source || null,
-    page_index: pageIndex,
-    page_title: page?.title || null,
-    page_count: session?.page_count || null,
-    story_stage: page?.story_stage || null,
-    discipline_guide: page?.discipline_guide || null,
-    blackboard_notes: page?.blackboard_notes || null,
-    glossary_terms: page?.glossary_terms || [],
-    checkpoint_status: page?.checkpoints?.length ? "available" : "none",
-    latest_page_summary: extractAssistantContextText(page) || null,
-    latest_answer_text: firstNonEmpty(answerText),
-    question: String(question || "").trim() || null,
-    metadata: {
-      reading_blocks: toArray(page?.reading_blocks)
-        .slice(0, 8)
-        .map((block) => ({
-          chunk_id: block.chunk_id,
-          source_label: block.source_label,
-          page_start: block.page_start,
-          page_end: block.page_end,
-          original_en: firstNonEmpty(block.original_en).slice(0, 1200),
-          explanation: firstNonEmpty(block.explanation, block.display_text).slice(0, 800)
-        }))
-    }
   };
 }
 
@@ -1685,6 +1618,9 @@ function getPaperReaderCopy(language, t) {
       translationOnlyLabel: "译文",
       translateSelectionButton: "翻译选区",
       selectionTranslationRunning: "翻译中",
+      syncSelectionToAssistantButton: "同步给小助手",
+      selectionAssistantSyncReady: "选区已同步给小助手",
+      selectionAssistantSyncUnavailable: "整篇论文上下文还在准备，稍后再同步。",
       evidenceLabel: "证据线索",
       structuredFailureTitle: "本页结构化解析失败",
       structuredFailureBody: "我没有展示原始模型文本，而是保留了安全失败态。你可以重试本页，或跳到下一页继续阅读。",
@@ -1754,6 +1690,9 @@ function getPaperReaderCopy(language, t) {
     translationOnlyLabel: "Translation",
     translateSelectionButton: "Translate selection",
     selectionTranslationRunning: "Translating",
+    syncSelectionToAssistantButton: "Sync to assistant",
+    selectionAssistantSyncReady: "Selection synced to assistant",
+    selectionAssistantSyncUnavailable: "Whole-paper assistant context is still preparing.",
     evidenceLabel: "Evidence trail",
     structuredFailureTitle: "Structured page parsing failed",
     structuredFailureBody:
@@ -1810,6 +1749,56 @@ function formatPageRange(start, end, copy) {
     return `${copy.sourcePages}: ${start}-${end}`;
   }
   return `${copy.sourcePages}: ${start ?? end}`;
+}
+
+function toSourcePageNumber(value, fallback = null) {
+  if (value == null || value === "") {
+    return fallback;
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 1) {
+    return fallback;
+  }
+  return Math.round(number);
+}
+
+function getReaderSourcePageRange(page) {
+  const start = toSourcePageNumber(page?.page_start, null);
+  const end = toSourcePageNumber(page?.page_end, start);
+  if (start == null && end == null) {
+    return null;
+  }
+  const resolvedStart = start ?? end;
+  const resolvedEnd = end ?? resolvedStart;
+  return {
+    start: Math.min(resolvedStart, resolvedEnd),
+    end: Math.max(resolvedStart, resolvedEnd)
+  };
+}
+
+function getSourcePageBounds(pageEntries) {
+  const ranges = toArray(pageEntries)
+    .map((page) => getReaderSourcePageRange(page))
+    .filter(Boolean);
+  if (!ranges.length) {
+    return { first: 1, last: Math.max(1, toArray(pageEntries).length || 1) };
+  }
+  return {
+    first: Math.min(...ranges.map((range) => range.start)),
+    last: Math.max(...ranges.map((range) => range.end))
+  };
+}
+
+function findReaderPageIndexForSourcePage(pageEntries, sourcePageNumber, fallbackIndex = 0) {
+  const target = toSourcePageNumber(sourcePageNumber, null);
+  if (target == null) {
+    return fallbackIndex;
+  }
+  const match = toArray(pageEntries).find((page) => {
+    const range = getReaderSourcePageRange(page);
+    return range && target >= range.start && target <= range.end;
+  });
+  return match ? toNumber(match.page_index, fallbackIndex) : fallbackIndex;
 }
 
 function PaperMapTree({ root, pages, activePageIndex, activeSourceNodeIds, onGoToPage, copy, language }) {
@@ -2029,6 +2018,7 @@ function SourcePdfReader({
   error,
   activePage,
   sessionId,
+  activeSourcePageNumber,
   pdfZoom,
   canZoomIn,
   canZoomOut,
@@ -2043,8 +2033,14 @@ function SourcePdfReader({
   onDoubleClick
 }) {
   const pages = sourcePages?.pages || [];
+  const activeSourcePage =
+    pages.find((page) => page.page_number === activeSourcePageNumber) || pages[0] || null;
+  const visiblePages = activeSourcePage ? [activeSourcePage] : [];
   const resolvedZoom = clampPdfZoom(pdfZoom);
-  const pageRange = formatPageRange(sourcePages?.page_start ?? activePage?.page_start, sourcePages?.page_end ?? activePage?.page_end, copy);
+  const pageRange = activeSourcePage
+    ? formatPageRange(activeSourcePage.page_number, activeSourcePage.page_number, copy)
+    : formatPageRange(activeSourcePageNumber, activeSourcePageNumber, copy) ||
+      formatPageRange(sourcePages?.page_start ?? activePage?.page_start, sourcePages?.page_end ?? activePage?.page_end, copy);
   return (
     <section className="reader-pdf-source-shell">
       <div className="paper-reader-meta-bar reader-pdf-toolbar">
@@ -2091,7 +2087,7 @@ function SourcePdfReader({
       </div>
 
       {error ? <div className="warning-box">{error}</div> : null}
-      {!pages.length && !busy && !error ? (
+      {!visiblePages.length && !busy && !error ? (
         <div className="reader-structured-empty">
           <p>{copy.sourcePdfEmpty}</p>
         </div>
@@ -2109,7 +2105,7 @@ function SourcePdfReader({
         onContextMenu={onContextMenu}
         onDoubleClick={onDoubleClick}
       >
-        {pages.map((page) => {
+        {visiblePages.map((page) => {
           const width = Math.max(1, toNumber(page.width, 612));
           const height = Math.max(1, toNumber(page.height, 792));
           const pagePdfUrl = sourcePagePdfUrl(sessionId, page.page_number);
@@ -2140,10 +2136,18 @@ function SourcePdfReader({
   );
 }
 
-function SelectionTranslationPanel({ selection, translationState, copy, onTranslate }) {
+function SelectionTranslationPanel({
+  selection,
+  translationState,
+  assistantSyncState,
+  copy,
+  onTranslate,
+  onSyncSelectionToAssistant
+}) {
   const hasSelection = Boolean(selection?.text);
   const translating = translationState.status === "running";
   const translatedText = translationState.translation || "";
+  const synced = assistantSyncState?.status === "ready";
   return (
     <section className="workspace paper-reader-selection-card">
       <div className="reader-selection-card-head">
@@ -2159,6 +2163,7 @@ function SelectionTranslationPanel({ selection, translationState, copy, onTransl
         <p className="muted">{copy.selectionTranslationEmpty}</p>
       )}
       {translationState.error ? <div className="warning-box">{translationState.error}</div> : null}
+      {assistantSyncState?.error ? <div className="warning-box">{assistantSyncState.error}</div> : null}
       {translating ? (
         <div className="reader-loading-state reader-selection-loading">
           <span className="progress-liveness progress-liveness-running">
@@ -2173,9 +2178,15 @@ function SelectionTranslationPanel({ selection, translationState, copy, onTransl
           <p>{translatedText}</p>
         </div>
       ) : null}
-      <button type="button" onClick={onTranslate} disabled={!hasSelection || translating}>
-        {translating ? copy.selectionTranslationRunning : copy.translateSelectionButton}
-      </button>
+      {synced ? <p className="reader-selection-assistant-sync">{copy.selectionAssistantSyncReady}</p> : null}
+      <div className="reader-selection-actions">
+        <button type="button" onClick={onTranslate} disabled={!hasSelection || translating}>
+          {translating ? copy.selectionTranslationRunning : copy.translateSelectionButton}
+        </button>
+        <button type="button" className="secondary" onClick={onSyncSelectionToAssistant} disabled={!hasSelection}>
+          {copy.syncSelectionToAssistantButton}
+        </button>
+      </div>
     </section>
   );
 }
@@ -2403,9 +2414,16 @@ export default function PaperReaderPage({
   const [sourcePagesBusyMap, setSourcePagesBusyMap] = useState({});
   const [sourcePagesErrorMap, setSourcePagesErrorMap] = useState({});
   const [activePageIndex, setActivePageIndex] = useState(0);
+  const [activeSourcePageNumber, setActiveSourcePageNumber] = useState(1);
   const [pdfZoom, setPdfZoom] = useState(1);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [pdfSelection, setPdfSelection] = useState(null);
+  const [paperAssistantContext, setPaperAssistantContext] = useState(null);
+  const [selectionAssistantSync, setSelectionAssistantSync] = useState({
+    status: "idle",
+    sourceText: "",
+    error: ""
+  });
   const [selectionTranslation, setSelectionTranslation] = useState({
     status: "idle",
     sourceText: "",
@@ -2430,6 +2448,7 @@ export default function PaperReaderPage({
   const sourceViewerRef = useRef(null);
   const selectionRangeRef = useRef(null);
   const selectionRequestRef = useRef(0);
+  const assistantContextRequestRef = useRef(0);
 
   const pageEntries = useMemo(() => {
     const manifest = Array.isArray(session?.pages) ? session.pages : [];
@@ -2442,6 +2461,11 @@ export default function PaperReaderPage({
   }, [pagesByIndex, session?.pages]);
 
   const pageCount = session?.page_count || pageEntries.length || 0;
+  const sourcePageBounds = useMemo(() => getSourcePageBounds(pageEntries), [pageEntries]);
+  const sourcePageCount = session?.source_page_count || sourcePageBounds.last || pageCount || 0;
+  const sourcePageLast = Math.max(sourcePageBounds.last || 1, sourcePageCount || 1);
+  const canGoPreviousSourcePage = activeSourcePageNumber > sourcePageBounds.first;
+  const canGoNextSourcePage = activeSourcePageNumber < sourcePageLast;
   const activePage =
     pageEntries.find((page) => page.page_index === activePageIndex) ||
     pagesByIndex[activePageIndex] ||
@@ -2555,29 +2579,26 @@ export default function PaperReaderPage({
   }, [session?.session_id, session?.current_page_index, session?.pages?.length]);
 
   useEffect(() => {
-    if (!session?.session_id || !activePage || currentPageStatus !== "ready") {
+    const range = getReaderSourcePageRange(activePage);
+    if (!range) {
       return;
     }
-    const answerContext = extractAssistantContextText(activePage);
-    const workflowContext = buildPaperReaderWorkflowContext({
-      session,
-      page: activePage,
-      answerText: "",
-      question: "",
-      language
+    setActiveSourcePageNumber((current) => {
+      const normalized = toSourcePageNumber(current, null);
+      if (normalized != null && normalized >= range.start && normalized <= range.end) {
+        return normalized;
+      }
+      return range.start;
     });
-    const cacheKey = `${session.session_id}:page:${activePage.page_index}:${
-      activePage.page_overview?.display_text || activePage.summary || activePage.text || ""
-    }`;
-    if (assistantContextKeyRef.current === cacheKey) {
+  }, [activePage?.page_end, activePage?.page_start, activePageIndex, session?.session_id]);
+
+  useEffect(() => {
+    if (!session?.session_id) {
       return;
     }
-    assistantContextKeyRef.current = cacheKey;
-    onAssistantContextChange?.({
-      answerContext,
-      workflowContext
-    });
-  }, [activePage, currentPageStatus, language, onAssistantContextChange, session]);
+    void fetchAssistantContext(session.session_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.session_id]);
 
   useEffect(() => {
     setActiveModuleId(pageModuleAnchors[0]?.id || "");
@@ -2620,18 +2641,27 @@ export default function PaperReaderPage({
         void translateSelectedPdfText();
         return;
       }
-      if (event.key === "ArrowLeft" && activePageIndex > 0) {
+      if (event.key === "ArrowLeft" && canGoPreviousSourcePage) {
         event.preventDefault();
-        goToPage(activePageIndex - 1);
+        goToSourcePage(activeSourcePageNumber - 1);
       }
-      if (event.key === "ArrowRight" && (!pageCount || activePageIndex < pageCount - 1)) {
+      if (event.key === "ArrowRight" && canGoNextSourcePage) {
         event.preventDefault();
-        goToPage(activePageIndex + 1);
+        goToSourcePage(activeSourcePageNumber + 1);
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activePageIndex, pageCount, pdfSelection?.text, selectionTranslation.status, session?.session_id, language, runtimePayload]);
+  }, [
+    activeSourcePageNumber,
+    canGoNextSourcePage,
+    canGoPreviousSourcePage,
+    pdfSelection?.text,
+    selectionTranslation.status,
+    session?.session_id,
+    language,
+    runtimePayload
+  ]);
 
   useEffect(() => {
     clearPdfSelection({ preserveTranslation: true });
@@ -2690,8 +2720,15 @@ export default function PaperReaderPage({
     setSourcePagesBusyMap({});
     setSourcePagesErrorMap({});
     setActivePageIndex(0);
+    setActiveSourcePageNumber(1);
     setPdfZoom(1);
     clearPdfSelection({ preserveTranslation: false });
+    setPaperAssistantContext(null);
+    setSelectionAssistantSync({
+      status: "idle",
+      sourceText: "",
+      error: ""
+    });
     setBannerMessage("");
     setBannerError("");
     setSelectionTranslation({
@@ -2706,6 +2743,7 @@ export default function PaperReaderPage({
       detail: "",
       updatedAt: null
     });
+    assistantContextRequestRef.current += 1;
     assistantContextKeyRef.current = "";
     onAssistantContextChange?.({
       answerContext: null,
@@ -2802,6 +2840,81 @@ export default function PaperReaderPage({
     }
   }
 
+  function publishAssistantContext(context, selectedExcerpt = null) {
+    if (!context || typeof onAssistantContextChange !== "function") {
+      return;
+    }
+    const baseWorkflowContext = isPlainObject(context.workflowContext) ? context.workflowContext : null;
+    const workflowContext = baseWorkflowContext
+      ? {
+          ...baseWorkflowContext,
+          metadata: {
+            ...(isPlainObject(baseWorkflowContext.metadata) ? baseWorkflowContext.metadata : {}),
+            ...(selectedExcerpt ? { selected_excerpt: selectedExcerpt } : {})
+          }
+        }
+      : selectedExcerpt
+        ? { kind: "paper_reader", metadata: { selected_excerpt: selectedExcerpt } }
+        : null;
+    const cacheKey = JSON.stringify({
+      sessionId: context.session_id || workflowContext?.session_id || session?.session_id || "",
+      answerContext: context.answerContext || "",
+      selectedText: selectedExcerpt?.text || "",
+      selectedAt: selectedExcerpt?.created_at || ""
+    });
+    if (assistantContextKeyRef.current === cacheKey) {
+      return;
+    }
+    assistantContextKeyRef.current = cacheKey;
+    onAssistantContextChange({
+      answerContext: context.answerContext || null,
+      workflowContext
+    });
+  }
+
+  async function fetchAssistantContext(sessionId) {
+    const resolvedSessionId = String(sessionId || "").trim();
+    if (!resolvedSessionId) {
+      return null;
+    }
+    assistantContextRequestRef.current += 1;
+    const requestId = assistantContextRequestRef.current;
+    try {
+      const response = await fetch(
+        `/api/paper-reader/session/${encodeURIComponent(resolvedSessionId)}/assistant-context`
+      );
+      const payload = await readJsonWithDetailFallback(response);
+      if (!response.ok) {
+        throw new Error(payload.detail || `Assistant context (HTTP ${response.status})`);
+      }
+      const normalized = normalizeAssistantContextPayload(payload);
+      if (!normalized) {
+        throw new Error(copy.selectionAssistantSyncUnavailable);
+      }
+      if (requestId !== assistantContextRequestRef.current) {
+        return null;
+      }
+      setPaperAssistantContext(normalized);
+      setSelectionAssistantSync({
+        status: "idle",
+        sourceText: "",
+        error: ""
+      });
+      publishAssistantContext(normalized);
+      return normalized;
+    } catch (error) {
+      if (requestId === assistantContextRequestRef.current) {
+        setPaperAssistantContext(null);
+        setSelectionAssistantSync((current) => ({
+          ...current,
+          status: current.status === "ready" ? "ready" : "idle",
+          error: ""
+        }));
+      }
+      return null;
+    }
+  }
+
   function clearPersistedPdfHighlight() {
     try {
       window.CSS?.highlights?.delete("paper-reader-selection");
@@ -2892,6 +3005,11 @@ export default function PaperReaderPage({
       pageNumbers: selectedSourcePageNumbers(range),
       createdAt: new Date().toISOString()
     });
+    setSelectionAssistantSync({
+      status: "idle",
+      sourceText: "",
+      error: ""
+    });
     setSelectionTranslation((current) => ({
       ...current,
       status: current.status === "running" ? current.status : "idle",
@@ -2972,26 +3090,28 @@ export default function PaperReaderPage({
     }
   }
 
-  function publishAssistantContextForPage(page, answerText) {
-    if (!page || !session?.session_id || typeof onAssistantContextChange !== "function") {
+  function syncSelectionToAssistant() {
+    if (!pdfSelection?.text) {
       return;
     }
-    const cacheKey = `${session.session_id}:page:${page.page_index}:${page.status}:${
-      answerText || page.page_overview?.display_text || page.summary || page.text || ""
-    }`;
-    if (assistantContextKeyRef.current === cacheKey) {
+    if (!paperAssistantContext) {
+      setSelectionAssistantSync({
+        status: "error",
+        sourceText: pdfSelection.text,
+        error: copy.selectionAssistantSyncUnavailable
+      });
       return;
     }
-    assistantContextKeyRef.current = cacheKey;
-    onAssistantContextChange({
-      answerContext: firstNonEmpty(answerText, extractAssistantContextText(page)),
-      workflowContext: buildPaperReaderWorkflowContext({
-        session,
-        page,
-        answerText,
-        question: "",
-        language
-      })
+    const selectedExcerpt = {
+      text: pdfSelection.text,
+      page_numbers: toArray(pdfSelection.pageNumbers).map((item) => String(item)).filter(Boolean),
+      created_at: new Date().toISOString()
+    };
+    publishAssistantContext(paperAssistantContext, selectedExcerpt);
+    setSelectionAssistantSync({
+      status: "ready",
+      sourceText: pdfSelection.text,
+      error: ""
     });
   }
 
@@ -3120,13 +3240,22 @@ export default function PaperReaderPage({
     }
   }
 
-  function goToPage(pageIndex) {
-    const normalizedIndex = Math.max(0, toNumber(pageIndex, 0));
-    setActivePageIndex(normalizedIndex);
+  function goToSourcePage(pageNumber) {
+    const requestedPageNumber = toSourcePageNumber(pageNumber, activeSourcePageNumber);
+    const targetPageNumber = Math.min(
+      sourcePageLast,
+      Math.max(sourcePageBounds.first, requestedPageNumber || sourcePageBounds.first)
+    );
+    const targetPageIndex = findReaderPageIndexForSourcePage(pageEntries, targetPageNumber, activePageIndex);
+    setActiveSourcePageNumber(targetPageNumber);
+    setActivePageIndex(targetPageIndex);
     setActiveSourceId("");
     clearPdfSelection({ preserveTranslation: true });
     if (session?.session_id) {
-      setSession((current) => (current ? { ...current, current_page_index: normalizedIndex } : current));
+      setSession((current) => (current ? { ...current, current_page_index: targetPageIndex } : current));
+      if (targetPageIndex !== activePageIndex) {
+        void ensureSourcePages(targetPageIndex, { sessionId: session.session_id });
+      }
     }
   }
 
@@ -3343,6 +3472,7 @@ export default function PaperReaderPage({
                   error={activeSourcePagesError}
                   activePage={{ ...activePage, title: activeTitleBase }}
                   sessionId={session.session_id}
+                  activeSourcePageNumber={activeSourcePageNumber}
                   pdfZoom={pdfZoom}
                   canZoomIn={canZoomIn}
                   canZoomOut={canZoomOut}
@@ -3360,15 +3490,15 @@ export default function PaperReaderPage({
                   <button
                     type="button"
                     className="secondary"
-                    onClick={() => goToPage(activePageIndex - 1)}
-                    disabled={activePageIndex <= 0}
+                    onClick={() => goToSourcePage(activeSourcePageNumber - 1)}
+                    disabled={!canGoPreviousSourcePage}
                   >
                     {t("paperReaderPreviousPage")}
                   </button>
                   <button
                     type="button"
-                    onClick={() => goToPage(activePageIndex + 1)}
-                    disabled={pageCount ? activePageIndex >= pageCount - 1 : false}
+                    onClick={() => goToSourcePage(activeSourcePageNumber + 1)}
+                    disabled={!canGoNextSourcePage}
                   >
                     {t("paperReaderNextPage")}
                   </button>
@@ -3387,21 +3517,9 @@ export default function PaperReaderPage({
                   <p className="muted">{firstNonEmpty(session.arxiv_id, session.file_name, session.source || t("none"))}</p>
                 </div>
                 <div className="paper-reader-outline-meta">
-                  <span className="reader-status-chip">{`${t("paperReaderPageCount")}: ${pageCount || "-"}`}</span>
+                  <span className="reader-status-chip">{`${t("paperReaderPageCount")}: ${sourcePageCount || "-"}`}</span>
                   <span className="reader-status-chip">{`${t("paperReaderCurrentStatus")}: ${getStatusLabel(currentPageStatus, t)}`}</span>
                   <span className="reader-status-chip">{`${copy.disciplineLabel}: ${getDisciplineLabel(session.discipline, language)}`}</span>
-                </div>
-                <div className="paper-reader-page-jump-list">
-                  {pageEntries.map((page) => (
-                    <button
-                      key={page.page_index}
-                      type="button"
-                      className={`reader-page-subanchor${page.page_index === activePageIndex ? " active" : ""}`}
-                      onClick={() => goToPage(page.page_index)}
-                    >
-                      {page.page_index + 1}
-                    </button>
-                  ))}
                 </div>
                 {activeSourceSections.length ? (
                   <div className="reader-source-chip-list">
@@ -3423,8 +3541,10 @@ export default function PaperReaderPage({
               <SelectionTranslationPanel
                 selection={pdfSelection}
                 translationState={selectionTranslation}
+                assistantSyncState={selectionAssistantSync}
                 copy={copy}
                 onTranslate={translateSelectedPdfText}
+                onSyncSelectionToAssistant={syncSelectionToAssistant}
               />
             </aside>
           </div>

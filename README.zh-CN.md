@@ -51,7 +51,9 @@ FastAPI + React 工作台包含这些主区域：
 - `Search Workspace`
   可配置 query chat、answer chat、rerank、embedding 和 retrieval 参数；可启用或关闭 `local`、`arxiv`、`wos`；支持 rewrite 确认、论文结果查看、来源徽标与外链展示，以及最终回答流式输出。
 - `论文溯源`
-  输入 arXiv 链接或上传 PDF，抽取并解析 references，执行两轮溯源扩展，查看证据账本，并在模型排序接入前基于当前证据账本生成兜底最终 Top5。
+  输入 arXiv 链接或上传 PDF，抽取 references，通过 arXiv ID 或标题相似度召回全局 Top15 arXiv 候选，并结合 reference 标题匹配与目标论文主题相关性打分，查看证据账本，由 LLM 评审生成最终 Top5；模型失败时回退到规则排序。arXiv PDF 载入会重试备用端点，遇到限流时会提示稍后重试或直接上传 PDF。
+- `研究画像`
+  查看和管理 Live2D 助手基于反复论文阅读信号做出的谨慎推断，并支持刷新、置顶或删除每条推断方向。
 - `Ingest Manager`
   可在前端启动 `in.py` 入库任务、查看本地数据库概览，并通过 SSE 查看实时日志。
 
@@ -65,7 +67,13 @@ FastAPI + React 工作台包含这些主区域：
 
 前端不会回显明文 API Key，后端只返回 `has_api_key: true/false`。  
 出于安全考虑，仓库只提交 [`config/runtime_settings.example.json`](config/runtime_settings.example.json)，真实的 `config/runtime_settings.json` 应保留在本地。
-Paper Reader 通过浏览器 PDF 查看器直接渲染原始 PDF，PDF 原文选区翻译走 `paper_reader_translation`，其 provider 可设为 `ollama`、`openai_compatible` 或 `google_translate`。
+Paper Reader 通过浏览器 PDF 查看器直接渲染原始 PDF，PDF 原文选区翻译走 `paper_reader_translation`，其 provider 可设为 `ollama`、`openai_compatible` 或 `google_translate`。Live2D 小助手现在通过 `/api/paper-reader/session/{session_id}/assistant-context` 接收整篇论文上下文；PDF 选区只有点击“同步给小助手”后才会进入助手上下文，最近的用户/助手对话也会随每轮聊天一起打包。
+
+## 安全与仓库卫生
+
+- 运行时秘密不进入 Git。`.gitignore` 已排除 `config/runtime_settings.json`、虚拟环境、本地入库日志、生成的本地语料和前端构建产物。
+- API Key 通过设置接口保持只写：后端会使用已保存的值，但响应只暴露 `has_api_key`。
+- 远端仓库安全自动化放在 `.github/workflows/codeql.yml` 和 `.github/dependabot.yml`：CodeQL 会扫描 Python 与 JavaScript/TypeScript，Dependabot 每周检查 Python、npm 和 GitHub Actions 依赖更新。
 
 ## 目录结构
 
@@ -80,7 +88,7 @@ Paper Reader 通过浏览器 PDF 查看器直接渲染原始 PDF，PDF 原文选
 |   |-- main.py
 |   `-- schemas.py
 |-- config/
-|   `-- runtime_settings.json
+|   `-- runtime_settings.example.json
 |-- frontend/
 |   |-- package.json
 |   |-- src/
@@ -192,6 +200,19 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 - `ANSWER_CHAT_BASE_URL`
 - `ANSWER_CHAT_API_KEY`
 
+### 论文溯源模型
+
+- `CITATION_TRACE_MAIN_CHAT_PROVIDER`
+  默认继承最终回答模型提供方。
+- `CITATION_TRACE_MAIN_CHAT_MODEL`
+- `CITATION_TRACE_MAIN_CHAT_BASE_URL`
+- `CITATION_TRACE_MAIN_CHAT_API_KEY`
+- `CITATION_TRACE_WORKER_CHAT_PROVIDER`
+  默认继承论文精读模型提供方。
+- `CITATION_TRACE_WORKER_CHAT_MODEL`
+- `CITATION_TRACE_WORKER_CHAT_BASE_URL`
+- `CITATION_TRACE_WORKER_CHAT_API_KEY`
+
 ### 检索提供方
 
 - `RETRIEVAL_ENABLED_SOURCES`
@@ -292,7 +313,7 @@ npm run dev
 
 ### 6. 使用 Paper Reader 精读单篇论文
 
-在网页里打开“论文精读”标签页，输入 arXiv 链接或上传本地 PDF。精读器可以自动识别或手动指定论文所属学科，并以三栏方式展示：左侧固定 Live2D 论文助手，中间用原生 PDF 查看器展示当前阅读页覆盖的 PDF 原文页，右侧保留阅读导航和选区翻译卡片。精读器不再调用 Paper Reader 模型生成结构化精读页；PDF 原文选区翻译会走独立的 `paper_reader_translation` 运行时配置。
+在网页里打开“论文精读”标签页，输入 arXiv 链接或上传本地 PDF。精读器可以自动识别或手动指定论文所属学科，并以三栏方式展示：左侧固定 Live2D 论文助手，中间用原生 PDF 查看器按 PDF 物理页逐页阅读，右侧保留选区翻译卡片。精读器不再调用 Paper Reader 模型生成结构化精读页，也不再暴露精读页分组；PDF 原文选区翻译会走独立的 `paper_reader_translation` 运行时配置。Live2D 助手会基于压缩后的整篇论文上下文、最近对话和手动同步的 PDF 选区回答；选区只有点击“同步给小助手”后才会作为当前焦点参与回答。Live2D 助手还会根据反复出现的论文阅读信号谨慎推断研究画像；可在独立的“研究画像”标签页查看、刷新、置顶或删除每条推断方向。
 
 ### 7. 构建前端静态文件
 

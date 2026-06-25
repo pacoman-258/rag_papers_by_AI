@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<defs>
+<linearGradient id="paper-bg" x1="0" x2="1" y1="0" y2="1">
+<stop offset="0%" stop-color="#fff8ec"/>
+<stop offset="55%" stop-color="#f8efe2"/>
+<stop offset="100%" stop-color="#f2e6d6"/>
+</linearGradient>
+</defs>
+<rect width="1920" height="1080" fill="url(#paper-bg)"/>
+<circle cx="1710" cy="150" r="210" fill="#ffffff" opacity="0.34"/>
+<circle cx="118" cy="942" r="170" fill="#ffffff" opacity="0.26"/>
+<rect x="82" y="72" width="214" height="42" rx="21" fill="#261f18"/><text x="189" y="101" font-size="20" font-weight="700" fill="#fffaf1" text-anchor="middle" opacity="1"><tspan x="189" dy="0">ARXIV-PAPER-RAG</tspan></text>
+<rect x="314" y="72" width="290" height="42" rx="21" fill="#eadfcc"/><text x="459" y="101" font-size="20" font-weight="700" fill="#5d4a38" text-anchor="middle" opacity="1"><tspan x="459" dy="0">Search Workflow</tspan></text>
+<text x="82" y="168" font-size="72" font-weight="850" fill="#221b14" text-anchor="start" opacity="1"><tspan x="82" dy="0">搜索工作流</tspan></text>
+<text x="84" y="220" font-size="28" font-weight="500" fill="#665a4c" text-anchor="start" opacity="1"><tspan x="84" dy="0">从用户问题到可追溯回答：查询规划、多源召回、重排、回答与助手上下文同步。</tspan></text>
+<rect x="88" y="256" width="300" height="430" rx="26" fill="#000" opacity="0.055"/>
+<rect x="80" y="244" width="300" height="430" rx="26" fill="#fffdf7" stroke="#eadfcc" stroke-width="2"/>
+<rect x="80" y="244" width="300" height="12" rx="6" fill="#2f8f83"/>
+<circle cx="130" cy="306" r="28" fill="#2f8f83" opacity="0.95"/>
+<text x="130" y="317" font-size="30" font-weight="800" fill="#fffdf7" text-anchor="middle" opacity="1"><tspan x="130" dy="0">1</tspan></text>
+<text x="168" y="299" font-size="31" font-weight="800" fill="#261f18" text-anchor="start" opacity="1"><tspan x="168" dy="0">用户问题</tspan></text>
+<line x1="110" y1="356" x2="350" y2="356" stroke="#eadfcc" stroke-width="2"/>
+<circle cx="122" cy="402" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="142" y="412" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="142" dy="0">自然语言问题</tspan></text>
+<circle cx="122" cy="460" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="142" y="470" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="142" dy="0">可带过滤条件</tspan></text>
+<circle cx="122" cy="518" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="142" y="528" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="142" dy="0">选择模型配置</tspan></text>
+<rect x="110" y="606" width="240" height="42" rx="21" fill="#f1e4d1"/><text x="230" y="635" font-size="20" font-weight="700" fill="#72523a" text-anchor="middle" opacity="1"><tspan x="230" dy="0">Request</tspan></text>
+<line x1="394" y1="348" x2="412" y2="348" stroke="#2f8f83" stroke-width="5" stroke-linecap="round" opacity="0.82"/><polygon points="430,348 412,338 412,358" fill="#2f8f83" opacity="0.82"/>
+<rect x="438" y="256" width="300" height="430" rx="26" fill="#000" opacity="0.055"/>
+<rect x="430" y="244" width="300" height="430" rx="26" fill="#fffdf7" stroke="#eadfcc" stroke-width="2"/>
+<rect x="430" y="244" width="300" height="12" rx="6" fill="#2f8f83"/>
+<circle cx="480" cy="306" r="28" fill="#2f8f83" opacity="0.95"/>
+<text x="480" y="317" font-size="30" font-weight="800" fill="#fffdf7" text-anchor="middle" opacity="1"><tspan x="480" dy="0">2</tspan></text>
+<text x="518" y="299" font-size="31" font-weight="800" fill="#261f18" text-anchor="start" opacity="1"><tspan x="518" dy="0">查询规划</tspan></text>
+<line x1="460" y1="356" x2="700" y2="356" stroke="#eadfcc" stroke-width="2"/>
+<circle cx="472" cy="402" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="492" y="412" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="492" dy="0">query_chat 改写</tspan></text>
+<circle cx="472" cy="460" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="492" y="470" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="492" dy="0">拆解检索意图</tspan></text>
+<circle cx="472" cy="518" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="492" y="528" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="492" dy="0">用户可确认微调</tspan></text>
+<rect x="460" y="606" width="240" height="42" rx="21" fill="#f1e4d1"/><text x="580" y="635" font-size="20" font-weight="700" fill="#72523a" text-anchor="middle" opacity="1"><tspan x="580" dy="0">Plan</tspan></text>
+<line x1="744" y1="348" x2="762" y2="348" stroke="#3f6fa8" stroke-width="5" stroke-linecap="round" opacity="0.82"/><polygon points="780,348 762,338 762,358" fill="#3f6fa8" opacity="0.82"/>
+<rect x="788" y="256" width="300" height="430" rx="26" fill="#000" opacity="0.055"/>
+<rect x="780" y="244" width="300" height="430" rx="26" fill="#fffdf7" stroke="#eadfcc" stroke-width="2"/>
+<rect x="780" y="244" width="300" height="12" rx="6" fill="#2f8f83"/>
+<circle cx="830" cy="306" r="28" fill="#2f8f83" opacity="0.95"/>
+<text x="830" y="317" font-size="30" font-weight="800" fill="#fffdf7" text-anchor="middle" opacity="1"><tspan x="830" dy="0">3</tspan></text>
+<text x="868" y="299" font-size="31" font-weight="800" fill="#261f18" text-anchor="start" opacity="1"><tspan x="868" dy="0">多源召回</tspan></text>
+<line x1="810" y1="356" x2="1050" y2="356" stroke="#eadfcc" stroke-width="2"/>
+<circle cx="822" cy="402" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="842" y="412" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="842" dy="0">本地向量库</tspan></text>
+<circle cx="822" cy="460" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="842" y="470" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="842" dy="0">arXiv / WoS</tspan></text>
+<circle cx="822" cy="518" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="842" y="528" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="842" dy="0">元数据关键词</tspan></text>
+<rect x="810" y="606" width="240" height="42" rx="21" fill="#f1e4d1"/><text x="930" y="635" font-size="20" font-weight="700" fill="#72523a" text-anchor="middle" opacity="1"><tspan x="930" dy="0">Candidates</tspan></text>
+<line x1="1094" y1="348" x2="1112" y2="348" stroke="#2f8f83" stroke-width="5" stroke-linecap="round" opacity="0.82"/><polygon points="1130,348 1112,338 1112,358" fill="#2f8f83" opacity="0.82"/>
+<rect x="1138" y="256" width="300" height="430" rx="26" fill="#000" opacity="0.055"/>
+<rect x="1130" y="244" width="300" height="430" rx="26" fill="#fffdf7" stroke="#eadfcc" stroke-width="2"/>
+<rect x="1130" y="244" width="300" height="12" rx="6" fill="#2f8f83"/>
+<circle cx="1180" cy="306" r="28" fill="#2f8f83" opacity="0.95"/>
+<text x="1180" y="317" font-size="30" font-weight="800" fill="#fffdf7" text-anchor="middle" opacity="1"><tspan x="1180" dy="0">4</tspan></text>
+<text x="1218" y="299" font-size="31" font-weight="800" fill="#261f18" text-anchor="start" opacity="1"><tspan x="1218" dy="0">重排与证据</tspan></text>
+<line x1="1160" y1="356" x2="1400" y2="356" stroke="#eadfcc" stroke-width="2"/>
+<circle cx="1172" cy="402" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="1192" y="412" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="1192" dy="0">embedding + rerank</tspan></text>
+<circle cx="1172" cy="460" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="1192" y="470" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="1192" dy="0">去重与排序</tspan></text>
+<circle cx="1172" cy="518" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="1192" y="528" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="1192" dy="0">论文卡片与片段</tspan></text>
+<rect x="1160" y="606" width="240" height="42" rx="21" fill="#f1e4d1"/><text x="1280" y="635" font-size="20" font-weight="700" fill="#72523a" text-anchor="middle" opacity="1"><tspan x="1280" dy="0">Evidence</tspan></text>
+<line x1="1444" y1="348" x2="1462" y2="348" stroke="#3f6fa8" stroke-width="5" stroke-linecap="round" opacity="0.82"/><polygon points="1480,348 1462,338 1462,358" fill="#3f6fa8" opacity="0.82"/>
+<rect x="1488" y="256" width="300" height="430" rx="26" fill="#000" opacity="0.055"/>
+<rect x="1480" y="244" width="300" height="430" rx="26" fill="#fffdf7" stroke="#eadfcc" stroke-width="2"/>
+<rect x="1480" y="244" width="300" height="12" rx="6" fill="#2f8f83"/>
+<circle cx="1530" cy="306" r="28" fill="#2f8f83" opacity="0.95"/>
+<text x="1530" y="317" font-size="30" font-weight="800" fill="#fffdf7" text-anchor="middle" opacity="1"><tspan x="1530" dy="0">5</tspan></text>
+<text x="1568" y="299" font-size="31" font-weight="800" fill="#261f18" text-anchor="start" opacity="1"><tspan x="1568" dy="0">流式回答</tspan></text>
+<line x1="1510" y1="356" x2="1750" y2="356" stroke="#eadfcc" stroke-width="2"/>
+<circle cx="1522" cy="402" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="1542" y="412" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="1542" dy="0">answer_chat 生成</tspan></text>
+<circle cx="1522" cy="460" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="1542" y="470" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="1542" dy="0">引用论文来源</tspan></text>
+<circle cx="1522" cy="518" r="5" fill="#3f6fa8" opacity="0.88"/>
+<text x="1542" y="528" font-size="26" font-weight="500" fill="#3f372d" text-anchor="start" opacity="1"><tspan x="1542" dy="0">同步 Live2D 上下文</tspan></text>
+<rect x="1510" y="606" width="240" height="42" rx="21" fill="#f1e4d1"/><text x="1630" y="635" font-size="20" font-weight="700" fill="#72523a" text-anchor="middle" opacity="1"><tspan x="1630" dy="0">Answer</tspan></text>
+<rect x="88" y="760" width="830" height="240" rx="24" fill="#000" opacity="0.045"/>
+<rect x="80" y="750" width="830" height="240" rx="24" fill="#fffaf1" stroke="#e8dcc7" stroke-width="2"/>
+<rect x="80" y="750" width="8" height="240" rx="4" fill="#2f8f83"/>
+<text x="120" y="804" font-size="31" font-weight="800" fill="#261f18" text-anchor="start" opacity="1"><tspan x="120" dy="0">关键产物</tspan></text>
+<circle cx="126" cy="842" r="5" fill="#2f8f83" opacity="0.86"/>
+<text x="146" y="852" font-size="25" font-weight="500" fill="#453d34" text-anchor="start" opacity="1"><tspan x="146" dy="0">候选论文列表、检索日志、重排分数</tspan></text>
+<circle cx="126" cy="888" r="5" fill="#2f8f83" opacity="0.86"/>
+<text x="146" y="898" font-size="25" font-weight="500" fill="#453d34" text-anchor="start" opacity="1"><tspan x="146" dy="0">回答上下文会被最近一次 QA 与助手层引用</tspan></text>
+<circle cx="126" cy="934" r="5" fill="#2f8f83" opacity="0.86"/>
+<text x="146" y="944" font-size="25" font-weight="500" fill="#453d34" text-anchor="start" opacity="1"><tspan x="146" dy="0">配置优先级：请求体 &gt; runtime_settings &gt; 环境变量</tspan></text>
+<rect x="1018" y="760" width="830" height="240" rx="24" fill="#000" opacity="0.045"/>
+<rect x="1010" y="750" width="830" height="240" rx="24" fill="#fffaf1" stroke="#e8dcc7" stroke-width="2"/>
+<rect x="1010" y="750" width="8" height="240" rx="4" fill="#3f6fa8"/>
+<text x="1050" y="804" font-size="31" font-weight="800" fill="#261f18" text-anchor="start" opacity="1"><tspan x="1050" dy="0">可靠性边界</tspan></text>
+<circle cx="1056" cy="842" r="5" fill="#3f6fa8" opacity="0.86"/>
+<text x="1076" y="852" font-size="25" font-weight="500" fill="#453d34" text-anchor="start" opacity="1"><tspan x="1076" dy="0">外部源失败时保留本地检索链路</tspan></text>
+<circle cx="1056" cy="888" r="5" fill="#3f6fa8" opacity="0.86"/>
+<text x="1076" y="898" font-size="25" font-weight="500" fill="#453d34" text-anchor="start" opacity="1"><tspan x="1076" dy="0">回答必须绑定检索证据，不能凭空补论文</tspan></text>
+<circle cx="1056" cy="934" r="5" fill="#3f6fa8" opacity="0.86"/>
+<text x="1076" y="944" font-size="25" font-weight="500" fill="#453d34" text-anchor="start" opacity="1"><tspan x="1076" dy="0">API key 只写不回显，只返回 has_api_key 状态</tspan></text>
+<text x="1780" y="1026" font-size="22" font-weight="600" fill="#7f705f" text-anchor="end" opacity="1"><tspan x="1780" dy="0">docs/workflows</tspan></text>
+</svg>

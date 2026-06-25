@@ -114,6 +114,37 @@ class PaperReaderSourceLayoutTest(unittest.TestCase):
         self.assertEqual(len(rendered_reader.pages), 1)
         self.assertEqual(float(rendered_reader.pages[0].mediabox.width), 612)
 
+    def test_session_manifest_uses_pdf_pages_not_deep_reading_groups(self):
+        settings = _settings()
+        session = _session(settings)
+        session.source_pages = [(page_number, f"Source page {page_number}") for page_number in range(1, 16)]
+        session.pages[0].page_start = 1
+        session.pages[0].page_end = 10
+
+        model = prs.session_to_model(session)
+
+        self.assertEqual(model.source_page_count, 15)
+        self.assertEqual(model.page_count, 15)
+        self.assertEqual(len(model.pages), 15)
+        self.assertEqual(model.pages[-1].page_index, 14)
+        self.assertEqual(model.pages[-1].page_start, 15)
+        self.assertEqual(model.pages[-1].page_end, 15)
+
+    def test_source_page_endpoint_uses_physical_pdf_page_index(self):
+        settings = _settings()
+        session = _session(settings)
+        session.source_pages = [(page_number, f"Source page {page_number}") for page_number in range(1, 16)]
+        session.pages[0].page_start = 1
+        session.pages[0].page_end = 10
+
+        with unittest.mock.patch.dict(prs._SESSION_CACHE, {session.session_id: session}, clear=True):
+            response = prs.get_source_pages_for_reader_page(session.session_id, 14)
+
+        self.assertEqual(response.page_start, 15)
+        self.assertEqual(response.page_end, 15)
+        self.assertEqual([page.page_number for page in response.pages], [15])
+        self.assertEqual(response.pages[0].text, "Source page 15")
+
     def test_frontend_pdf_reader_keeps_selectable_page_layer(self):
         frontend_source = Path(__file__).resolve().parents[1] / "frontend" / "src" / "PaperReaderPage.jsx"
         source = frontend_source.read_text(encoding="utf-8")
@@ -133,6 +164,17 @@ class PaperReaderSourceLayoutTest(unittest.TestCase):
         self.assertIn("reader-pdf-zoom-controls", source)
         self.assertIn("onZoomIn", source)
         self.assertIn("--reader-pdf-zoom", styles)
+
+    def test_frontend_pdf_reader_shows_one_source_page_with_bottom_navigation(self):
+        frontend_source = Path(__file__).resolve().parents[1] / "frontend" / "src" / "PaperReaderPage.jsx"
+        source = frontend_source.read_text(encoding="utf-8")
+
+        self.assertIn("activeSourcePageNumber", source)
+        self.assertIn("const visiblePages = activeSourcePage ? [activeSourcePage] : [];", source)
+        self.assertIn("goToSourcePage(activeSourcePageNumber - 1)", source)
+        self.assertIn("goToSourcePage(activeSourcePageNumber + 1)", source)
+        self.assertIn("source_page_count", source)
+        self.assertNotIn('className="paper-reader-page-jump-list"', source)
 
 
 if __name__ == "__main__":

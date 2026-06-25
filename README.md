@@ -51,7 +51,9 @@ The FastAPI + React workbench exposes these workspaces:
 - `Search Workspace`
   Configure query chat, answer chat, rerank, embedding, and retrieval settings; enable or disable `local`, `arxiv`, and `wos`; generate and refine rewrites; inspect top-10 papers with source badges and external links; and stream the final answer.
 - `Citation Trace`
-  Load an arXiv paper or PDF, extract and resolve references, run two-round provenance expansion, inspect an evidence ledger, and review a fallback final top 5 assembled from the current evidence ledger until model ranking is wired in.
+  Load an arXiv paper or PDF, extract references, recall a global Top 15 arXiv candidate pool from arXiv IDs or title similarity, score candidates with both reference-title agreement and target-topic alignment, inspect the evidence ledger, and review an LLM-ranked final Top 5 with a rule-based fallback. arXiv PDF loading retries alternate endpoints and reports rate limits with an upload-PDF fallback hint.
+- `Research Profile`
+  Review and manage the Live2D assistant's cautious inferences from repeated paper-reading signals, with refresh, pin, and delete actions for each inferred direction.
 - `Ingest Manager`
   Start `in.py` as a background job, inspect local-database counts, and watch ingest logs over SSE.
 
@@ -65,7 +67,13 @@ Configuration precedence is:
 
 API keys are write-only in the UI. The backend only returns `has_api_key: true/false`.
 For safety, commit only [`config/runtime_settings.example.json`](config/runtime_settings.example.json); keep the real `config/runtime_settings.json` local.
-Paper Reader renders the original PDF through the browser PDF viewer; selected source text translation uses `paper_reader_translation`, whose provider can be `ollama`, `openai_compatible`, or `google_translate`.
+Paper Reader renders the original PDF through the browser PDF viewer; selected source text translation uses `paper_reader_translation`, whose provider can be `ollama`, `openai_compatible`, or `google_translate`. The Live2D assistant now receives paper-wide context from `/api/paper-reader/session/{session_id}/assistant-context`; PDF selections are only added to assistant context after clicking `Sync to assistant`, and recent user/assistant dialogue is packaged with each chat turn.
+
+## Security and Repository Hygiene
+
+- Keep runtime secrets out of Git. `config/runtime_settings.json`, virtual environments, local ingest logs, generated local corpora, and frontend build output are ignored by `.gitignore`.
+- API keys remain write-only through the settings API: persisted values are used server-side, while responses expose only `has_api_key`.
+- GitHub security automation is configured through `.github/workflows/codeql.yml` for CodeQL scans on Python and JavaScript/TypeScript, and `.github/dependabot.yml` for weekly Python, npm, and GitHub Actions dependency update checks.
 
 ## Repository Structure
 
@@ -80,7 +88,7 @@ Paper Reader renders the original PDF through the browser PDF viewer; selected s
 |   |-- main.py
 |   `-- schemas.py
 |-- config/
-|   `-- runtime_settings.json
+|   `-- runtime_settings.example.json
 |-- frontend/
 |   |-- package.json
 |   |-- src/
@@ -192,6 +200,19 @@ Override them with `PAPER_DB_*` environment variables if needed.
 - `ANSWER_CHAT_BASE_URL`
 - `ANSWER_CHAT_API_KEY`
 
+### Citation Trace models
+
+- `CITATION_TRACE_MAIN_CHAT_PROVIDER`
+  Defaults to the final answer chat provider.
+- `CITATION_TRACE_MAIN_CHAT_MODEL`
+- `CITATION_TRACE_MAIN_CHAT_BASE_URL`
+- `CITATION_TRACE_MAIN_CHAT_API_KEY`
+- `CITATION_TRACE_WORKER_CHAT_PROVIDER`
+  Defaults to the Paper Reader chat provider.
+- `CITATION_TRACE_WORKER_CHAT_MODEL`
+- `CITATION_TRACE_WORKER_CHAT_BASE_URL`
+- `CITATION_TRACE_WORKER_CHAT_API_KEY`
+
 ### Retrieval providers
 
 - `RETRIEVAL_ENABLED_SOURCES`
@@ -292,7 +313,7 @@ Default dev URLs:
 
 ### 6. Read one paper in Paper Reader
 
-Open the `Paper Reader` tab in the web app, then load an arXiv URL or upload a local PDF. The reader can auto-detect or manually accept a paper discipline, then presents a three-column workspace: a sticky Live2D paper assistant, a central native PDF viewer for the current source page range, and a right column with reading navigation plus a selected-text translation card. The reader no longer asks a Paper Reader model to generate structured deep-reading pages; selected PDF source text is translated through the separate `paper_reader_translation` runtime config.
+Open the `Paper Reader` tab in the web app, then load an arXiv URL or upload a local PDF. The reader can auto-detect or manually accept a paper discipline, then presents a three-column workspace: a sticky Live2D paper assistant, a central native PDF viewer that pages through the original PDF one physical page at a time, and a right column with selected-text translation. The reader no longer asks a Paper Reader model to generate structured deep-reading pages or reader-page groupings; selected PDF source text is translated through the separate `paper_reader_translation` runtime config. The Live2D assistant is grounded in a compact whole-paper context, the recent user/assistant dialogue, and a PDF selection only after clicking `Sync to assistant`. The Live2D assistant can also infer a cautious research profile from repeated paper-reading signals; use the separate `Research Profile` tab to review, refresh, pin, or delete each inferred direction.
 
 ### 7. Production frontend build
 

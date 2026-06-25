@@ -24,6 +24,18 @@
     "base_url": null,
     "api_key": null
   },
+  "citation_trace_main_chat": {
+    "provider": "ollama",
+    "model": "qwen3:8b",
+    "base_url": null,
+    "api_key": null
+  },
+  "citation_trace_worker_chat": {
+    "provider": "ollama",
+    "model": "qwen3:8b",
+    "base_url": null,
+    "api_key": null
+  },
   "embedding": {
     "api_url": "http://localhost:11434/api",
     "model": "qwen3-embedding:0.6b"
@@ -42,5 +54,14 @@
     "base_url": "https://api.siliconflow.cn/v1",
     "model": "BAAI/bge-reranker-v2-m3",
     "api_key": null
+  },
+  "assistant_memory": {
+    "enabled": true,
+    "summary_interval_turns": 6,
+    "major_summary_group_size": 3,
+    "max_recall_items": 5,
+    "recall_threshold": 0.72,
+    "auto_save_enabled": true,
+    "research_profile_enabled": true
   }
 }
