@@ -1,5 +1,5 @@
 [project]
-name = "arxiv-paper-rag"
+name = "iplatform"
 version = "0.1.0"
 description = "Local arXiv paper crawling, vector ingestion, and RAG search with PostgreSQL, pgvector, Ollama, and API reranking."
 readme = "README.md"

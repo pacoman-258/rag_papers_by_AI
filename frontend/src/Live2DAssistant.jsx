@@ -339,6 +339,7 @@ export default function Live2DAssistant({
   assistantSessionId,
   onAssistantSessionIdChange,
   quietSuggestionRefreshToken = 0,
+  onAssistantSuggestionAccepted,
   onClearAnswerContext
 }) {
   const t = getCopy(language);
@@ -971,6 +972,13 @@ export default function Live2DAssistant({
       }
       if (mountedRef.current) {
         setAssistantSuggestions((current) => current.filter((item) => item.suggestionId !== suggestionId));
+      }
+      if (
+        endpointAction === "accept" &&
+        suggestion.recommendedAction === "open_in_topic" &&
+        typeof onAssistantSuggestionAccepted === "function"
+      ) {
+        await onAssistantSuggestionAccepted(suggestion, payload);
       }
       await loadAssistantSuggestions();
     } catch (err) {

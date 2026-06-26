@@ -20,6 +20,41 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-26 22:48
+
+- 摘要：将工作台品牌展示从 arxiv-paper-rag 调整为 Iplatform，顶部副标题改为 `design by pacoman-258`，页面底部新增远端仓库与作者 GitHub 链接，并同步 README、包名和浏览器标题中的项目名。
+- 涉及文件：`frontend/src/App.jsx`、`frontend/src/styles.css`、`frontend/package.json`、`frontend/package-lock.json`、`README.md`、`README.zh-CN.md`、`pyproject.toml`、`PROJECT_LOG.md`
+- 验证：执行 `.venv/bin/python -m unittest discover -s tests`（139 tests OK，含既有 research profile 降级日志输出）、`.venv/bin/python -m py_compile backend/main.py backend/schemas.py local_paper_db/app/search_service.py local_paper_db/app/external_sources.py tests/test_search_relevance_review.py tests/test_fuzzy_arxiv_search.py tests/test_paper_reader_persistence_frontend.py tests/test_research_topics_frontend.py`（通过）、`npm run build`（在 `frontend/` 下通过）、`git diff --check`（通过）。
+- 后续：远端 GitHub 仓库将在本次提交前后重命名为 `Iplatform`，并更新本地 `origin` 地址。
+
+## 2026-06-26 22:22
+
+- 摘要：在搜索执行完成检索与重排后、回答流生成前新增 Top3 简介复审环节；若复审模型判断重排前三明显偏离用户原始要求，会重写检索方案并重新检索，最多重复 3 次，复审失败时沿用当前结果并返回 warning。
+- 涉及文件：`local_paper_db/app/search_service.py`、`backend/main.py`、`tests/test_search_relevance_review.py`、`README.md`、`README.zh-CN.md`、`PROJECT_LOG.md`
+- 验证：先执行 `.venv/bin/python -m unittest tests.test_search_relevance_review`，确认 `build_search_review_messages` 与 `execute_search_with_review` 缺失红灯；实现后执行 `.venv/bin/python -m unittest tests.test_search_relevance_review`（5 tests OK）、`.venv/bin/python -m py_compile local_paper_db/app/search_service.py backend/main.py tests/test_search_relevance_review.py`（通过）、`.venv/bin/python -m unittest tests.test_search_relevance_review tests.test_fuzzy_arxiv_search tests.test_arxiv_reliability tests.test_assistant_chat_config tests.test_citation_trace_api`（28 tests OK）、`.venv/bin/python -m unittest discover -s tests`（139 tests OK，含既有 research profile 降级日志输出）、`git diff --check -- local_paper_db/app/search_service.py backend/main.py tests/test_search_relevance_review.py README.md README.zh-CN.md PROJECT_LOG.md`（通过）。
+- 后续：复审当前只使用重排前三的标题、分类、日期、摘要和方法简介；如需要更细粒度判断，可再接入引用证据或全文片段，但要控制模型调用成本。
+
+## 2026-06-26 22:08
+
+- 摘要：修复采纳搜索建议后课题页仍为空的问题；小助手采纳 `open_in_topic` 建议后会创建课题、挂接论文精读线程，并把线程上下文传入 Paper Reader 继续记录阅读进度。
+- 涉及文件：`frontend/src/App.jsx`、`frontend/src/Live2DAssistant.jsx`、`frontend/src/PaperReaderPage.jsx`、`tests/test_research_topics_frontend.py`、`PROJECT_LOG.md`
+- 验证：先执行 `.venv/bin/python -m unittest tests.test_research_topics_frontend.ResearchTopicsFrontendTest.test_accepting_search_suggestion_starts_topic_thread`，确认缺少采纳后启动课题线程的红灯；实现后执行该测试（通过）、`.venv/bin/python -m unittest tests.test_research_topics_frontend tests.test_research_topics_api tests.test_research_topics_service tests.test_paper_reader_persistence_frontend`（29 tests OK）、`.venv/bin/python -m py_compile backend/main.py backend/research_topics_service.py backend/schemas.py tests/test_research_topics_frontend.py`（通过）、`git diff --check -- frontend/src/App.jsx frontend/src/Live2DAssistant.jsx frontend/src/PaperReaderPage.jsx tests/test_research_topics_frontend.py`（通过）、`npm run build`（在 `frontend/` 下通过）。
+- 后续：若后续要减少重复课题，可让建议卡携带并优先复用已有 `topic_id`；当前修复先保证用户采纳后课题页能立刻出现记录。
+
+## 2026-06-26 18:25
+
+- 摘要：修复论文精读在切到其他卡片/标签后返回丢失的问题；`PaperReaderPage` 改为常驻挂载并用 `hidden` 控制显示，隐藏时不渲染小助手实例且停用精读快捷键，同时新增显式“结束阅读”按钮作为用户主动清空阅读状态的入口。
+- 涉及文件：`frontend/src/App.jsx`、`frontend/src/PaperReaderPage.jsx`、`tests/test_paper_reader_persistence_frontend.py`、`PROJECT_LOG.md`
+- 验证：先执行 `.venv/bin/python -m unittest tests.test_paper_reader_persistence_frontend`，确认 App 条件卸载 PaperReader、缺少结束阅读入口、隐藏状态仍可能挂载助手/快捷键和同 URL 复载保护缺失的红灯；实现后执行 `.venv/bin/python -m unittest tests.test_paper_reader_persistence_frontend`（4 tests OK）、`.venv/bin/python -m unittest tests.test_paper_reader_persistence_frontend tests.test_paper_reader_source_layout tests.test_paper_reader_live2d_behavior tests.test_research_topics_frontend tests.test_global_selection_translation_frontend`（23 tests OK）、`npm run build -- --outDir /private/tmp/rag-papers-by-ai-codex-paper-reader-persist-dist --emptyOutDir`（在 `frontend/` 下通过）。
+- 后续：如需跨浏览器刷新后也恢复精读，可再把当前 session id 持久化到 localStorage；本次只修复应用内切换不应自动丢状态。
+
+## 2026-06-26 16:47
+
+- 摘要：为模糊学习型检索新增轻量 `search_intent`，对入门、从头学习和权威论文请求启用 arXiv 多路意图查询与粗排加权，同时保持普通检索、latest 时间窗、provider 降级和 rerank fallback 原链路。
+- 涉及文件：`local_paper_db/app/search_service.py`、`local_paper_db/app/external_sources.py`、`backend/schemas.py`、`backend/main.py`、`tests/test_fuzzy_arxiv_search.py`、`README.md`、`README.zh-CN.md`、`docs/superpowers/plans/2026-06-26-fuzzy-arxiv-search.md`、`PROJECT_LOG.md`
+- 验证：先执行 `.venv/bin/python -m unittest tests.test_fuzzy_arxiv_search.FuzzyArxivSearchTest.test_coerce_query_plan_detects_beginner_intent_when_model_omits_it`，确认 `search_intent` 缺失红灯；再执行 arXiv 多路查询、beginner 排序和嵌套 `search_intent` 兼容测试，确认新函数缺失、旧相似度排序和旧 payload 兼容红灯；实现后执行 `.venv/bin/python -m unittest tests.test_fuzzy_arxiv_search`（9 tests OK）、`.venv/bin/python -m unittest tests.test_fuzzy_arxiv_search tests.test_arxiv_reliability`（12 tests OK）、`.venv/bin/python -m py_compile local_paper_db/app/search_service.py local_paper_db/app/external_sources.py backend/main.py backend/schemas.py tests/test_fuzzy_arxiv_search.py`（通过）、`.venv/bin/python -m unittest tests.test_citation_trace_service tests.test_citation_trace_api`（37 tests OK）、`.venv/bin/python -m unittest tests.test_assistant_chat_config tests.test_research_topics_api tests.test_research_topics_service`（23 tests OK）、`.venv/bin/python -m unittest discover -s tests`（129 tests OK，含既有 research profile 降级日志输出）、`git diff --check -- local_paper_db/app/search_service.py local_paper_db/app/external_sources.py backend/main.py backend/schemas.py README.md README.zh-CN.md PROJECT_LOG.md`（通过）。
+- 后续：权威度仍主要来自 arXiv 元数据和轻量词法信号；若后续要更稳，可接入 Citation Trace / WOS 引用信号做 evidence-backed canonical ranking。
+
 ## 2026-06-26 11:13
 
 - 摘要：为小助手增加不打断式建议卡托盘；搜索完成会静默生成论文打开到课题的建议，精读问题可生成开放问题建议，溯源完成后刷新建议卡状态。

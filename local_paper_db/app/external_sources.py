@@ -176,6 +176,66 @@ def _build_arxiv_query(retrieval_text: str, constraints: Any) -> str:
     return " AND ".join(part for part in query_parts if part) or "cat:cs"
 
 
+def _retrieval_text_with_keywords(retrieval_text: str, extra_keywords: list[str]) -> str:
+    content, _, raw_keywords = str(retrieval_text or "").partition("; keywords:")
+    keywords = [_normalize_whitespace(item) for item in raw_keywords.split(",") if _normalize_whitespace(item)]
+    seen = {item.casefold() for item in keywords}
+    for keyword in extra_keywords:
+        normalized = _normalize_whitespace(keyword)
+        if not normalized:
+            continue
+        lowered = normalized.casefold()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        keywords.append(normalized)
+    normalized_content = _normalize_whitespace(content)
+    if not keywords:
+        return normalized_content
+    return f"{normalized_content}; keywords: {', '.join(keywords)}".strip()
+
+
+def _intent_keyword_tracks(search_intent: str) -> list[list[str]]:
+    if search_intent == "beginner":
+        return [
+            ["survey", "review"],
+            ["tutorial", "overview"],
+            ["introduction", "basics"],
+        ]
+    if search_intent == "learning_path":
+        return [
+            ["survey", "overview"],
+            ["tutorial", "introduction"],
+            ["fundamentals", "curriculum"],
+        ]
+    if search_intent == "canonical":
+        return [
+            ["foundational", "seminal"],
+            ["landmark", "classic"],
+            ["survey", "review"],
+        ]
+    return []
+
+
+def build_arxiv_search_queries(retrieval_text: str, constraints: Any) -> list[str]:
+    search_intent = str(getattr(constraints, "search_intent", "normal") or "normal").strip().lower()
+    tracks = _intent_keyword_tracks(search_intent)
+    if not tracks:
+        return [_build_arxiv_query(retrieval_text, constraints)]
+
+    variants = [retrieval_text]
+    variants.extend(_retrieval_text_with_keywords(retrieval_text, track) for track in tracks)
+    seen: set[str] = set()
+    queries: list[str] = []
+    for variant in variants:
+        query = _build_arxiv_query(variant, constraints)
+        if query in seen:
+            continue
+        seen.add(query)
+        queries.append(query)
+    return queries
+
+
 def _build_wos_topic_query(retrieval_text: str, constraints: Any, *, title_only: bool = False) -> str:
     content = _normalize_whitespace(str(retrieval_text or "").split("; keywords:", 1)[0])
     field = "TI" if title_only else "TS"
@@ -245,6 +305,7 @@ def search_arxiv_records(retrieval_text: str, constraints: Any, *, limit: int) -
             "after": getattr(constraints, "published_after", None),
             "before": getattr(constraints, "published_before", None),
             "sort_hint": getattr(constraints, "sort_hint", None),
+            "search_intent": getattr(constraints, "search_intent", None),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -253,15 +314,32 @@ def search_arxiv_records(retrieval_text: str, constraints: Any, *, limit: int) -
     if cached is not None:
         return cached
 
-    query = _build_arxiv_query(retrieval_text, constraints)
+    queries = build_arxiv_search_queries(retrieval_text, constraints)
     sort_by = arxiv.SortCriterion.SubmittedDate if getattr(constraints, "sort_hint", "") == "latest" else arxiv.SortCriterion.Relevance
-    search = arxiv.Search(
-        query=query,
-        max_results=max(1, limit),
-        sort_by=sort_by,
-        sort_order=arxiv.SortOrder.Descending,
-    )
-    results = [_coerce_arxiv_record(item) for item in _arxiv_results(search)]
+    per_query_limit = max(1, limit)
+    if len(queries) > 1:
+        per_query_limit = max(3, min(limit, (limit + len(queries) - 1) // len(queries) + 2))
+
+    results: list[ExternalPaperRecord] = []
+    seen: set[str] = set()
+    for query in queries:
+        search = arxiv.Search(
+            query=query,
+            max_results=per_query_limit,
+            sort_by=sort_by,
+            sort_order=arxiv.SortOrder.Descending,
+        )
+        for item in _arxiv_results(search):
+            record = _coerce_arxiv_record(item)
+            dedupe_key = (record.arxiv_id or record.title).casefold()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            results.append(record)
+            if len(results) >= limit:
+                break
+        if len(results) >= limit:
+            break
     return _cache_set(cache_key, results[:limit], ttl_seconds=600)
 
 

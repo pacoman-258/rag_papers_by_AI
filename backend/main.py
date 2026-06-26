@@ -105,7 +105,7 @@ from local_paper_db.app.search_service import (
     QueryPlan,
     RetrievalConstraints,
     SearchExecution,
-    execute_search,
+    execute_search_with_review,
     get_database_overview,
     list_available_models,
     normalize_openai_compatible_base_url,
@@ -301,18 +301,23 @@ def constraints_model_to_dataclass(model: RetrievalConstraintsModel | None) -> R
         primary_categories=list(model.primary_categories),
         sort_hint=model.sort_hint,
         is_implicit_latest=model.is_implicit_latest,
+        search_intent=model.search_intent,
     )
 
 
 def query_plan_model_to_dataclass(model: QueryPlanModel | None) -> QueryPlan | None:
     if model is None:
         return None
+    constraints = constraints_model_to_dataclass(model.constraints)
+    search_intent = model.search_intent if model.search_intent != "normal" else constraints.search_intent
+    constraints.search_intent = search_intent
     return QueryPlan(
         answer_language=model.answer_language,
         intent_summary=model.intent_summary,
         retrieval_query_en=model.retrieval_query_en,
         keywords_en=list(model.keywords_en),
-        constraints=constraints_model_to_dataclass(model.constraints),
+        search_intent=search_intent,
+        constraints=constraints,
         corpus_latest_date=model.corpus_latest_date,
     )
 
@@ -653,7 +658,7 @@ def api_refine_query(payload: SearchRefineRequest) -> QueryPlanModel:
 def api_execute_search(payload: SearchExecuteRequest) -> SearchExecuteResponse:
     try:
         with retrieval_runtime_scope(payload.settings) as (settings, _sources):
-            execution = execute_search(
+            execution = execute_search_with_review(
                 original_query=payload.question,
                 retrieval_text=payload.retrieval_text,
                 query_plan=query_plan_model_to_dataclass(payload.query_plan),

@@ -122,6 +122,7 @@ class RetrievalConstraints:
     primary_categories: list[str] = field(default_factory=list)
     sort_hint: str = "relevance"
     is_implicit_latest: bool = False
+    search_intent: str = "normal"
 
 
 @dataclass(slots=True)
@@ -130,6 +131,7 @@ class QueryPlan:
     intent_summary: str
     retrieval_query_en: str
     keywords_en: list[str]
+    search_intent: str = "normal"
     constraints: RetrievalConstraints = field(default_factory=RetrievalConstraints)
     corpus_latest_date: str | None = None
 
@@ -170,6 +172,13 @@ class SearchExecution:
     corpus_latest_date: str | None = None
     retrieval_sources: list[str] = field(default_factory=list)
     source_freshness: dict[str, str | None] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class SearchReviewDecision:
+    needs_retry: bool
+    reason: str = ""
+    revised_query_plan: QueryPlan | None = None
 
 
 @dataclass(slots=True)
@@ -549,6 +558,67 @@ def has_recent_intent(text: str) -> bool:
     return any(pattern in lowered for pattern in english_patterns) or any(pattern in text for pattern in chinese_patterns)
 
 
+SEARCH_INTENTS = {"normal", "beginner", "learning_path", "canonical", "latest", "prior_work"}
+
+
+def infer_search_intent(text: str) -> str:
+    lowered = text.lower()
+    learning_path_patterns = (
+        "from scratch",
+        "start learning",
+        "learn machine learning",
+        "learning path",
+        "roadmap",
+        "curriculum",
+    )
+    beginner_patterns = (
+        "beginner",
+        "introductory",
+        "introduction",
+        "tutorial",
+        "overview",
+        "starter",
+        "basics",
+        "basic papers",
+    )
+    canonical_patterns = (
+        "authoritative",
+        "canonical",
+        "seminal",
+        "foundational",
+        "landmark",
+        "classic",
+        "must-read",
+        "most important",
+        "key papers",
+    )
+    prior_work_patterns = ("prior work", "related work", "background work")
+    chinese_learning_path = ("从头", "开始学习", "学习路线", "系统学习", "零基础")
+    chinese_beginner = ("入门", "初学", "新手", "基础论文", "基础资料")
+    chinese_canonical = ("权威", "经典", "必读", "奠基", "代表作", "最重要")
+    chinese_prior_work = ("前置工作", "相关工作", "背景工作")
+
+    if any(pattern in lowered for pattern in learning_path_patterns) or any(pattern in text for pattern in chinese_learning_path):
+        return "learning_path"
+    if any(pattern in lowered for pattern in canonical_patterns) or any(pattern in text for pattern in chinese_canonical):
+        return "canonical"
+    if any(pattern in lowered for pattern in beginner_patterns) or any(pattern in text for pattern in chinese_beginner):
+        return "beginner"
+    if any(pattern in lowered for pattern in prior_work_patterns) or any(pattern in text for pattern in chinese_prior_work):
+        return "prior_work"
+    if has_recent_intent(text):
+        return "latest"
+    return "normal"
+
+
+def normalize_search_intent(raw_value: Any, original_query: str) -> str:
+    if isinstance(raw_value, str):
+        candidate = raw_value.strip().lower().replace("-", "_").replace(" ", "_")
+        if candidate in SEARCH_INTENTS:
+            return candidate
+    return infer_search_intent(original_query)
+
+
 def clone_constraints(constraints: RetrievalConstraints | None) -> RetrievalConstraints:
     if constraints is None:
         return RetrievalConstraints()
@@ -559,6 +629,7 @@ def clone_constraints(constraints: RetrievalConstraints | None) -> RetrievalCons
         primary_categories=list(constraints.primary_categories),
         sort_hint=constraints.sort_hint,
         is_implicit_latest=constraints.is_implicit_latest,
+        search_intent=constraints.search_intent,
     )
 
 
@@ -613,6 +684,7 @@ def coerce_constraints(raw_constraints: Any, original_query: str, corpus_latest_
         primary_categories=primary_categories,
         sort_hint=sort_hint,
         is_implicit_latest=is_implicit_latest,
+        search_intent=normalize_search_intent(data.get("search_intent"), original_query),
     )
 
 
@@ -639,12 +711,22 @@ def coerce_query_plan(
         else corpus_latest_date
     )
 
+    constraints = coerce_constraints(raw_data.get("constraints"), original_query, resolved_corpus_latest_date)
+    raw_search_intent = raw_data.get("search_intent")
+    search_intent = (
+        constraints.search_intent
+        if raw_search_intent is None and constraints.search_intent != "normal"
+        else normalize_search_intent(raw_search_intent, original_query)
+    )
+    constraints.search_intent = search_intent
+
     return QueryPlan(
         answer_language=answer_language,
         intent_summary=intent_summary,
         retrieval_query_en=retrieval_query_en,
         keywords_en=normalize_keyword_list(raw_data.get("keywords_en")),
-        constraints=coerce_constraints(raw_data.get("constraints"), original_query, resolved_corpus_latest_date),
+        search_intent=search_intent,
+        constraints=constraints,
         corpus_latest_date=resolved_corpus_latest_date,
     )
 
@@ -1076,15 +1158,53 @@ def dedupe_retrieved_papers(papers: list[RetrievedPaper]) -> list[RetrievedPaper
     return list(merged.values())
 
 
+INTENT_RANKING_TERMS: dict[str, tuple[tuple[str, float], ...]] = {
+    "beginner": (
+        ("survey", 0.08),
+        ("review", 0.06),
+        ("tutorial", 0.06),
+        ("overview", 0.05),
+        ("introduction", 0.05),
+        ("basics", 0.04),
+        ("fundamentals", 0.04),
+    ),
+    "learning_path": (
+        ("survey", 0.06),
+        ("overview", 0.05),
+        ("tutorial", 0.05),
+        ("introduction", 0.04),
+        ("fundamentals", 0.04),
+        ("curriculum", 0.03),
+    ),
+    "canonical": (
+        ("foundational", 0.07),
+        ("seminal", 0.07),
+        ("landmark", 0.06),
+        ("classic", 0.05),
+        ("survey", 0.03),
+        ("review", 0.03),
+    ),
+}
+
+
+def intent_ranking_boost(paper: RetrievedPaper, constraints: RetrievalConstraints | None) -> float:
+    search_intent = str(getattr(constraints, "search_intent", "normal") or "normal").lower()
+    term_weights = INTENT_RANKING_TERMS.get(search_intent)
+    if not term_weights:
+        return 0.0
+    candidate_text = " ".join([paper.title or "", paper.text or "", paper.method or ""]).casefold()
+    return sum(weight for term, weight in term_weights if term in candidate_text)
+
+
 def sort_retrieved_papers(papers: list[RetrievedPaper], constraints: RetrievalConstraints | None) -> list[RetrievedPaper]:
     sort_hint = (constraints.sort_hint if constraints is not None else "relevance").lower()
     if sort_hint == "latest":
         return sorted(
             papers,
-            key=lambda paper: (paper.published_date or "", paper.initial_score),
+            key=lambda paper: (paper.published_date or "", paper.initial_score + intent_ranking_boost(paper, constraints)),
             reverse=True,
         )
-    return sorted(papers, key=lambda paper: paper.initial_score, reverse=True)
+    return sorted(papers, key=lambda paper: paper.initial_score + intent_ranking_boost(paper, constraints), reverse=True)
 
 
 def dedupe_target_papers(candidates: list[TargetPaper]) -> list[TargetPaper]:
@@ -1347,6 +1467,7 @@ Return only one JSON object with this exact shape:
   "intent_summary": "brief summary",
   "retrieval_query_en": "one concise English retrieval sentence",
   "keywords_en": ["keyword 1", "keyword 2"],
+  "search_intent": "normal" or "beginner" or "learning_path" or "canonical" or "latest" or "prior_work",
   "constraints": {{
     "published_after": "YYYY-MM-DD or null",
     "published_before": "YYYY-MM-DD or null",
@@ -1360,6 +1481,7 @@ Return only one JSON object with this exact shape:
 Rules:
 - The paper database is English. retrieval_query_en and keywords_en must be English.
 - Preserve the user's technical meaning.
+- Use search_intent=beginner for introductory paper requests, learning_path for from-scratch study plans, canonical for authoritative/seminal/must-read paper requests, latest for recent-paper requests, and normal otherwise.
 - Only add author filters if the user explicitly names an author.
 - Only add category filters if the user explicitly names arXiv categories or clearly implies a primary category.
 - If the user gives an absolute date or year range, convert it to absolute ISO dates.
@@ -1711,7 +1833,9 @@ def ensure_constraints_for_execution(
 ) -> RetrievalConstraints:
     if query_plan is None:
         return RetrievalConstraints()
-    return coerce_constraints(asdict(query_plan.constraints), original_query, corpus_latest_date)
+    constraints = coerce_constraints(asdict(query_plan.constraints), original_query, corpus_latest_date)
+    constraints.search_intent = normalize_search_intent(query_plan.search_intent, original_query)
+    return constraints
 
 
 def widen_implicit_latest_constraints(
@@ -1940,8 +2064,122 @@ Search intent summary:
 
 Selected papers:
 
-{joined_blocks}
-"""
+	{joined_blocks}
+	"""
+
+
+def build_search_review_messages(execution: SearchExecution) -> list[dict[str, str]]:
+    constraint_summary = format_constraints_summary(execution.applied_constraints, empty_text="none")
+    paper_blocks: list[str] = []
+    for index, paper in enumerate(execution.papers[:3], start=1):
+        paper_blocks.append(
+            "\n".join(
+                [
+                    f"[Paper {index}]",
+                    f"Title: {paper.title}",
+                    f"Primary category: {paper.primary_category or 'Unknown'}",
+                    f"Published date: {paper.published_date or 'Unknown'}",
+                    f"Summary: {paper.text}",
+                    f"Method: {paper.method}",
+                ]
+            )
+        )
+
+    system_prompt = """
+You review whether reranked paper search results match the user's original request.
+Return only one JSON object with this exact shape:
+{
+  "needs_retry": true or false,
+  "reason": "brief reason",
+  "revised_query_plan": null or {
+    "answer_language": "zh" or "en",
+    "intent_summary": "brief summary",
+    "retrieval_query_en": "one concise English retrieval sentence",
+    "keywords_en": ["keyword 1", "keyword 2"],
+    "search_intent": "normal" or "beginner" or "learning_path" or "canonical" or "latest" or "prior_work",
+    "constraints": {
+      "published_after": "YYYY-MM-DD or null",
+      "published_before": "YYYY-MM-DD or null",
+      "authors": ["full author name"],
+      "primary_categories": ["cs.CL"],
+      "sort_hint": "relevance" or "latest",
+      "is_implicit_latest": true or false
+    }
+  }
+}
+
+Rules:
+- Review only the top 3 papers supplied below.
+- Set needs_retry=true only when the top 3 are clearly about a different topic, task, audience, or time requirement than the original request.
+- Do not retry for ordinary result diversity, partial coverage, or a merely imperfect ranking.
+- If needs_retry=true, revised_query_plan must preserve the user's original request while correcting the retrieval query.
+- Do not output markdown, explanations, or code fences.
+""".strip()
+
+    user_prompt = f"""Original user request:
+{execution.original_query}
+
+Current retrieval text:
+{execution.retrieval_text}
+
+Search intent summary:
+{execution.query_plan.intent_summary if execution.query_plan is not None else execution.original_query}
+
+Applied retrieval constraints:
+- time window: {constraint_summary['time_window']}
+- authors: {constraint_summary['authors']}
+- primary categories: {constraint_summary['categories']}
+- sort hint: {constraint_summary['sort_hint']}
+
+Top 3 reranked papers:
+
+{chr(10).join(paper_blocks) if paper_blocks else "(none)"}
+
+Return only the JSON object."""
+
+    return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+
+def parse_search_review_retry_flag(raw_value: Any) -> bool:
+    if isinstance(raw_value, bool):
+        return raw_value
+    if raw_value is None:
+        return False
+    if isinstance(raw_value, (int, float)):
+        return raw_value != 0
+    if isinstance(raw_value, str):
+        value = raw_value.strip().lower()
+        if value in {"true", "yes", "1", "retry"}:
+            return True
+        if value in {"false", "no", "0", "none", "null", ""}:
+            return False
+    return bool(raw_value)
+
+
+def coerce_search_review_decision(raw_data: Any, execution: SearchExecution) -> SearchReviewDecision:
+    data = raw_data if isinstance(raw_data, dict) else {}
+    retry_value = data["needs_retry"] if "needs_retry" in data else data.get("retry")
+    needs_retry = parse_search_review_retry_flag(retry_value)
+    reason = normalize_whitespace(data.get("reason") or data.get("rationale") or "")
+    revised_plan: QueryPlan | None = None
+    raw_plan = data.get("revised_query_plan") or data.get("query_plan") or data.get("plan")
+    if needs_retry and isinstance(raw_plan, dict):
+        revised_plan = coerce_query_plan(raw_plan, execution.original_query, execution.corpus_latest_date)
+    return SearchReviewDecision(needs_retry=needs_retry, reason=reason, revised_query_plan=revised_plan)
+
+
+def review_search_execution(execution: SearchExecution, settings: RuntimeSettings) -> SearchReviewDecision:
+    content = chat_completion(
+        build_search_review_messages(execution),
+        settings.query_chat,
+        settings.retrieval.request_timeout,
+    )
+    return coerce_search_review_decision(extract_first_json_object(content), execution)
+
+
+def append_execution_warning(execution: SearchExecution, warning: str) -> None:
+    if warning and warning not in execution.warnings:
+        execution.warnings.append(warning)
 
 
 def execute_search(
@@ -2022,6 +2260,74 @@ def execute_search(
         retrieval_sources=batch.retrieval_sources,
         source_freshness=batch.source_freshness,
     )
+
+
+def execute_search_with_review(
+    original_query: str,
+    retrieval_text: str,
+    query_plan: QueryPlan | None,
+    settings: RuntimeSettings,
+    db_config: dict[str, str] | None = None,
+    *,
+    max_review_retries: int = 3,
+) -> SearchExecution:
+    execution = execute_search(
+        original_query=original_query,
+        retrieval_text=retrieval_text,
+        query_plan=query_plan,
+        settings=settings,
+        db_config=db_config,
+    )
+    retry_limit = max(0, int(max_review_retries))
+    for retry_index in range(1, retry_limit + 1):
+        try:
+            decision = review_search_execution(execution, settings)
+        except Exception as exc:
+            append_execution_warning(execution, f"Relevance review skipped: {exc}")
+            return execution
+
+        if not decision.needs_retry:
+            return execution
+        if decision.revised_query_plan is None:
+            append_execution_warning(
+                execution,
+                f"Relevance review requested retry {retry_index} but did not provide a valid revised query plan.",
+            )
+            return execution
+
+        next_retrieval_text = build_retrieval_text(decision.revised_query_plan)
+        if normalize_whitespace(next_retrieval_text).casefold() == normalize_whitespace(execution.retrieval_text).casefold():
+            append_execution_warning(
+                execution,
+                f"Relevance review requested retry {retry_index} but produced the same retrieval query.",
+            )
+            return execution
+
+        prior_warnings = list(execution.warnings)
+        try:
+            next_execution = execute_search(
+                original_query=original_query,
+                retrieval_text=next_retrieval_text,
+                query_plan=decision.revised_query_plan,
+                settings=settings,
+                db_config=db_config,
+            )
+        except Exception as exc:
+            append_execution_warning(execution, f"Relevance review retry {retry_index} failed: {exc}")
+            return execution
+
+        review_reason = decision.reason or "top reranked papers did not clearly match the original request"
+        next_execution.warnings = list(
+            dict.fromkeys(
+                prior_warnings
+                + [f"Relevance review retry {retry_index}: {review_reason}"]
+                + list(next_execution.warnings)
+            )
+        )
+        execution = next_execution
+
+    append_execution_warning(execution, f"Relevance review retry limit reached after {retry_limit} retries.")
+    return execution
 
 
 def stream_answer_tokens(execution: SearchExecution, settings: RuntimeSettings) -> Iterator[str]:

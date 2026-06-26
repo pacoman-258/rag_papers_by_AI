@@ -2405,7 +2405,11 @@ export default function PaperReaderPage({
   runtimePayload,
   initialArxivUrl = "",
   onInitialArxivUrlConsumed,
+  initialResearchTopic = null,
+  initialResearchThread = null,
+  onInitialResearchThreadConsumed,
   renderAssistantLayer,
+  isActive = true,
   onAssistantContextChange,
   onSuggestionRefresh
 }) {
@@ -2564,7 +2568,11 @@ export default function PaperReaderPage({
 
   useEffect(() => {
     const url = String(initialArxivUrl || "").trim();
-    if (!url || autoLoadUrlRef.current === url) {
+    if (!url) {
+      autoLoadUrlRef.current = "";
+      return;
+    }
+    if (autoLoadUrlRef.current === url) {
       return;
     }
     autoLoadUrlRef.current = url;
@@ -2574,6 +2582,16 @@ export default function PaperReaderPage({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialArxivUrl]);
+
+  useEffect(() => {
+    if (!initialResearchThread?.thread_id) {
+      return;
+    }
+    setCurrentResearchTopic(initialResearchTopic || null);
+    setCurrentResearchThread(initialResearchThread);
+    setResearchTopicError("");
+    onInitialResearchThreadConsumed?.();
+  }, [initialResearchThread?.thread_id, initialResearchTopic, onInitialResearchThreadConsumed]);
 
   useEffect(() => {
     if (!session?.session_id) {
@@ -2640,6 +2658,9 @@ export default function PaperReaderPage({
   }, [activePageIndex, pageModuleAnchors]);
 
   useEffect(() => {
+    if (!isActive) {
+      return undefined;
+    }
     function handleKeyDown(event) {
       if (isTypingTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
         return;
@@ -2667,6 +2688,7 @@ export default function PaperReaderPage({
     pdfSelection?.text,
     selectionTranslation.status,
     session?.session_id,
+    isActive,
     language,
     runtimePayload
   ]);
@@ -2773,6 +2795,11 @@ export default function PaperReaderPage({
       answerContext: null,
       workflowContext: null
     });
+  }
+
+  function endReadingSession() {
+    activeRequestRef.current += 1;
+    resetReaderState();
   }
 
   function upsertPage(page) {
@@ -3513,7 +3540,7 @@ export default function PaperReaderPage({
 
   return (
     <div className="paper-reader-layout paper-reader-layout-redesigned">
-      <aside className="assistant-column paper-reader-assistant-column">{renderAssistantLayer?.() || null}</aside>
+      <aside className="assistant-column paper-reader-assistant-column">{isActive ? renderAssistantLayer?.() || null : null}</aside>
 
       <section className="paper-reader-main">
         <section className="workspace paper-reader-hero">
@@ -3655,9 +3682,14 @@ export default function PaperReaderPage({
                     ))}
                   </div>
                 ) : null}
-                <button type="button" className="secondary" onClick={exportResearchNotes} disabled={!pageEntries.length}>
-                  {copy.exportNotes}
-                </button>
+                <div className="field-action-row">
+                  <button type="button" className="secondary" onClick={exportResearchNotes} disabled={!pageEntries.length}>
+                    {copy.exportNotes}
+                  </button>
+                  <button type="button" className="secondary" onClick={endReadingSession}>
+                    {t("paperReaderEndReading")}
+                  </button>
+                </div>
               </section>
 
               <SelectionTranslationPanel

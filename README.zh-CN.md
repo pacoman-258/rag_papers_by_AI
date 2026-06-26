@@ -1,4 +1,4 @@
-## arxiv-paper-rag
+## Iplatform
 
 这是一个面向论文检索与问答的实验工作台，用于抓取 arXiv 元数据、将本地语料写入 PostgreSQL + pgvector，并通过混合 RAG 链路把本地库与 arXiv、Web of Science 等外部论文源组合起来完成检索与回答。
 
@@ -35,13 +35,17 @@
    - `wos`：通过 Web of Science API 实时检索元数据
 6. 多源候选会先统一去重并合并成同一个粗排池。
 7. SiliconFlow 使用 `BAAI/bge-reranker-v2-m3` 对结果重排，保留前 `10` 篇。
-8. `ANSWER_CHAT_*` 仅基于这 10 篇论文生成最终回答。
+8. 回答流生成前，`QUERY_CHAT_*` 会只检查重排前三篇的简介是否明显偏离用户最初要求；若明显不匹配，会重写检索方案并重新检索，最多重复 `3` 次。
+9. `ANSWER_CHAT_*` 仅基于最终确认的 10 篇论文生成回答。
+
+对“入门论文”“从头学习”“最权威论文”等模糊学习型问题，检索计划会额外标记 `search_intent`，arXiv provider 会在原始主题查询外补充 survey / tutorial / foundational 等少量意图 track，并在粗排阶段用轻量加权优先展示综述、教程或奠基类候选；普通检索、latest 时间窗、provider 降级和 rerank fallback 仍沿用原链路。
 
 降级策略：
 
 - rewrite 失败时，直接回退到原始问题。
 - 某个 provider 失败时，不会直接让整个请求报错，而是继续使用剩余已启用来源，并在响应里带出 warning。
 - rerank 失败时，直接使用粗排前 10 篇继续回答。
+- 复审模型失败或返回格式异常时，不会阻断回答流，会沿用当前重排结果并在响应里带出 warning。
 - 如果所有已启用 provider 都没有返回可用候选，后端会返回明确的检索错误。
 
 ## Web 工作台

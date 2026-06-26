@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 Provider = Literal["ollama", "openai_compatible", "google_translate"]
 ModelListKind = Literal["chat", "embedding"]
 AnswerLanguage = Literal["zh", "en"]
+SearchIntent = Literal["normal", "beginner", "learning_path", "canonical", "latest", "prior_work"]
 PaperReaderMode = Literal["guided", "standard"]
 PaperReaderDiscipline = Literal[
     "general",
@@ -469,6 +470,7 @@ class RetrievalConstraintsModel(BaseModel):
     primary_categories: list[str] = Field(default_factory=list)
     sort_hint: Literal["relevance", "latest"] = "relevance"
     is_implicit_latest: bool = False
+    search_intent: SearchIntent = "normal"
 
 
 class QueryPlanModel(BaseModel):
@@ -476,6 +478,7 @@ class QueryPlanModel(BaseModel):
     intent_summary: str
     retrieval_query_en: str
     keywords_en: list[str]
+    search_intent: SearchIntent = "normal"
     constraints: RetrievalConstraintsModel = Field(default_factory=RetrievalConstraintsModel)
     corpus_latest_date: str | None = None
 

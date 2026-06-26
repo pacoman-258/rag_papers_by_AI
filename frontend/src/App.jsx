@@ -7,7 +7,10 @@ import ResearchTopicsPage from "./ResearchTopicsPage.jsx";
 
 const translations = {
   en: {
-    appTitle: "FastAPI + React Workbench",
+    appTitle: "Iplatform",
+    appSubtitle: "design by pacoman-258",
+    repositoryLink: "Remote repository",
+    authorLink: "pacoman-258",
     searchTab: "Search Workspace",
     citationTraceTab: "Citation Trace",
     paperReaderTab: "Paper Reader",
@@ -208,10 +211,14 @@ const translations = {
     paperReaderReady: "Ready",
     paperReaderError: "Error",
     paperReaderInvalidUrl: "Please enter a valid arXiv URL.",
-    paperReaderFileRequired: "Please choose a PDF file first."
+    paperReaderFileRequired: "Please choose a PDF file first.",
+    paperReaderEndReading: "End Reading"
   },
   zh: {
-    appTitle: "FastAPI + React 可视化工作台",
+    appTitle: "Iplatform",
+    appSubtitle: "design by pacoman-258",
+    repositoryLink: "远端仓库",
+    authorLink: "pacoman-258",
     searchTab: "搜索工作台",
     citationTraceTab: "引用溯源",
     paperReaderTab: "论文精读",
@@ -412,7 +419,8 @@ const translations = {
     paperReaderReady: "已就绪",
     paperReaderError: "错误",
     paperReaderInvalidUrl: "请输入有效的 arXiv 链接。",
-    paperReaderFileRequired: "请先选择一个 PDF 文件。"
+    paperReaderFileRequired: "请先选择一个 PDF 文件。",
+    paperReaderEndReading: "结束阅读"
   }
 };
 
@@ -518,7 +526,8 @@ function AssistantLayerContent({
   linkedContext,
   assistantSessionId,
   onAssistantSessionIdChange,
-  quietSuggestionRefreshToken
+  quietSuggestionRefreshToken,
+  onAssistantSuggestionAccepted
 }) {
   const [latestAutoContext, setLatestAutoContext] = useState({
     answerContext: null,
@@ -564,6 +573,7 @@ function AssistantLayerContent({
       assistantSessionId={assistantSessionId}
       onAssistantSessionIdChange={onAssistantSessionIdChange}
       quietSuggestionRefreshToken={quietSuggestionRefreshToken}
+      onAssistantSuggestionAccepted={onAssistantSuggestionAccepted}
       onClearAnswerContext={() =>
         setLatestAutoContext({
           answerContext: null,
@@ -580,7 +590,8 @@ function IsolatedAssistantLayer({
   linkedContext,
   assistantSessionId,
   onAssistantSessionIdChange,
-  quietSuggestionRefreshToken
+  quietSuggestionRefreshToken,
+  onAssistantSuggestionAccepted
 }) {
   const [instanceKey, setInstanceKey] = useState(0);
   const [AssistantComponent, setAssistantComponent] = useState(null);
@@ -639,6 +650,7 @@ function IsolatedAssistantLayer({
           assistantSessionId={assistantSessionId}
           onAssistantSessionIdChange={onAssistantSessionIdChange}
           quietSuggestionRefreshToken={quietSuggestionRefreshToken}
+          onAssistantSuggestionAccepted={onAssistantSuggestionAccepted}
         />
       </AssistantErrorBoundary>
     );
@@ -958,6 +970,33 @@ function buildPaperReaderUrl(paper) {
   return "";
 }
 
+function buildResearchTopicTitleFromSuggestion(suggestion) {
+  const payload = suggestion?.payload && typeof suggestion.payload === "object" ? suggestion.payload : {};
+  const query = String(payload.query || "").replace(/\s+/g, " ").trim();
+  if (query) {
+    return query.length > 80 ? `${query.slice(0, 80).trim()}...` : query;
+  }
+  const paper = payload.paper && typeof payload.paper === "object" ? payload.paper : {};
+  const title = String(paper.title || "").replace(/\s+/g, " ").trim();
+  if (title) {
+    return title.length > 80 ? `${title.slice(0, 80).trim()}...` : title;
+  }
+  return "Research Topic";
+}
+
+function buildResearchTopicKeywordsFromSuggestion(suggestion) {
+  const payload = suggestion?.payload && typeof suggestion.payload === "object" ? suggestion.payload : {};
+  const query = String(payload.query || "").trim();
+  if (!query) {
+    return [];
+  }
+  return query
+    .split(/[,\s;，；]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2)
+    .slice(0, 8);
+}
+
 function PaperList({ papers, t, onReadPaper }) {
   if (!papers.length) {
     return <p className="muted">{t("noPapers")}</p>;
@@ -1270,6 +1309,8 @@ export default function App() {
   const [ingestStatus, setIngestStatus] = useState(null);
   const [ingestLogs, setIngestLogs] = useState([]);
   const [pendingPaperReaderUrl, setPendingPaperReaderUrl] = useState("");
+  const [pendingResearchTopic, setPendingResearchTopic] = useState(null);
+  const [pendingResearchThread, setPendingResearchThread] = useState(null);
   const [globalSelection, setGlobalSelection] = useState({ text: "" });
   const [globalSelectionTranslation, setGlobalSelectionTranslation] = useState({
     status: "idle",
@@ -1320,7 +1361,7 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem("app_language", language);
     document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
-    document.title = language === "zh" ? "arxiv-paper-rag 工作台" : "arxiv-paper-rag Workbench";
+    document.title = language === "zh" ? "Iplatform 工作台" : "Iplatform Workbench";
   }, [language]);
 
   useEffect(() => {
@@ -1490,6 +1531,65 @@ export default function App() {
     setSuggestionRefreshToken(Date.now());
   }
 
+  async function startTopicThreadFromSuggestion(suggestion) {
+    const payload = suggestion?.payload && typeof suggestion.payload === "object" ? suggestion.payload : {};
+    const paper = payload.paper && typeof payload.paper === "object" ? payload.paper : null;
+    if (!paper) {
+      return;
+    }
+
+    const topicResponse = await fetch("/api/research-topics", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: buildResearchTopicTitleFromSuggestion(suggestion),
+        description: "",
+        keywords: buildResearchTopicKeywordsFromSuggestion(suggestion)
+      })
+    });
+    const topic = await readJsonWithDetailFallback(topicResponse);
+    if (!topicResponse.ok) {
+      throw new Error(topic.detail || `Research topic failed (HTTP ${topicResponse.status})`);
+    }
+
+    const threadResponse = await fetch(`/api/research-topics/${encodeURIComponent(topic.topic_id)}/papers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        paper,
+        reader_session_id: null
+      })
+    });
+    const thread = await readJsonWithDetailFallback(threadResponse);
+    if (!threadResponse.ok) {
+      throw new Error(thread.detail || `Research thread failed (HTTP ${threadResponse.status})`);
+    }
+
+    const paperReaderUrl = buildPaperReaderUrl(paper);
+    if (paperReaderUrl) {
+      setPendingResearchTopic(topic);
+      setPendingResearchThread(thread);
+      setPendingPaperReaderUrl(paperReaderUrl);
+      setActiveTab("paper_reader");
+    } else {
+      setActiveTab("research_topics");
+    }
+    refreshQuietSuggestions();
+  }
+
+  async function handleAssistantSuggestionAccepted(suggestion) {
+    if (suggestion?.recommendedAction !== "open_in_topic") {
+      refreshQuietSuggestions();
+      return;
+    }
+    try {
+      await startTopicThreadFromSuggestion(suggestion);
+    } catch (error) {
+      setMessage(String(error));
+      setActiveTab("research_topics");
+    }
+  }
+
   function renderAssistantLayer() {
     return (
       <IsolatedAssistantLayer
@@ -1499,6 +1599,7 @@ export default function App() {
         assistantSessionId={assistantSessionId}
         onAssistantSessionIdChange={setAssistantSessionIdWithPersistence}
         quietSuggestionRefreshToken={suggestionRefreshToken}
+        onAssistantSuggestionAccepted={handleAssistantSuggestionAccepted}
       />
     );
   }
@@ -1878,8 +1979,8 @@ export default function App() {
     <div className="page">
       <header className="hero">
         <div>
-          <p className="eyebrow">arxiv-paper-rag</p>
           <h1>{t("appTitle")}</h1>
+          <p className="eyebrow">{t("appSubtitle")}</p>
         </div>
         <div className="header-actions">
           <div className="lang-switch" aria-label={t("language")}>
@@ -2045,7 +2146,7 @@ export default function App() {
         />
       ) : null}
 
-      {activeTab === "paper_reader" ? (
+      <div hidden={activeTab !== "paper_reader"}>
         <PaperReaderPage
           language={language}
           t={t}
@@ -2053,11 +2154,18 @@ export default function App() {
           runtimePayload={runtimePayload}
           initialArxivUrl={pendingPaperReaderUrl}
           onInitialArxivUrlConsumed={() => setPendingPaperReaderUrl("")}
+          initialResearchTopic={pendingResearchTopic}
+          initialResearchThread={pendingResearchThread}
+          onInitialResearchThreadConsumed={() => {
+            setPendingResearchTopic(null);
+            setPendingResearchThread(null);
+          }}
           renderAssistantLayer={renderAssistantLayer}
+          isActive={activeTab === "paper_reader"}
           onAssistantContextChange={updateAssistantLinkedContext}
           onSuggestionRefresh={refreshQuietSuggestions}
         />
-      ) : null}
+      </div>
 
       {activeTab === "research_topics" ? <ResearchTopicsPage language={language} /> : null}
 
@@ -2246,6 +2354,14 @@ export default function App() {
           onTranslate={translateGlobalSelection}
         />
       ) : null}
+      <footer className="site-footer">
+        <a href="https://github.com/pacoman-258/Iplatform" target="_blank" rel="noreferrer">
+          {t("repositoryLink")}
+        </a>
+        <a href="https://github.com/pacoman-258" target="_blank" rel="noreferrer">
+          {t("authorLink")}
+        </a>
+      </footer>
     </div>
   );
 }

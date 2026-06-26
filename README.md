@@ -1,4 +1,4 @@
-## arxiv-paper-rag
+## Iplatform
 
 An experimental paper-retrieval workbench for collecting arXiv metadata, indexing local corpora in PostgreSQL + pgvector, and answering questions through a hybrid RAG pipeline that can combine local storage with live external sources such as arXiv and Web of Science.
 
@@ -35,13 +35,17 @@ The search flow is:
    - `wos`: live metadata search through the Web of Science API
 6. Candidates from all enabled providers are deduplicated into a unified coarse-ranking pool.
 7. SiliconFlow reranks them with `BAAI/bge-reranker-v2-m3` and keeps top `10`.
-8. `ANSWER_CHAT_*` answers only from those 10 papers.
+8. Before the answer stream starts, `QUERY_CHAT_*` reviews only the top 3 reranked summaries against the user's original request. If they are clearly mismatched, it rewrites the retrieval plan and reruns search up to `3` times.
+9. `ANSWER_CHAT_*` answers only from the final 10 papers.
+
+For vague learning-oriented requests such as beginner papers, from-scratch study paths, or authoritative papers, the query plan carries a lightweight `search_intent`. The arXiv provider then adds a few intent tracks such as survey, tutorial, or foundational queries, and coarse ranking gives those candidates a small ordering boost while preserving the normal search path, latest windows, provider fallbacks, and rerank fallback.
 
 Fallback behavior:
 
 - If rewrite fails, the system falls back to the original question.
 - If one provider fails, the system continues with the remaining enabled providers and surfaces a warning.
 - If reranking fails, the system falls back to the top 10 vector-search results.
+- If relevance review fails or returns invalid JSON, the system keeps the current reranked results and surfaces a warning instead of blocking answer streaming.
 - If every enabled provider returns no usable candidates, the request fails with a clear search error.
 
 ## Web Workbench

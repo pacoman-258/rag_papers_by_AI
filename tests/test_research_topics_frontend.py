@@ -62,6 +62,21 @@ class ResearchTopicsFrontendTest(unittest.TestCase):
         self.assertIn("/api/assistant/suggestions/thread-open-question", paper_reader_text)
         self.assertIn("onSuggestionRefresh", citation_trace_text)
 
+    def test_accepting_search_suggestion_starts_topic_thread(self) -> None:
+        app_text = APP.read_text(encoding="utf-8")
+        assistant_text = ASSISTANT.read_text(encoding="utf-8")
+
+        self.assertIn("handleAssistantSuggestionAccepted", app_text)
+        self.assertIn("startTopicThreadFromSuggestion", app_text)
+        self.assertIn("/api/research-topics", app_text)
+        self.assertIn("/papers", app_text)
+        self.assertIn("setPendingPaperReaderUrl", app_text)
+        self.assertIn("pendingResearchThread", app_text)
+        self.assertIn("initialResearchThread", paper_reader_text := PAPER_READER.read_text(encoding="utf-8"))
+        self.assertIn("onInitialResearchThreadConsumed", paper_reader_text)
+        self.assertIn("onAssistantSuggestionAccepted", assistant_text)
+        self.assertIn('recommendedAction === "open_in_topic"', assistant_text)
+
 
 if __name__ == "__main__":
     unittest.main()
