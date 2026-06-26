@@ -1621,6 +1621,8 @@ function getPaperReaderCopy(language, t) {
       syncSelectionToAssistantButton: "同步给小助手",
       selectionAssistantSyncReady: "选区已同步给小助手",
       selectionAssistantSyncUnavailable: "整篇论文上下文还在准备，稍后再同步。",
+      researchTopicDetached: "未关联课题",
+      researchThreadActive: "精读线程记录中",
       evidenceLabel: "证据线索",
       structuredFailureTitle: "本页结构化解析失败",
       structuredFailureBody: "我没有展示原始模型文本，而是保留了安全失败态。你可以重试本页，或跳到下一页继续阅读。",
@@ -1693,6 +1695,8 @@ function getPaperReaderCopy(language, t) {
     syncSelectionToAssistantButton: "Sync to assistant",
     selectionAssistantSyncReady: "Selection synced to assistant",
     selectionAssistantSyncUnavailable: "Whole-paper assistant context is still preparing.",
+    researchTopicDetached: "No topic linked",
+    researchThreadActive: "Reading thread active",
     evidenceLabel: "Evidence trail",
     structuredFailureTitle: "Structured page parsing failed",
     structuredFailureBody:
@@ -2402,13 +2406,17 @@ export default function PaperReaderPage({
   initialArxivUrl = "",
   onInitialArxivUrlConsumed,
   renderAssistantLayer,
-  onAssistantContextChange
+  onAssistantContextChange,
+  onSuggestionRefresh
 }) {
   const [arxivUrl, setArxivUrl] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
   const [readerMode, setReaderMode] = useState("guided");
   const [discipline, setDiscipline] = useState("auto");
   const [session, setSession] = useState(null);
+  const [currentResearchTopic, setCurrentResearchTopic] = useState(null);
+  const [currentResearchThread, setCurrentResearchThread] = useState(null);
+  const [researchTopicError, setResearchTopicError] = useState("");
   const [pagesByIndex, setPagesByIndex] = useState({});
   const [sourcePagesByIndex, setSourcePagesByIndex] = useState({});
   const [sourcePagesBusyMap, setSourcePagesBusyMap] = useState({});
@@ -2677,6 +2685,19 @@ export default function PaperReaderPage({
   }, [activePageIndex, session?.session_id]);
 
   useEffect(() => {
+    if (!currentResearchThread?.thread_id || !session?.session_id) {
+      return;
+    }
+    void recordResearchThreadEvent("paper_reader.progress", {
+      session_id: session.session_id,
+      last_page: activeSourcePageNumber || activePageIndex + 1,
+      page_index: activePageIndex,
+      paper_title: session.paper_title || ""
+    }).catch((error) => setResearchTopicError(String(error)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentResearchThread?.thread_id, session?.session_id, activePageIndex, activeSourcePageNumber]);
+
+  useEffect(() => {
     if (!pdfSelection?.text) {
       return undefined;
     }
@@ -2715,6 +2736,9 @@ export default function PaperReaderPage({
 
   function resetReaderState() {
     setSession(null);
+    setCurrentResearchTopic(null);
+    setCurrentResearchThread(null);
+    setResearchTopicError("");
     setPagesByIndex({});
     setSourcePagesByIndex({});
     setSourcePagesBusyMap({});
@@ -2838,6 +2862,99 @@ export default function PaperReaderPage({
         return next;
       });
     }
+  }
+
+  async function attachPaperToResearchTopic(topic) {
+    if (!topic?.topic_id || !session) {
+      return null;
+    }
+    const paper = {
+      title: session.paper_title,
+      source: firstNonEmpty(session.source_type, session.source),
+      source_id: firstNonEmpty(session.source_id, session.arxiv_id, session.file_name),
+      source_url: session.source_url,
+      arxiv_id: session.source_type === "arxiv" ? firstNonEmpty(session.arxiv_id, session.source_id) : null,
+      authors: session.authors || [],
+      published_date: session.published_date || null
+    };
+    const response = await fetch(`/api/research-topics/${encodeURIComponent(topic.topic_id)}/papers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        paper,
+        reader_session_id: session.session_id
+      })
+    });
+    const payload = await readJsonWithDetailFallback(response);
+    if (!response.ok) {
+      throw new Error(payload.detail || `Research topic attach failed (HTTP ${response.status})`);
+    }
+    setCurrentResearchTopic(topic);
+    setCurrentResearchThread(payload);
+    setResearchTopicError("");
+    onSuggestionRefresh?.();
+    return payload;
+  }
+
+  async function recordResearchThreadEvent(eventType, payload, source = "paper_reader") {
+    if (!currentResearchThread?.thread_id) {
+      return null;
+    }
+    const response = await fetch(
+      `/api/research-topics/threads/${encodeURIComponent(currentResearchThread.thread_id)}/events`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: eventType,
+          source,
+          payload
+        })
+      }
+    );
+    const eventPayload = await readJsonWithDetailFallback(response);
+    if (!response.ok) {
+      throw new Error(eventPayload.detail || `Research thread event failed (HTTP ${response.status})`);
+    }
+    return eventPayload;
+  }
+
+  async function createPaperReaderOpenQuestionSuggestion(question) {
+    if (!currentResearchThread?.thread_id || !String(question || "").trim()) {
+      return null;
+    }
+    const response = await fetch("/api/assistant/suggestions/thread-open-question", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        thread_id: currentResearchThread.thread_id,
+        question
+      })
+    });
+    const payload = await readJsonWithDetailFallback(response);
+    if (!response.ok) {
+      throw new Error(payload.detail || `Assistant suggestion failed (HTTP ${response.status})`);
+    }
+    onSuggestionRefresh?.();
+    return payload;
+  }
+
+  async function recordPaperReaderQuestionEvent(question, answer) {
+    const eventPayload = await recordResearchThreadEvent(
+      "paper_reader.question",
+      {
+        session_id: session?.session_id || "",
+        question,
+        answer
+      },
+      "user"
+    );
+    try {
+      await createPaperReaderOpenQuestionSuggestion(question);
+    } catch (error) {
+      console.warn("Paper reader suggestion card failed", error);
+    }
+    return eventPayload;
   }
 
   function publishAssistantContext(context, selectedExcerpt = null) {
@@ -3414,6 +3531,11 @@ export default function PaperReaderPage({
                 {getDisciplineSourceLabel(session.discipline_source, language)})
               </span>
             ) : null}
+            <div className="paper-reader-topic-strip">
+              <span>{currentResearchTopic ? currentResearchTopic.title : copy.researchTopicDetached}</span>
+              {currentResearchThread ? <span>{copy.researchThreadActive}</span> : null}
+              {researchTopicError ? <span className="warning-box">{researchTopicError}</span> : null}
+            </div>
           </div>
         </section>
 

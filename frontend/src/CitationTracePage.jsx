@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import ProgressTracker from "./ProgressTracker.jsx";
 
+const CITATION_TRACE_COMPLETED_EVENT = "citation_trace.completed";
+
 function readJsonWithDetailFallback(response) {
   return response.text().then((text) => {
     if (!text) {
@@ -300,7 +302,15 @@ function EntryDetail({ entry, t }) {
   );
 }
 
-export default function CitationTracePage({ language, t, runtimePayload, onAssistantAutoReply, renderAssistantLayer }) {
+export default function CitationTracePage({
+  language,
+  t,
+  runtimePayload,
+  onAssistantAutoReply,
+  renderAssistantLayer,
+  onSuggestionRefresh,
+  researchThread = null
+}) {
   const [arxivUrl, setArxivUrl] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
   const [session, setSession] = useState(null);
@@ -388,6 +398,31 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
       answerContext,
       workflowContext: buildAssistantWorkflowContext(nextSession, language, answerContext)
     });
+  }
+
+  async function storeCitationTraceAction(nextSession) {
+    if (!researchThread?.thread_id || !nextSession?.session_id) {
+      return null;
+    }
+    const response = await fetch(
+      `/api/research-topics/threads/${encodeURIComponent(researchThread.thread_id)}/citation-trace-actions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          citation_trace_session_id: nextSession.session_id,
+          target_paper: nextSession.target_paper || {},
+          final_top5: nextSession.final_top5 || [],
+          warnings: nextSession.warnings || [],
+          assistant_explanation: buildAssistantAnswerContext(nextSession)
+        })
+      }
+    );
+    const payload = await readJsonWithDetailFallback(response);
+    if (!response.ok) {
+      throw new Error(payload.detail || `Citation Trace action save failed (HTTP ${response.status})`);
+    }
+    return payload;
   }
 
   function startStream(sessionId) {
@@ -478,6 +513,17 @@ export default function CitationTracePage({ language, t, runtimePayload, onAssis
         const nextSession = await fetchSession(payload.session_id || sessionId);
         const completed = payload.status !== "failed";
         updateProgress("top5", completed ? "completed" : "interrupted", completed ? t("citationTraceCompleted") : t("citationTraceFailed"));
+        if (completed && researchThread?.thread_id) {
+          try {
+            await storeCitationTraceAction(nextSession);
+            onSuggestionRefresh?.();
+          } catch (error) {
+            setWarnings((current) => [...current, `${CITATION_TRACE_COMPLETED_EVENT}: ${String(error)}`]);
+          }
+        }
+        if (completed) {
+          onSuggestionRefresh?.();
+        }
         sendAssistantAutoReply(nextSession);
       } catch (error) {
         setMessage(String(error));

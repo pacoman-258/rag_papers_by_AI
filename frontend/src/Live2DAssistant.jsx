@@ -12,6 +12,8 @@ const DEFAULT_MOUTH_FORM_PARAMETER_IDS = ["ParamMouthForm", "PARAM_MOUTH_FORM"];
 const DEFAULT_CONTEXT_LIMIT = 4000;
 const DEFAULT_CONVERSATION_CONTEXT_MESSAGE_LIMIT = 8;
 const DEFAULT_CONVERSATION_CONTEXT_TEXT_LIMIT = 700;
+const ASSISTANT_SUGGESTION_ACCEPT_PATH = "/accept";
+const ASSISTANT_SUGGESTION_DISMISS_PATH = "/dismiss";
 
 const copy = {
   en: {
@@ -34,6 +36,15 @@ const copy = {
     memoryPinned: "Pinned",
     memoryDelete: "Delete",
     memoryActionUnavailable: "Memory actions are unavailable on the current backend.",
+    suggestionTrayTitle: "Suggestion Cards",
+    suggestionEmpty: "No pending cards.",
+    suggestionRefresh: "Refresh",
+    suggestionAccept: "Accept",
+    suggestionDismiss: "Dismiss",
+    suggestionActionOpenInTopic: "Open in topic",
+    suggestionActionSaveOpenQuestion: "Save open question",
+    suggestionActionDefault: "Review",
+    suggestionLoadFailed: "Suggestion cards unavailable.",
     modelOffline: "Model unavailable",
     assistantOffline: "Assistant unavailable right now.",
     ttsFallback: "TTS unavailable, switched to browser voice."
@@ -58,6 +69,15 @@ const copy = {
     memoryPinned: "已置顶",
     memoryDelete: "删除",
     memoryActionUnavailable: "当前后端暂不支持记忆操作。",
+    suggestionTrayTitle: "建议卡",
+    suggestionEmpty: "暂无待处理建议。",
+    suggestionRefresh: "刷新",
+    suggestionAccept: "采纳",
+    suggestionDismiss: "忽略",
+    suggestionActionOpenInTopic: "打开到课题",
+    suggestionActionSaveOpenQuestion: "保存开放问题",
+    suggestionActionDefault: "查看",
+    suggestionLoadFailed: "建议卡暂不可用。",
     modelOffline: "模型未就绪",
     assistantOffline: "助手暂时不可用。",
     ttsFallback: "TTS 不可用，已切换浏览器语音。"
@@ -237,6 +257,45 @@ function normalizeUsedMemoryItems(items) {
     .filter(Boolean);
 }
 
+function normalizeAssistantSuggestions(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const suggestionId = String(item.suggestion_id || "").trim();
+      const summary = String(item.summary || "").trim();
+      if (!suggestionId || !summary) {
+        return null;
+      }
+      return {
+        suggestionId,
+        sourceWorkflow: String(item.source_workflow || "").trim(),
+        sourceStage: String(item.source_stage || "").trim(),
+        riskLevel: String(item.risk_level || "").trim(),
+        recommendedAction: String(item.recommended_action || "").trim(),
+        summary,
+        status: String(item.status || "pending").trim(),
+        targetThreadId: String(item.target_thread_id || "").trim(),
+        payload: item.payload && typeof item.payload === "object" && !Array.isArray(item.payload) ? item.payload : {}
+      };
+    })
+    .filter(Boolean);
+}
+
+function getSuggestionActionLabel(t, action) {
+  if (action === "open_in_topic") {
+    return t.suggestionActionOpenInTopic;
+  }
+  if (action === "save_open_question") {
+    return t.suggestionActionSaveOpenQuestion;
+  }
+  return t.suggestionActionDefault;
+}
+
 function normalizeExpressionName(name) {
   return String(name || "")
     .toLowerCase()
@@ -279,6 +338,7 @@ export default function Live2DAssistant({
   latestWorkflowContext,
   assistantSessionId,
   onAssistantSessionIdChange,
+  quietSuggestionRefreshToken = 0,
   onClearAnswerContext
 }) {
   const t = getCopy(language);
@@ -309,6 +369,9 @@ export default function Live2DAssistant({
   const [error, setError] = useState("");
   const [memoryActionError, setMemoryActionError] = useState("");
   const [memoryActionBusyMap, setMemoryActionBusyMap] = useState({});
+  const [assistantSuggestions, setAssistantSuggestions] = useState([]);
+  const [suggestionBusyMap, setSuggestionBusyMap] = useState({});
+  const [suggestionError, setSuggestionError] = useState("");
   const [scriptsReady, setScriptsReady] = useState(false);
 
   const linkedAnswerContext = useMemo(() => trimAnswerContext(latestAnswerContext), [latestAnswerContext]);
@@ -510,6 +573,10 @@ export default function Live2DAssistant({
       isAutomatic: true
     });
   }, [autoReply]);
+
+  useEffect(() => {
+    void loadAssistantSuggestions();
+  }, [quietSuggestionRefreshToken]);
 
   function resolveExpressionName(name) {
     const candidate = String(name || "").trim();
@@ -866,6 +933,61 @@ export default function Live2DAssistant({
     }
   }
 
+  async function loadAssistantSuggestions() {
+    try {
+      const response = await fetch("/api/assistant/suggestions");
+      const payload = await readJsonWithDetailFallback(response);
+      if (!response.ok) {
+        throw new Error(payload.detail || `HTTP ${response.status}`);
+      }
+      if (mountedRef.current) {
+        setAssistantSuggestions(normalizeAssistantSuggestions(payload.items));
+        setSuggestionError("");
+      }
+    } catch (err) {
+      if (mountedRef.current) {
+        setSuggestionError(t.suggestionLoadFailed);
+      }
+    }
+  }
+
+  async function handleAssistantSuggestionAction(suggestion, action) {
+    const suggestionId = String(suggestion?.suggestionId || "").trim();
+    if (!suggestionId) {
+      return;
+    }
+    const endpointAction = action === "accept" ? "accept" : "dismiss";
+    const endpointPath =
+      action === "accept" ? ASSISTANT_SUGGESTION_ACCEPT_PATH : ASSISTANT_SUGGESTION_DISMISS_PATH;
+    setSuggestionBusyMap((current) => ({ ...current, [suggestionId]: endpointAction }));
+    setSuggestionError("");
+    try {
+      const response = await fetch(`/api/assistant/suggestions/${encodeURIComponent(suggestionId)}${endpointPath}`, {
+        method: "POST"
+      });
+      const payload = await readJsonWithDetailFallback(response);
+      if (!response.ok) {
+        throw new Error(payload.detail || `HTTP ${response.status}`);
+      }
+      if (mountedRef.current) {
+        setAssistantSuggestions((current) => current.filter((item) => item.suggestionId !== suggestionId));
+      }
+      await loadAssistantSuggestions();
+    } catch (err) {
+      if (mountedRef.current) {
+        setSuggestionError(String(err));
+      }
+    } finally {
+      if (mountedRef.current) {
+        setSuggestionBusyMap((current) => {
+          const next = { ...current };
+          delete next[suggestionId];
+          return next;
+        });
+      }
+    }
+  }
+
   async function requestAssistantReply({ source, message, answerContext, workflowContext, isAutomatic = false }) {
     const trimmedMessage = String(message || "").trim();
     const resolvedContext = trimAnswerContext(answerContext ?? linkedAnswerContext);
@@ -1000,6 +1122,54 @@ export default function Live2DAssistant({
             </div>
 
             {hasLinkedContext ? <div className="assistant-context-chip">{t.linked}</div> : null}
+
+            <section className="assistant-suggestion-tray" aria-live="polite">
+              <div className="assistant-suggestion-tray-head">
+                <strong>{t.suggestionTrayTitle}</strong>
+                <button type="button" className="secondary" onClick={() => void loadAssistantSuggestions()}>
+                  {t.suggestionRefresh}
+                </button>
+              </div>
+              {assistantSuggestions.length ? (
+                <div className="assistant-suggestion-list">
+                  {assistantSuggestions.map((suggestion) => {
+                    const busyAction = suggestionBusyMap[suggestion.suggestionId];
+                    return (
+                      <article className="assistant-suggestion-card" key={suggestion.suggestionId}>
+                        <div>
+                          <strong>{getSuggestionActionLabel(t, suggestion.recommendedAction)}</strong>
+                          <p>{suggestion.summary}</p>
+                          <span className="assistant-suggestion-meta">
+                            {[suggestion.sourceWorkflow, suggestion.sourceStage, suggestion.riskLevel].filter(Boolean).join(" / ")}
+                          </span>
+                        </div>
+                        <div className="assistant-suggestion-actions">
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => void handleAssistantSuggestionAction(suggestion, "accept")}
+                            disabled={Boolean(busyAction)}
+                          >
+                            {t.suggestionAccept}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => void handleAssistantSuggestionAction(suggestion, "dismiss")}
+                            disabled={Boolean(busyAction)}
+                          >
+                            {t.suggestionDismiss}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="muted">{t.suggestionEmpty}</p>
+              )}
+              {suggestionError ? <div className="assistant-error">{suggestionError}</div> : null}
+            </section>
 
             <div ref={panelLogRef} className="assistant-log">
               {messages.length === 0 ? (

@@ -106,7 +106,12 @@ class RuntimeSettings:
     embedding: EmbeddingConfig
     retrieval: RetrievalConfig
     rerank: RerankConfig
+    assistant_chat: ChatConfig | None = None
     assistant_memory: AssistantMemoryConfig = field(default_factory=AssistantMemoryConfig)
+
+    def __post_init__(self) -> None:
+        if self.assistant_chat is None:
+            self.assistant_chat = self.answer_chat
 
 
 @dataclass(slots=True)
@@ -310,6 +315,12 @@ def get_env_default_settings() -> RuntimeSettings:
         base_url=os.getenv("QUERY_CHAT_BASE_URL", answer_chat.base_url),
         api_key=os.getenv("QUERY_CHAT_API_KEY", answer_chat.api_key),
     )
+    assistant_chat = ChatConfig(
+        provider=normalize_provider(os.getenv("ASSISTANT_CHAT_PROVIDER", answer_chat.provider)),
+        model=os.getenv("ASSISTANT_CHAT_MODEL", answer_chat.model),
+        base_url=os.getenv("ASSISTANT_CHAT_BASE_URL", answer_chat.base_url),
+        api_key=os.getenv("ASSISTANT_CHAT_API_KEY", answer_chat.api_key),
+    )
     paper_reader_chat = PaperReaderChatConfig(
         provider=normalize_provider(os.getenv("PAPER_READER_CHAT_PROVIDER", answer_chat.provider)),
         model=os.getenv("PAPER_READER_CHAT_MODEL", answer_chat.model),
@@ -338,6 +349,7 @@ def get_env_default_settings() -> RuntimeSettings:
     return RuntimeSettings(
         query_chat=query_chat,
         answer_chat=answer_chat,
+        assistant_chat=assistant_chat,
         paper_reader_chat=paper_reader_chat,
         paper_reader_translation=paper_reader_translation,
         citation_trace_main_chat=citation_trace_main_chat,
@@ -396,6 +408,7 @@ def validate_chat_config(config: ChatConfig, label: str) -> None:
 def validate_runtime_settings(settings: RuntimeSettings) -> None:
     validate_chat_config(settings.query_chat, "query_chat")
     validate_chat_config(settings.answer_chat, "answer_chat")
+    validate_chat_config(settings.assistant_chat, "assistant_chat")
     validate_chat_config(settings.paper_reader_chat, "paper_reader_chat")
     validate_chat_config(settings.paper_reader_translation, "paper_reader_translation")
     validate_chat_config(settings.citation_trace_main_chat, "citation_trace_main_chat")

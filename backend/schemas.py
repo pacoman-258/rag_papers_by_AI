@@ -101,9 +101,52 @@ class AssistantMemoryConfigModel(BaseModel):
     research_profile_enabled: bool = True
 
 
+class ResearchTopicCreateRequest(BaseModel):
+    title: str
+    description: str = ""
+    keywords: list[str] = Field(default_factory=list)
+
+
+class PaperThreadAttachRequest(BaseModel):
+    paper: dict[str, Any]
+    reader_session_id: str | None = None
+
+
+class ThreadEventCreateRequest(BaseModel):
+    event_type: str
+    source: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CitationTraceActionCreateRequest(BaseModel):
+    citation_trace_session_id: str
+    target_paper: dict[str, Any] = Field(default_factory=dict)
+    final_top5: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    assistant_explanation: str = ""
+
+
+class TopicInsightCreateRequest(BaseModel):
+    kind: Literal["conclusion", "evidence", "caveat", "contradiction", "open_question"]
+    text: str
+    source_refs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SearchSuggestionCreateRequest(BaseModel):
+    query: str = ""
+    paper: dict[str, Any]
+    topic_candidates: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ThreadOpenQuestionSuggestionCreateRequest(BaseModel):
+    thread_id: str
+    question: str
+
+
 class RuntimeSettingsRequest(BaseModel):
     query_chat: ChatConfigRequest
     answer_chat: ChatConfigRequest
+    assistant_chat: ChatConfigRequest | None = None
     paper_reader_chat: PaperReaderChatConfigRequest | None = None
     paper_reader_translation: ChatConfigRequest | None = None
     citation_trace_main_chat: ChatConfigRequest | None = None
@@ -117,6 +160,7 @@ class RuntimeSettingsRequest(BaseModel):
 class RuntimeSettingsResponse(BaseModel):
     query_chat: ChatConfigResponse
     answer_chat: ChatConfigResponse
+    assistant_chat: ChatConfigResponse
     paper_reader_chat: PaperReaderChatConfigResponse
     paper_reader_translation: ChatConfigResponse
     citation_trace_main_chat: ChatConfigResponse

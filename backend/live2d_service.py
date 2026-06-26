@@ -716,7 +716,7 @@ def generate_live2d_reply(
         memory_prompt_block=memory_context.get("memory_prompt_block"),
         available_expressions=available_expressions,
     )
-    raw_content = chat_completion(messages, settings.answer_chat, settings.retrieval.request_timeout)
+    raw_content = chat_completion(messages, settings.assistant_chat, settings.retrieval.request_timeout)
 
     try:
         payload = extract_first_json_object(raw_content)

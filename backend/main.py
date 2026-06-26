@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import citation_trace_service
+from backend import research_topics_service
 from backend.config_store import (
     current_retrieval_providers,
     load_runtime_settings,
@@ -60,6 +61,7 @@ from backend.schemas import (
     AssistantMemoryListResponse,
     AssistantMemoryPinRequest,
     AssistantMemoryPinResponse,
+    CitationTraceActionCreateRequest,
     CitationTraceExecuteRequest,
     CitationTraceSessionFromArxivRequest,
     CitationTraceSessionModel,
@@ -71,6 +73,7 @@ from backend.schemas import (
     Live2DTTSResponse,
     ModelListRequest,
     ModelListResponse,
+    PaperThreadAttachRequest,
     PaperReaderChatRequest,
     PaperReaderChatResponse,
     PaperReaderAssistantContextResponse,
@@ -82,6 +85,7 @@ from backend.schemas import (
     PaperReaderSourcePagesResponse,
     QueryPlanModel,
     RetrievalConstraintsModel,
+    ResearchTopicCreateRequest,
     ResearchProfileItemModel,
     ResearchProfileRefreshRequest,
     ResearchProfileResponse,
@@ -89,6 +93,9 @@ from backend.schemas import (
     SearchExecuteResponse,
     SearchPlanRequest,
     SearchRefineRequest,
+    SearchSuggestionCreateRequest,
+    ThreadOpenQuestionSuggestionCreateRequest,
+    ThreadEventCreateRequest,
     RankedPaperResponse,
     RuntimeSettingsRequest,
     RuntimeSettingsResponse,
@@ -333,6 +340,7 @@ def resolve_saved_model_list_api_key(payload: ModelListRequest) -> str | None:
     for chat_config in (
         saved_settings.query_chat,
         saved_settings.answer_chat,
+        saved_settings.assistant_chat,
         saved_settings.paper_reader_chat,
         saved_settings.paper_reader_translation,
         saved_settings.citation_trace_main_chat,
@@ -866,6 +874,131 @@ def api_ingest_logs(job_id: str) -> StreamingResponse:
             time.sleep(0.5)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/research-topics")
+def api_research_topics_list() -> dict[str, Any]:
+    return {"items": research_topics_service.list_topics()}
+
+
+@app.post("/api/research-topics")
+def api_research_topics_create(payload: ResearchTopicCreateRequest) -> dict[str, Any]:
+    try:
+        return research_topics_service.create_topic(
+            title=payload.title,
+            description=payload.description,
+            keywords=payload.keywords,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/research-topics/{topic_id}")
+def api_research_topic_detail(topic_id: str) -> dict[str, Any]:
+    try:
+        return research_topics_service.get_topic(topic_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/research-topics/{topic_id}/papers")
+def api_research_topic_attach_paper(topic_id: str, payload: PaperThreadAttachRequest) -> dict[str, Any]:
+    try:
+        return research_topics_service.create_or_resume_thread(
+            topic_id=topic_id,
+            paper=payload.paper,
+            reader_session_id=payload.reader_session_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/research-topics/{topic_id}/threads/{thread_id}")
+def api_research_topic_thread_detail(topic_id: str, thread_id: str) -> dict[str, Any]:
+    try:
+        thread = research_topics_service.get_thread(thread_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if thread.get("topic_id") != topic_id:
+        raise HTTPException(status_code=404, detail="Paper reading thread not found in this topic.")
+    return thread
+
+
+@app.post("/api/research-topics/threads/{thread_id}/events")
+def api_research_topic_thread_event(thread_id: str, payload: ThreadEventCreateRequest) -> dict[str, Any]:
+    try:
+        return research_topics_service.record_thread_event(
+            thread_id=thread_id,
+            event_type=payload.event_type,
+            source=payload.source,
+            payload=payload.payload,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/research-topics/threads/{thread_id}/citation-trace-actions")
+def api_research_topic_trace_action(thread_id: str, payload: CitationTraceActionCreateRequest) -> dict[str, Any]:
+    try:
+        return research_topics_service.record_citation_trace_action(
+            thread_id=thread_id,
+            citation_trace_session_id=payload.citation_trace_session_id,
+            target_paper=payload.target_paper,
+            final_top5=payload.final_top5,
+            warnings=payload.warnings,
+            assistant_explanation=payload.assistant_explanation,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/assistant/suggestions")
+def api_assistant_suggestions(status: str | None = "pending") -> dict[str, Any]:
+    return {"items": research_topics_service.list_suggestions(status=status)}
+
+
+@app.post("/api/assistant/suggestions/search")
+def api_assistant_search_suggestion(payload: SearchSuggestionCreateRequest) -> dict[str, Any]:
+    return research_topics_service.create_search_recommendation(
+        query=payload.query,
+        paper=payload.paper,
+        topic_candidates=payload.topic_candidates,
+    )
+
+
+@app.post("/api/assistant/suggestions/thread-open-question")
+def api_assistant_thread_open_question_suggestion(payload: ThreadOpenQuestionSuggestionCreateRequest) -> dict[str, Any]:
+    try:
+        return research_topics_service.create_thread_open_question_suggestion(
+            thread_id=payload.thread_id,
+            question=payload.question,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/assistant/suggestions/{suggestion_id}/accept")
+def api_assistant_suggestion_accept(suggestion_id: str) -> dict[str, Any]:
+    try:
+        return research_topics_service.accept_suggestion(suggestion_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/assistant/suggestions/{suggestion_id}/dismiss")
+def api_assistant_suggestion_dismiss(suggestion_id: str) -> dict[str, Any]:
+    try:
+        return research_topics_service.dismiss_suggestion(suggestion_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/live2d/bootstrap", response_model=Live2DBootstrapResponse)

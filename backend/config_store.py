@@ -138,6 +138,12 @@ def runtime_settings_to_storage(
             "base_url": settings.answer_chat.base_url,
             "api_key": settings.answer_chat.api_key,
         },
+        "assistant_chat": {
+            "provider": settings.assistant_chat.provider,
+            "model": settings.assistant_chat.model,
+            "base_url": settings.assistant_chat.base_url,
+            "api_key": settings.assistant_chat.api_key,
+        },
         "paper_reader_chat": {
             "provider": settings.paper_reader_chat.provider,
             "model": settings.paper_reader_chat.model,
@@ -197,12 +203,14 @@ def runtime_settings_to_storage(
 def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
     default_settings = get_env_default_settings()
     embedding_api_url = normalize_ollama_api_url(data["embedding"]["api_url"])
-    default_assistant_memory = get_env_default_settings().assistant_memory
+    default_assistant_memory = default_settings.assistant_memory
+    default_assistant_chat = default_settings.assistant_chat
     default_paper_reader_chat = default_settings.paper_reader_chat
     default_paper_reader_translation = default_settings.paper_reader_translation
     default_citation_trace_main = default_settings.citation_trace_main_chat
     default_citation_trace_worker = default_settings.citation_trace_worker_chat
     assistant_memory_data = data.get("assistant_memory") if isinstance(data.get("assistant_memory"), dict) else {}
+    assistant_chat_data = data.get("assistant_chat") if isinstance(data.get("assistant_chat"), dict) else {}
     paper_reader_chat_data = (
         data.get("paper_reader_chat") if isinstance(data.get("paper_reader_chat"), dict) else {}
     )
@@ -251,6 +259,14 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
         base_url=data["answer_chat"].get("base_url") or embedding_api_url,
         api_key=data["answer_chat"].get("api_key"),
     )
+    assistant_has_identity = bool(assistant_chat_data.get("provider") or assistant_chat_data.get("model"))
+    assistant_chat_fallback = default_assistant_chat if assistant_has_identity else answer_chat
+    assistant_chat = ChatConfig(
+        provider=assistant_chat_data.get("provider") or assistant_chat_fallback.provider,
+        model=assistant_chat_data.get("model") or assistant_chat_fallback.model,
+        base_url=assistant_chat_data.get("base_url") or assistant_chat_fallback.base_url,
+        api_key=assistant_chat_data.get("api_key", assistant_chat_fallback.api_key),
+    )
     citation_main_has_identity = bool(
         citation_trace_main_data.get("provider") or citation_trace_main_data.get("model")
     )
@@ -262,6 +278,7 @@ def storage_to_runtime_settings(data: dict[str, Any]) -> RuntimeSettings:
     return RuntimeSettings(
         query_chat=query_chat,
         answer_chat=answer_chat,
+        assistant_chat=assistant_chat,
         paper_reader_chat=paper_reader_chat,
         paper_reader_translation=ChatConfig(
             provider=paper_reader_translation_data.get("provider") or paper_reader_translation_fallback.provider,
@@ -418,6 +435,11 @@ def merge_runtime_settings(
     embedding_api_url = normalize_ollama_api_url(incoming.embedding.api_url)
     query_chat = merge_chat(base.query_chat, incoming.query_chat)
     answer_chat = merge_chat(base.answer_chat, incoming.answer_chat)
+    assistant_chat = merge_optional_chat(
+        base.assistant_chat,
+        incoming.assistant_chat,
+        embedding_api_url,
+    )
     paper_reader_chat = merge_paper_reader_chat(
         base.paper_reader_chat,
         incoming.paper_reader_chat,
@@ -470,6 +492,7 @@ def merge_runtime_settings(
     return RuntimeSettings(
         query_chat=query_chat,
         answer_chat=answer_chat,
+        assistant_chat=assistant_chat,
         paper_reader_chat=paper_reader_chat,
         paper_reader_translation=paper_reader_translation,
         citation_trace_main_chat=citation_trace_main_chat,
@@ -505,6 +528,12 @@ def runtime_settings_to_response(
             model=settings.answer_chat.model,
             base_url=settings.answer_chat.base_url,
             has_api_key=bool(settings.answer_chat.api_key),
+        ),
+        assistant_chat=ChatConfigResponse(
+            provider=settings.assistant_chat.provider,
+            model=settings.assistant_chat.model,
+            base_url=settings.assistant_chat.base_url,
+            has_api_key=bool(settings.assistant_chat.api_key),
         ),
         paper_reader_chat=PaperReaderChatConfigResponse(
             provider=settings.paper_reader_chat.provider,

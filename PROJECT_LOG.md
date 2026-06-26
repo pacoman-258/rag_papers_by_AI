@@ -20,6 +20,69 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-26 11:13
+
+- 摘要：为小助手增加不打断式建议卡托盘；搜索完成会静默生成论文打开到课题的建议，精读问题可生成开放问题建议，溯源完成后刷新建议卡状态。
+- 涉及文件：`backend/main.py`、`backend/schemas.py`、`frontend/src/App.jsx`、`frontend/src/Live2DAssistant.jsx`、`frontend/src/PaperReaderPage.jsx`、`frontend/src/CitationTracePage.jsx`、`frontend/src/styles.css`、`tests/test_research_topics_api.py`、`tests/test_research_topics_frontend.py`、`PROJECT_LOG.md`
+- 验证：先执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_api.ResearchTopicsApiTest.test_thread_open_question_suggestion_route_records_on_accept`（确认路由 404 红灯）和 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_frontend.ResearchTopicsFrontendTest.test_assistant_has_quiet_suggestion_tray tests.test_research_topics_frontend.ResearchTopicsFrontendTest.test_workflows_refresh_quiet_suggestion_cards`（确认前端接线缺失红灯）；实现后执行上述测试（通过）、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_api tests.test_research_topics_service tests.test_research_topics_frontend`（通过，24 tests）、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m py_compile backend/main.py backend/schemas.py tests/test_research_topics_api.py`（通过）、`npm run build -- --outDir /private/tmp/rag-papers-by-ai-codex-research-topics-assistant-dist --emptyOutDir`（在 `frontend/` 下通过，使用临时 `node_modules` 符号链接，已清理）、`git diff --check -- backend/main.py backend/schemas.py frontend/src/App.jsx frontend/src/CitationTracePage.jsx frontend/src/Live2DAssistant.jsx frontend/src/PaperReaderPage.jsx frontend/src/styles.css tests/test_research_topics_api.py tests/test_research_topics_frontend.py`（通过）。
+- 后续：真实浏览器里还需观察建议卡数量和重复策略；当前搜索每次完成会为 Top3 候选生成待处理建议。
+
+## 2026-06-26 11:05
+
+- 摘要：新增前端课题档案页，App 顶部导航增加课题入口，并在设置页为小助手暴露独立 `assistant_chat` 模型/API 配置。
+- 涉及文件：`frontend/src/App.jsx`、`frontend/src/ResearchTopicsPage.jsx`、`frontend/src/styles.css`、`tests/test_research_topics_frontend.py`、`PROJECT_LOG.md`
+- 验证：先执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_frontend.ResearchTopicsFrontendTest.test_app_exposes_research_topics_tab_and_assistant_chat_settings`，确认 App 缺少课题页入口和小助手配置的红灯；实现后执行该测试（通过）、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_frontend`（通过，3 tests）、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_frontend tests.test_citation_trace_frontend tests.test_research_profile_frontend`（通过，7 tests）、`npm run build -- --outDir /private/tmp/rag-papers-by-ai-codex-research-topics-assistant-dist --emptyOutDir`（在 `frontend/` 下通过，使用临时 `node_modules` 符号链接，已清理）、`git diff --check -- frontend/src/App.jsx frontend/src/ResearchTopicsPage.jsx frontend/src/styles.css tests/test_research_topics_frontend.py`（通过）。
+- 后续：继续把不打断式建议卡接到小助手层，让搜索、精读、溯源阶段建议可以静默生成并待用户处理。
+
+## 2026-06-26 10:58
+
+- 摘要：为 `Citation Trace` 增加可选课题线程上下文，溯源完成后可把目标论文、最终 Top5、warning 和小助手解释保存为当前精读线程中的溯源行动。
+- 涉及文件：`frontend/src/CitationTracePage.jsx`、`tests/test_research_topics_frontend.py`、`PROJECT_LOG.md`
+- 验证：先执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_frontend.ResearchTopicsFrontendTest.test_citation_trace_can_store_action_in_research_thread`，确认 Citation Trace 缺少课题线程接入的红灯；实现后执行该测试和 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_frontend`（通过，2 tests）、`git diff --check -- frontend/src/CitationTracePage.jsx tests/test_research_topics_frontend.py`（通过）、`npm run build`（在 `frontend/` 下通过，使用临时 `node_modules` 符号链接，已清理）。
+- 后续：继续实现课题页和 App 标签页，把课题选择、线程查看和建议卡入口串起来。
+
+## 2026-06-26 10:55
+
+- 摘要：为 `Paper Reader` 增加课题线程接入点，支持将当前论文挂接到课题线程、在已关联线程时记录阅读进度事件，并在精读页头部显示课题记录状态。
+- 涉及文件：`frontend/src/PaperReaderPage.jsx`、`frontend/src/styles.css`、`tests/test_research_topics_frontend.py`、`PROJECT_LOG.md`
+- 验证：先执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_frontend.ResearchTopicsFrontendTest.test_paper_reader_can_attach_to_topic_and_publish_thread_events`，确认 Paper Reader 缺少课题线程代码的红灯；实现后执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_frontend`（通过）、`git diff --check -- frontend/src/PaperReaderPage.jsx frontend/src/styles.css tests/test_research_topics_frontend.py`（通过）、`npm run build`（在 `frontend/` 下通过，使用临时 `node_modules` 符号链接，已清理）。
+- 后续：继续让 Citation Trace 在存在课题线程上下文时保存溯源行动。
+
+## 2026-06-26 10:49
+
+- 摘要：新增规则优先的小助手建议卡服务和 API；搜索结果只生成“打开到课题精读”的推荐，不会直接写入课题记录，精读线程建议在用户接受后才写入线程事件。
+- 涉及文件：`backend/research_topics_service.py`、`backend/main.py`、`backend/schemas.py`、`tests/test_research_topics_service.py`、`tests/test_research_topics_api.py`、`PROJECT_LOG.md`
+- 验证：先执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_service.ResearchTopicSuggestionTest` 与 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_api.ResearchTopicsApiTest.test_search_suggestion_route_does_not_write_topic_records`，确认建议函数缺失和路由 404 的红灯；实现后执行上述测试（通过），执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_service tests.test_research_topics_api`（通过，18 tests）、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m py_compile backend/research_topics_service.py backend/main.py backend/schemas.py tests/test_research_topics_service.py tests/test_research_topics_api.py`（通过）、`git diff --check -- backend/research_topics_service.py backend/schemas.py backend/main.py tests/test_research_topics_service.py tests/test_research_topics_api.py`（通过）。
+- 后续：继续把 Paper Reader 和 Citation Trace 前端工作流接到课题线程与建议卡 API。
+
+## 2026-06-26 10:43
+
+- 摘要：开放课题中心 API，支持列出/创建课题、将论文挂接为精读线程、记录线程事件并保存 Citation Trace 行动到对应线程。
+- 涉及文件：`backend/main.py`、`backend/schemas.py`、`tests/test_research_topics_api.py`、`PROJECT_LOG.md`
+- 验证：先执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_api`，确认新增 API 测试因路由缺失返回 404 失败；实现后执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_api`（通过，2 tests）、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_api tests.test_research_topics_service`（通过，14 tests）、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m py_compile backend/main.py backend/schemas.py tests/test_research_topics_api.py`（通过）、`git diff --check -- backend/main.py backend/schemas.py tests/test_research_topics_api.py`（通过）。
+- 后续：继续实现规则优先的小助手建议卡服务，确保搜索只产生推荐、不直接写入课题记录。
+
+## 2026-06-26 10:36
+
+- 摘要：为小助手新增独立 `assistant_chat` 模型配置，并建立课题中心的论文精读线程服务；课题服务默认走 PostgreSQL 持久化，数据库不可用时可粘性降级到进程内存储。
+- 涉及文件：`local_paper_db/app/search_service.py`、`backend/schemas.py`、`backend/config_store.py`、`backend/live2d_service.py`、`backend/main.py`、`backend/research_topics_service.py`、`config/runtime_settings.example.json`、`tests/test_assistant_chat_config.py`、`tests/test_research_topics_service.py`、`PROJECT_LOG.md`
+- 验证：分阶段执行 `/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_assistant_chat_config`、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest discover -s tests`、`cd frontend && npm run build`（均通过）；本次 durable store 收尾执行 `git diff --check -- backend/research_topics_service.py tests/test_research_topics_service.py`（通过）、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m unittest tests.test_research_topics_service`（12 tests OK）、`/Users/lyj/lyj/third_round/rag_papers_by_AI/.venv/bin/python -m py_compile backend/research_topics_service.py tests/test_research_topics_service.py`（通过）。
+- 后续：继续接入 `/api/research-topics` 薄路由、规则优先的建议卡服务，以及 Paper Reader / Citation Trace / 前端课题页联动。
+
+## 2026-06-25 23:54
+
+- 摘要：新增课题档案助手实现计划，将 `assistant_chat` 配置、课题/论文精读线程持久化、建议卡、Paper Reader/Citation Trace 联动、前端课题档案页和验证步骤拆成可执行任务。
+- 涉及文件：`docs/superpowers/plans/2026-06-25-research-topics-assistant.md`、`PROJECT_LOG.md`
+- 验证：执行 `rg -n "TBD|TODO|FIXME|PLACEHOLDER|to be decided|implement later|Similar to|appropriate|same pattern|\\?\\?" docs/superpowers/plans/2026-06-25-research-topics-assistant.md`（无输出）；执行 `git diff --check -- docs/superpowers/plans/2026-06-25-research-topics-assistant.md`（通过）；手动检查计划覆盖设计文档中的课题项目、唯一论文精读线程、搜索只推荐、溯源行动记录、静默建议卡和小助手独立模型配置。
+- 后续：等待用户选择 Subagent-Driven 或 Inline Execution 后开始按计划执行。
+
+## 2026-06-25 23:42
+
+- 摘要：新增课题档案助手设计文档，明确以课题为项目、论文精读为最小线程单位、搜索仅做推荐、溯源作为论文线程行动记录，并将小助手独立 `assistant_chat` API 配置纳入后续实现范围。
+- 涉及文件：`docs/superpowers/specs/2026-06-25-research-topics-assistant-design.md`、`PROJECT_LOG.md`
+- 验证：执行 `rg -n "TBD|TODO|FIXME|PLACEHOLDER|to be decided|\\?\\?" docs/superpowers/specs/2026-06-25-research-topics-assistant-design.md`（无输出）；执行 `git diff --check -- docs/superpowers/specs/2026-06-25-research-topics-assistant-design.md`（通过）；手动检查设计文档的写入边界、迁移策略和小助手独立模型配置说明。
+- 后续：待用户确认设计文档后，再进入实现计划；实现时需要补齐 `assistant_chat` 配置、课题档案持久化、建议卡和 Paper Reader/Citation Trace 联动。
+
 ## 2026-06-25 22:04
 
 - 摘要：补齐远端仓库安全自动化配置，新增 CodeQL 扫描与 Dependabot 依赖更新检查，并在中英文 README 中说明仓库安全卫生、只写 API Key 和示例配置提交规则。

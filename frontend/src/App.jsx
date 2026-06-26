@@ -3,6 +3,7 @@ import CitationTracePage from "./CitationTracePage.jsx";
 import PaperReaderPage from "./PaperReaderPage.jsx";
 import ProgressTracker from "./ProgressTracker.jsx";
 import ResearchProfilePage from "./ResearchProfilePage.jsx";
+import ResearchTopicsPage from "./ResearchTopicsPage.jsx";
 
 const translations = {
   en: {
@@ -10,6 +11,7 @@ const translations = {
     searchTab: "Search Workspace",
     citationTraceTab: "Citation Trace",
     paperReaderTab: "Paper Reader",
+    researchTopicsTab: "Research Topics",
     researchProfileTab: "Research Profile",
     ingestTab: "Ingest Manager",
     settingsTab: "Settings",
@@ -40,6 +42,7 @@ const translations = {
     keepStoredKey: "Keep stored key",
     queryChat: "Query Chat",
     answerChat: "Answer Chat",
+    assistantChatModel: "Assistant Chat",
     paperReaderChatModel: "Paper Reader Chat",
     paperReaderTranslationModel: "PDF Selection Translation",
     citationTraceMainModel: "Citation Trace Main Model",
@@ -212,6 +215,7 @@ const translations = {
     searchTab: "搜索工作台",
     citationTraceTab: "引用溯源",
     paperReaderTab: "论文精读",
+    researchTopicsTab: "课题档案",
     researchProfileTab: "研究画像",
     ingestTab: "入库管理",
     settingsTab: "设置",
@@ -242,6 +246,7 @@ const translations = {
     keepStoredKey: "保留已保存密钥",
     queryChat: "Query Rewrite 模型",
     answerChat: "最终回答模型",
+    assistantChatModel: "小助手模型",
     paperReaderChatModel: "论文精读解析模型",
     paperReaderTranslationModel: "原文卡片翻译模型",
     citationTraceMainModel: "引用溯源主模型",
@@ -443,6 +448,7 @@ function buildInitialModelCatalogs() {
   return {
     query_chat: buildEmptyModelCatalog(),
     answer_chat: buildEmptyModelCatalog(),
+    assistant_chat: buildEmptyModelCatalog(),
     paper_reader_chat: buildEmptyModelCatalog(),
     paper_reader_translation: buildEmptyModelCatalog(),
     citation_trace_main_chat: buildEmptyModelCatalog(),
@@ -505,7 +511,15 @@ function AssistantLayerFallback({ language, onRetry, details = "" }) {
   );
 }
 
-function AssistantLayerContent({ AssistantComponent, language, autoReply, linkedContext, assistantSessionId, onAssistantSessionIdChange }) {
+function AssistantLayerContent({
+  AssistantComponent,
+  language,
+  autoReply,
+  linkedContext,
+  assistantSessionId,
+  onAssistantSessionIdChange,
+  quietSuggestionRefreshToken
+}) {
   const [latestAutoContext, setLatestAutoContext] = useState({
     answerContext: null,
     workflowContext: null
@@ -549,6 +563,7 @@ function AssistantLayerContent({ AssistantComponent, language, autoReply, linked
       latestWorkflowContext={latestAutoContext.workflowContext}
       assistantSessionId={assistantSessionId}
       onAssistantSessionIdChange={onAssistantSessionIdChange}
+      quietSuggestionRefreshToken={quietSuggestionRefreshToken}
       onClearAnswerContext={() =>
         setLatestAutoContext({
           answerContext: null,
@@ -559,7 +574,14 @@ function AssistantLayerContent({ AssistantComponent, language, autoReply, linked
   );
 }
 
-function IsolatedAssistantLayer({ language, autoReply, linkedContext, assistantSessionId, onAssistantSessionIdChange }) {
+function IsolatedAssistantLayer({
+  language,
+  autoReply,
+  linkedContext,
+  assistantSessionId,
+  onAssistantSessionIdChange,
+  quietSuggestionRefreshToken
+}) {
   const [instanceKey, setInstanceKey] = useState(0);
   const [AssistantComponent, setAssistantComponent] = useState(null);
   const [loadError, setLoadError] = useState("");
@@ -616,6 +638,7 @@ function IsolatedAssistantLayer({ language, autoReply, linkedContext, assistantS
           linkedContext={linkedContext}
           assistantSessionId={assistantSessionId}
           onAssistantSessionIdChange={onAssistantSessionIdChange}
+          quietSuggestionRefreshToken={quietSuggestionRefreshToken}
         />
       </AssistantErrorBoundary>
     );
@@ -640,12 +663,14 @@ function getInitialLanguage() {
 }
 
 function buildDefaultState(config) {
+  const assistantConfig = config.assistant_chat || config.answer_chat;
   const translationConfig = config.paper_reader_translation || config.paper_reader_chat;
   const citationTraceMainConfig = config.citation_trace_main_chat || config.answer_chat;
   const citationTraceWorkerConfig = config.citation_trace_worker_chat || config.paper_reader_chat;
   return {
     query_chat: { ...config.query_chat, api_key: "", clear_api_key: false },
     answer_chat: { ...config.answer_chat, api_key: "", clear_api_key: false },
+    assistant_chat: { ...assistantConfig, api_key: "", clear_api_key: false },
     paper_reader_chat: { ...config.paper_reader_chat, api_key: "", clear_api_key: false },
     paper_reader_translation: { ...translationConfig, api_key: "", clear_api_key: false },
     citation_trace_main_chat: { ...citationTraceMainConfig, api_key: "", clear_api_key: false },
@@ -678,6 +703,13 @@ function buildRuntimeRequest(settings) {
       base_url: settings.answer_chat.base_url || null,
       api_key: settings.answer_chat.api_key || null,
       clear_api_key: settings.answer_chat.clear_api_key
+    },
+    assistant_chat: {
+      provider: settings.assistant_chat.provider,
+      model: settings.assistant_chat.model,
+      base_url: settings.assistant_chat.base_url || null,
+      api_key: settings.assistant_chat.api_key || null,
+      clear_api_key: settings.assistant_chat.clear_api_key
     },
     paper_reader_chat: {
       provider: settings.paper_reader_chat.provider,
@@ -1220,6 +1252,7 @@ export default function App() {
     answerContext: null,
     workflowContext: null
   });
+  const [suggestionRefreshToken, setSuggestionRefreshToken] = useState(0);
   const [assistantSessionId, setAssistantSessionId] = useState(getOrCreateAssistantSessionId);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -1375,6 +1408,7 @@ export default function App() {
     if (
       (section === "query_chat" ||
         section === "answer_chat" ||
+        section === "assistant_chat" ||
         section === "paper_reader_chat" ||
         section === "paper_reader_translation" ||
         section === "citation_trace_main_chat" ||
@@ -1452,6 +1486,10 @@ export default function App() {
     });
   }
 
+  function refreshQuietSuggestions() {
+    setSuggestionRefreshToken(Date.now());
+  }
+
   function renderAssistantLayer() {
     return (
       <IsolatedAssistantLayer
@@ -1460,6 +1498,7 @@ export default function App() {
         linkedContext={assistantLinkedContext}
         assistantSessionId={assistantSessionId}
         onAssistantSessionIdChange={setAssistantSessionIdWithPersistence}
+        quietSuggestionRefreshToken={suggestionRefreshToken}
       />
     );
   }
@@ -1646,6 +1685,35 @@ export default function App() {
     };
   }
 
+  async function createSearchSuggestionCards({ query, papers }) {
+    const topPapers = (Array.isArray(papers) ? papers : []).slice(0, 3);
+    if (!topPapers.length) {
+      return;
+    }
+    try {
+      await Promise.all(
+        topPapers.map(async (paper) => {
+          const response = await fetch("/api/assistant/suggestions/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query,
+              paper,
+              topic_candidates: []
+            })
+          });
+          const payload = await readJsonWithDetailFallback(response);
+          if (!response.ok) {
+            throw new Error(payload.detail || `Suggestion failed (HTTP ${response.status})`);
+          }
+        })
+      );
+      refreshQuietSuggestions();
+    } catch (error) {
+      console.warn("Search suggestion cards failed", error);
+    }
+  }
+
   async function executeSearch(retrievalText, confirmedPlan) {
     setBusy(true);
     setMessage("");
@@ -1672,6 +1740,10 @@ export default function App() {
       setCorpusLatestDate(data.corpus_latest_date || null);
       setRetrievalSources(data.retrieval_sources || []);
       setSourceFreshness(data.source_freshness || {});
+      void createSearchSuggestionCards({
+        query: question,
+        papers: data.papers
+      });
       streamFrom(
         `/api/search/${data.search_id}/answer/stream`,
         "qa_auto",
@@ -1829,6 +1901,12 @@ export default function App() {
               {t("paperReaderTab")}
             </button>
             <button
+              className={activeTab === "research_topics" ? "active" : ""}
+              onClick={() => setActiveTab("research_topics")}
+            >
+              {t("researchTopicsTab")}
+            </button>
+            <button
               className={activeTab === "research_profile" ? "active" : ""}
               onClick={() => setActiveTab("research_profile")}
             >
@@ -1963,6 +2041,7 @@ export default function App() {
           runtimePayload={runtimePayload}
           onAssistantAutoReply={scheduleCitationTraceAssistantAutoReply}
           renderAssistantLayer={renderAssistantLayer}
+          onSuggestionRefresh={refreshQuietSuggestions}
         />
       ) : null}
 
@@ -1976,8 +2055,11 @@ export default function App() {
           onInitialArxivUrlConsumed={() => setPendingPaperReaderUrl("")}
           renderAssistantLayer={renderAssistantLayer}
           onAssistantContextChange={updateAssistantLinkedContext}
+          onSuggestionRefresh={refreshQuietSuggestions}
         />
       ) : null}
+
+      {activeTab === "research_topics" ? <ResearchTopicsPage language={language} /> : null}
 
       {activeTab === "research_profile" ? (
         <ResearchProfilePage
@@ -2043,6 +2125,17 @@ export default function App() {
               modelCatalog={modelCatalogs.answer_chat}
               onFetchModels={() => fetchAvailableModels("answer_chat")}
               modelListId="answer-chat-models"
+            />
+            <ChatConfigSection
+              title={t("assistantChatModel")}
+              config={settings.assistant_chat}
+              onChange={(key, value) => updateNested("assistant_chat", key, value)}
+              t={t}
+              language={language}
+              providerOptions={providerOptions}
+              modelCatalog={modelCatalogs.assistant_chat}
+              onFetchModels={() => fetchAvailableModels("assistant_chat")}
+              modelListId="assistant-chat-models"
             />
             <ChatConfigSection
               title={t("paperReaderTranslationModel")}

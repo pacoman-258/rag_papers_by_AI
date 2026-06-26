@@ -11,6 +11,12 @@
     "base_url": null,
     "api_key": null
   },
+  "assistant_chat": {
+    "provider": "ollama",
+    "model": "qwen3:8b",
+    "base_url": null,
+    "api_key": null
+  },
   "paper_reader_chat": {
     "provider": "ollama",
     "model": "qwen3:8b",
