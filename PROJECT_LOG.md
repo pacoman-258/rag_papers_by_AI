@@ -20,6 +20,20 @@
 - 后续：遗留风险、待办事项，若无可写“无”。
 ```
 
+## 2026-06-27 11:12
+
+- 摘要：修复研究画像刷新拿不到最新论文精读上下文的问题；画像页刷新请求现在会携带当前同步给小助手的 `workflow_context`，后端将其纳入本次画像提取，同时画像页沿用持久化的小助手会话 ID 更新函数。
+- 涉及文件：`backend/assistant_memory.py`、`backend/live2d_service.py`、`backend/main.py`、`backend/schemas.py`、`frontend/src/App.jsx`、`frontend/src/ResearchProfilePage.jsx`、`tests/test_assistant_research_profile.py`、`tests/test_research_profile_frontend.py`、`PROJECT_LOG.md`
+- 验证：先执行 `.venv/bin/python -m unittest tests.test_research_profile_frontend.ResearchProfileFrontendTest.test_research_profile_refresh_sends_latest_assistant_workflow_context` 与 `.venv/bin/python -m unittest tests.test_assistant_research_profile.AssistantResearchProfileTest.test_research_profile_refresh_request_accepts_workflow_context`，确认前后端缺少 `workflow_context` 的红灯；实现后执行 `.venv/bin/python -m unittest tests.test_assistant_research_profile tests.test_research_profile_frontend`（10 tests OK）、`.venv/bin/python -m py_compile backend/assistant_memory.py backend/live2d_service.py backend/main.py backend/schemas.py tests/test_assistant_research_profile.py tests/test_research_profile_frontend.py`（通过）。
+- 后续：自动画像仍不会在每次论文精读追问后立即更新；用户点击“刷新画像”时会使用最近同步到小助手的精读上下文，长期可考虑增加显式“记录到画像”按钮或后台节流刷新。
+
+## 2026-06-27 10:37
+
+- 摘要：将引用溯源第二步接入 `citation_trace_worker_chat` 副模型，由副模型从 References 原文结构化解析参考文献；规则解析保留为兜底，并在候选召回前过滤明显的 prompt/rubric 脏片段，避免不同引用格式导致误查 arXiv。
+- 涉及文件：`backend/citation_trace_service.py`、`tests/test_citation_trace_service.py`、`PROJECT_LOG.md`
+- 验证：先执行 `.venv/bin/python -m unittest tests.test_citation_trace_service.CitationTraceServiceTest.test_worker_reference_resolution_replaces_polluted_rule_parse`，确认缺少副模型解析入口的红灯；实现后执行该测试（通过）、`.venv/bin/python -m unittest tests.test_citation_trace_service`（31 tests OK）、`.venv/bin/python -m unittest tests.test_citation_trace_api tests.test_citation_trace_cleanup`（12 tests OK）、`.venv/bin/python -m py_compile backend/citation_trace_service.py tests/test_citation_trace_service.py`（通过）。
+- 后续：副模型解析当前一次最多接收 References 前 50000 字符、采纳前 200 条结构化引用；如果后续遇到超长 bibliography，可再做分块解析与合并。
+
 ## 2026-06-26 22:48
 
 - 摘要：将工作台品牌展示从 arxiv-paper-rag 调整为 Iplatform，顶部副标题改为 `design by pacoman-258`，页面底部新增远端仓库与作者 GitHub 链接，并同步 README、包名和浏览器标题中的项目名。

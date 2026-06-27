@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from backend import assistant_memory as am
 from backend import live2d_service as live2d
+from backend.schemas import ResearchProfileRefreshRequest
 from local_paper_db.app.search_service import (
     AssistantMemoryConfig,
     ChatConfig,
@@ -206,6 +207,32 @@ class AssistantResearchProfileTest(unittest.TestCase):
         self.assertEqual(item["confidence"], 0.786)
         self.assertTrue(item["pinned"])
         self.assertEqual(item["evidence"], ["Graph RAG for Scientific Paper Reading", "Method or mechanism"])
+
+    def test_research_profile_refresh_request_accepts_workflow_context(self) -> None:
+        payload = ResearchProfileRefreshRequest.model_validate(
+            {
+                "session_id": "session-1",
+                "workflow_context": _paper_reader_context(),
+            }
+        )
+
+        self.assertEqual(payload.workflow_context.kind, "paper_reader")
+        self.assertEqual(payload.workflow_context.paper_title, "Graph RAG for Scientific Paper Reading")
+
+    def test_live2d_research_profile_refresh_forwards_workflow_context(self) -> None:
+        workflow_context = _paper_reader_context()
+        with patch(
+            "backend.live2d_service.refresh_research_profile_state",
+            return_value={"session_id": "session-1", "items": [], "count": 0},
+        ) as refresh_mock:
+            state = live2d.refresh_live2d_research_profile(
+                session_id="session-1",
+                settings=_settings(),
+                workflow_context=workflow_context,
+            )
+
+        self.assertTrue(state["available"])
+        self.assertEqual(refresh_mock.call_args.kwargs["workflow_context"], workflow_context)
 
     def test_live2d_research_profile_list_degrades_when_memory_store_is_unavailable(self) -> None:
         with patch("backend.live2d_service.get_research_profile_state", side_effect=RuntimeError("db unavailable")):

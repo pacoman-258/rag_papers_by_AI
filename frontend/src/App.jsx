@@ -2173,7 +2173,8 @@ export default function App() {
         <ResearchProfilePage
           language={language}
           assistantSessionId={assistantSessionId}
-          onAssistantSessionIdChange={setAssistantSessionId}
+          latestWorkflowContext={assistantLinkedContext.workflowContext}
+          onAssistantSessionIdChange={setAssistantSessionIdWithPersistence}
         />
       ) : null}
 

@@ -98,7 +98,7 @@ function groupProfileItems(items) {
   }, {});
 }
 
-export default function ResearchProfilePage({ language, assistantSessionId, onAssistantSessionIdChange }) {
+export default function ResearchProfilePage({ language, assistantSessionId, latestWorkflowContext, onAssistantSessionIdChange }) {
   const t = getCopy(language);
   const mountedRef = useRef(false);
   const [profile, setProfile] = useState({
@@ -127,7 +127,12 @@ export default function ResearchProfilePage({ language, assistantSessionId, onAs
       const response = await fetch(url, {
         method: refresh ? "POST" : "GET",
         headers: refresh ? { "Content-Type": "application/json" } : undefined,
-        body: refresh ? JSON.stringify({ session_id: resolvedSessionId }) : undefined
+        body: refresh
+          ? JSON.stringify({
+              session_id: resolvedSessionId,
+              workflow_context: latestWorkflowContext || null
+            })
+          : undefined
       });
       const payload = await readJsonWithDetailFallback(response);
       if (!response.ok) {

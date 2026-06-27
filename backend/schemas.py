@@ -774,6 +774,7 @@ class ResearchProfileResponse(BaseModel):
 
 class ResearchProfileRefreshRequest(BaseModel):
     session_id: str | None = None
+    workflow_context: WorkflowContextModel | None = None
 
 
 class AssistantMemoryPinRequest(BaseModel):

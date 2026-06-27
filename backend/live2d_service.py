@@ -797,6 +797,7 @@ def refresh_live2d_research_profile(
     *,
     session_id: str | None,
     settings: RuntimeSettings,
+    workflow_context: dict[str, Any] | None = None,
     limit: int = 12,
     db_config: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -804,6 +805,7 @@ def refresh_live2d_research_profile(
         state = refresh_research_profile_state(
             session_id=session_id,
             settings=settings,
+            workflow_context=workflow_context,
             limit=limit,
             db_config=db_config,
         )

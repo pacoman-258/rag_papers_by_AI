@@ -27,6 +27,13 @@ class ResearchProfileFrontendTest(unittest.TestCase):
         self.assertIn("/pin", page_source)
         self.assertIn('"DELETE"', page_source)
 
+    def test_research_profile_refresh_sends_latest_assistant_workflow_context(self) -> None:
+        app_source = APP.read_text(encoding="utf-8")
+        page_source = PROFILE_PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("latestWorkflowContext={assistantLinkedContext.workflowContext}", app_source)
+        self.assertIn("workflow_context: latestWorkflowContext || null", page_source)
+
 
 if __name__ == "__main__":
     unittest.main()

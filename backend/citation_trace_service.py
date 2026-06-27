@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 import uuid
@@ -40,12 +41,15 @@ REFERENCE_SPLIT_PATTERN = re.compile(r"(?m)^\s*(?P<label>\[\d+\]|(?!(?:19|20)\d{
 REFERENCE_SENTENCE_SPLIT_PATTERN = re.compile(r"(?<!\b[A-Z])\.\s+")
 REFERENCE_ARXIV_TRAILING_YEAR_PATTERN = re.compile(r"\s*[,;]?\s*(?:19|20)\d{2}[a-z]?\.", re.IGNORECASE)
 REFERENCE_YEAR_BOUNDARY_PATTERN = re.compile(r"\b(?:19|20)\d{2}[a-z]?\.\s+", re.IGNORECASE)
+REFERENCE_SECTION_PROMPT_CHAR_LIMIT = 50000
+REFERENCE_WORKER_MAX_REFERENCES = 200
 ARXIV_URL_PATTERN = re.compile(
     r"^https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/(?P<id>\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?/?(?:[?#].*)?$",
     re.IGNORECASE,
 )
 NON_REFERENCE_FRAGMENT_PATTERN = re.compile(
-    r"\b(algorithm|appendix|ablation|kernel|require:|write:|section|figure|table)\b|[→←▷]",
+    r"\b(algorithm|appendix|ablation|kernel|require:|write:|section|figure|table|"
+    r"supplementary criteria|accuracy|completeness|public prosecutor)\b|[→←▷]",
     re.IGNORECASE,
 )
 TOPIC_STOPWORDS = {
@@ -474,18 +478,149 @@ def _iter_reference_chunks(reference_text: str) -> Iterator[tuple[str | None, st
             yield match.group("label"), chunk
 
 
-def extract_reference_entries(pdf_text: str) -> list[ReferenceEntry]:
+def extract_reference_section_text(pdf_text: str) -> str:
     match = REFERENCE_HEADING_PATTERN.search(pdf_text or "")
     if match is None:
-        return []
+        return ""
     tail = pdf_text[match.end() :]
     kept_lines: list[str] = []
     for line in tail.splitlines():
         if NEXT_SECTION_PATTERN.match(line):
             break
         kept_lines.append(line)
-    reference_text = "\n".join(kept_lines).strip()
+    return "\n".join(kept_lines).strip()
+
+
+def extract_reference_entries(pdf_text: str) -> list[ReferenceEntry]:
+    reference_text = extract_reference_section_text(pdf_text)
+    if not reference_text:
+        return []
     return [_coerce_reference(label, chunk) for label, chunk in _iter_reference_chunks(reference_text)]
+
+
+def _worker_reference_resolution_messages(
+    session: CitationTraceSession,
+    reference_text: str,
+) -> list[dict[str, str]]:
+    fallback_preview = [
+        {
+            "raw_text": entry.raw_text,
+            "title_hint": entry.title_hint,
+            "arxiv_id": entry.arxiv_id,
+            "doi": entry.doi,
+            "year": entry.year,
+        }
+        for entry in session.reference_entries[:30]
+    ]
+    clipped_reference_text = reference_text[:REFERENCE_SECTION_PROMPT_CHAR_LIMIT]
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Extract bibliography references from a paper References/Bibliography section. "
+                "Return exactly one JSON object with key references. references must be a list "
+                "of objects with raw_text, title_hint, arxiv_id, doi, and year. Use null when "
+                "a field is absent. Use only text that appears in the supplied References section; "
+                "do not invent papers, identifiers, authors, or years. Exclude appendix prose, "
+                "rubrics, prompts, review criteria, algorithm text, and any fragment that is not "
+                "a bibliography entry. Preserve enough raw_text for provenance."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Target paper title: {session.target_paper.title}\n\n"
+                "Rule parser preview, may contain noisy fragments:\n"
+                f"{json.dumps(fallback_preview, ensure_ascii=False)}\n\n"
+                "References section text:\n"
+                f"{clipped_reference_text}"
+            ),
+        },
+    ]
+
+
+def _string_or_none(value: Any) -> str | None:
+    normalized = normalize_whitespace(str(value)) if value is not None else ""
+    return normalized or None
+
+
+def _worker_reference_entry_from_item(item: Any) -> ReferenceEntry | None:
+    if not isinstance(item, dict):
+        return None
+    raw_text = _string_or_none(item.get("raw_text") or item.get("reference") or item.get("citation"))
+    title_hint = _string_or_none(item.get("title_hint") or item.get("title"))
+    if raw_text is None:
+        raw_text = title_hint
+    if raw_text is None or not raw_text.strip(" .;:"):
+        return None
+
+    arxiv_id = (
+        _normalize_arxiv_id(item.get("arxiv_id"))
+        or _normalize_arxiv_id(raw_text)
+    )
+    doi = _normalize_doi(item.get("doi")) or _normalize_doi(raw_text)
+    year_value = _string_or_none(item.get("year"))
+    year_match = YEAR_PATTERN.search(year_value or "") or YEAR_PATTERN.search(raw_text)
+    year = year_match.group(1) if year_match else None
+    entry = ReferenceEntry(
+        reference_id=_new_id("ref"),
+        raw_text=raw_text,
+        raw_label=None,
+        arxiv_id=arxiv_id,
+        doi=doi,
+        year=year,
+        title_hint=(title_hint or _title_hint_from_reference(raw_text) or "")[:240] or None,
+    )
+    return None if _is_non_reference_fragment(entry) else entry
+
+
+def _worker_reference_entries_from_payload(payload: dict[str, Any]) -> list[ReferenceEntry]:
+    raw_items = payload.get("references")
+    if not isinstance(raw_items, list):
+        return []
+    entries: list[ReferenceEntry] = []
+    seen: set[str] = set()
+    for item in raw_items[:REFERENCE_WORKER_MAX_REFERENCES]:
+        entry = _worker_reference_entry_from_item(item)
+        if entry is None:
+            continue
+        dedupe_key = (
+            entry.arxiv_id
+            or entry.doi
+            or normalize_whitespace(entry.raw_text).casefold()
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        entries.append(entry)
+    return entries
+
+
+def resolve_references_with_worker(
+    session: CitationTraceSession,
+    settings: Any,
+) -> list[ReferenceEntry]:
+    config = getattr(settings, "citation_trace_worker_chat", None)
+    reference_text = extract_reference_section_text(session.pdf_text)
+    if config is None or not reference_text:
+        return session.reference_entries
+    try:
+        raw = chat_completion(
+            _worker_reference_resolution_messages(session, reference_text),
+            config,
+            _request_timeout_from_settings(settings),
+        )
+        parsed = extract_first_json_object(raw)
+        worker_entries = _worker_reference_entries_from_payload(parsed)
+    except Exception as exc:
+        session.warnings.append(f"Worker reference parsing failed; using rule parser fallback: {exc}")
+        return session.reference_entries
+
+    if not worker_entries:
+        session.warnings.append("Worker reference parsing returned no usable references; using rule parser fallback.")
+        return session.reference_entries
+    session.reference_entries = worker_entries
+    return session.reference_entries
 
 
 def build_unresolved_reference_record(
@@ -979,6 +1114,10 @@ def recall_reference_candidates(
     unresolved_entries: list[tuple[int, int, CitationTraceLedgerEntry]] = []
     for reference_index, reference in enumerate(session.reference_entries):
         entries_for_reference: list[CitationTraceLedgerEntry] = []
+        if _is_non_reference_fragment(reference):
+            label = reference.title_hint or reference.raw_text[:80] or reference.reference_id
+            session.warnings.append(f"Skipped unresolved reference fragment: {normalize_whitespace(label)}")
+            continue
         if reference.arxiv_id:
             try:
                 node = resolve_reference_to_node(reference, settings)
@@ -1007,10 +1146,6 @@ def recall_reference_candidates(
                         )
                     )
         if not entries_for_reference:
-            if _is_non_reference_fragment(reference):
-                label = reference.title_hint or reference.raw_text[:80] or reference.reference_id
-                session.warnings.append(f"Skipped unresolved reference fragment: {normalize_whitespace(label)}")
-                continue
             _node, entry = build_unresolved_reference_record(
                 reference,
                 seed_paper_id=session.target_paper.paper_id,
@@ -1398,6 +1533,10 @@ def run_citation_trace_events(
     session.warnings = []
     session.final_top5 = []
     yield "stage_start", {"session_id": session.session_id, "stage": "reference_resolution"}
+    warning_count_before = len(session.warnings)
+    resolve_references_with_worker(session, settings)
+    for warning in session.warnings[warning_count_before:]:
+        yield "warning", {"message": warning}
 
     yield "stage_start", {"session_id": session.session_id, "stage": "candidate_recall"}
     round_one = run_round_one(session, settings)

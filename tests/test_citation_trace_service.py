@@ -132,6 +132,73 @@ class CitationTraceServiceTest(unittest.TestCase):
         self.assertNotIn("Revealing the structure", arxiv_entries[0].raw_text)
         self.assertIn("Revealing the structure", arxiv_entries[1].raw_text)
 
+    def test_worker_reference_resolution_replaces_polluted_rule_parse(self):
+        text = """
+        Abstract
+        We study user logs.
+
+        References
+        Prateek Chhikara, Dev Khant, Saket Aryan, Taranjeet
+        Singh, and Deshraj Yadav. 2025. Mem0: Building
+        production-ready ai agents with scalable long-term
+        memory. arXiv preprint arXiv:2504.19413.
+        Therefore, you must also apply your own knowledge and judgment to assess
+        the answer based on these supplementary criteria: **Accuracy**.
+        """
+        session = cts.CitationTraceSession(
+            session_id="citation-trace-test",
+            source_type="arxiv",
+            source_id="2602.06470",
+            source_url=None,
+            target_paper=cts.CitationTracePaperNode(
+                paper_id="target",
+                source="target",
+                source_id="2602.06470",
+                canonical_id="arxiv:2602.06470",
+                title="Improve Large Language Model Systems with User Logs",
+            ),
+            reference_entries=cts.extract_reference_entries(text),
+            pdf_text=text,
+        )
+        settings = SimpleNamespace(citation_trace_worker_chat=SimpleNamespace(provider="test"))
+        calls = []
+
+        original_chat_completion = cts.chat_completion
+        original_resolve_reference_to_node = cts.resolve_reference_to_node
+        original_resolve_arxiv_candidates = cts.resolve_arxiv_candidates
+        try:
+            cts.chat_completion = lambda messages, config, timeout: """
+            {
+              "references": [
+                {
+                  "raw_text": "Prateek Chhikara, Dev Khant, Saket Aryan, Taranjeet Singh, and Deshraj Yadav. 2025. Mem0: Building production-ready ai agents with scalable long-term memory. arXiv preprint arXiv:2504.19413.",
+                  "title_hint": "Mem0: Building production-ready ai agents with scalable long-term memory",
+                  "arxiv_id": "2504.19413",
+                  "doi": null,
+                  "year": "2025"
+                }
+              ]
+            }
+            """
+            cts.resolve_reference_to_node = lambda reference, settings: None
+
+            def fake_resolve_arxiv_candidates(query, *, limit):
+                calls.append(query)
+                return []
+
+            cts.resolve_arxiv_candidates = fake_resolve_arxiv_candidates
+
+            cts.resolve_references_with_worker(session, settings)
+            cts.recall_reference_candidates(session, settings)
+        finally:
+            cts.chat_completion = original_chat_completion
+            cts.resolve_reference_to_node = original_resolve_reference_to_node
+            cts.resolve_arxiv_candidates = original_resolve_arxiv_candidates
+
+        self.assertEqual(len(session.reference_entries), 1)
+        self.assertEqual(session.reference_entries[0].arxiv_id, "2504.19413")
+        self.assertEqual(calls, [])
+
     def test_create_session_from_arxiv_uses_resolved_metadata(self):
         class Record:
             arxiv_id = "1706.03762"

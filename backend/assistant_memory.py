@@ -2285,6 +2285,7 @@ def refresh_research_profile_state(
     *,
     session_id: str | None,
     settings: RuntimeSettings,
+    workflow_context: Any = None,
     limit: int = 12,
     profile_key: str = DEFAULT_PROFILE_KEY,
     db_config: dict[str, str] | None = None,
@@ -2300,6 +2301,7 @@ def refresh_research_profile_state(
         )
 
     ensure_assistant_memory_schema(db_config)
+    refresh_workflow_context = normalize_workflow_context(workflow_context)
     conn = _connect(db_config)
     try:
         with conn:
@@ -2321,12 +2323,27 @@ def refresh_research_profile_state(
                 )
                 if context
             ]
+            if refresh_workflow_context:
+                refresh_context_key = json.dumps(refresh_workflow_context, ensure_ascii=False, sort_keys=True)
+                existing_context_keys = {
+                    json.dumps(context, ensure_ascii=False, sort_keys=True)
+                    for context in workflow_contexts
+                }
+                if refresh_context_key not in existing_context_keys:
+                    workflow_contexts.append(refresh_workflow_context)
             if workflow_contexts:
-                source_text = "\n".join(
+                event_source_text = "\n".join(
                     _safe_text(event.get("message_text"), max_length=500)
                     for event in source_events
                     if _safe_text(event.get("message_text"), max_length=500)
                 )
+                rendered_contexts = [
+                    rendered
+                    for context in workflow_contexts
+                    if (rendered := _render_workflow_context_text(context))
+                ]
+                context_source_text = "\n\n".join(rendered_contexts)
+                source_text = "\n\n".join(part for part in (event_source_text, context_source_text) if part)
                 candidates, _relations = _extract_memory_candidates_from_major(
                     major_summary_payload={"summary": _safe_text(source_text, max_length=1200)},
                     major_summary_text=_safe_text(source_text, max_length=1200),

@@ -1087,7 +1087,16 @@ def api_live2d_research_profile_refresh(payload: ResearchProfileRefreshRequest) 
     resolved_session_id = require_session_id(payload.session_id)
     settings = load_runtime_settings()
     validate_runtime_settings(settings)
-    raw_state = refresh_live2d_research_profile(session_id=resolved_session_id, settings=settings)
+    workflow_context_data = (
+        payload.workflow_context.model_dump(exclude_none=True)
+        if payload.workflow_context is not None
+        else None
+    )
+    raw_state = refresh_live2d_research_profile(
+        session_id=resolved_session_id,
+        settings=settings,
+        workflow_context=workflow_context_data,
+    )
     raw_items = raw_state.get("items") if isinstance(raw_state, dict) else []
     return ResearchProfileResponse(
         session_id=resolved_session_id,
